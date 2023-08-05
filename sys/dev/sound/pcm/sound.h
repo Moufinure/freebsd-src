@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2005-2009 Ariff Abdullah <ariff@FreeBSD.org>
  * Copyright (c) 1999 Cameron Grant <cg@FreeBSD.org>
@@ -410,6 +410,10 @@ struct snddev_info {
 
 void	sound_oss_sysinfo(oss_sysinfo *);
 int	sound_oss_card_info(oss_card_info *);
+
+#define	PCM_MODE_MIXER		0x01
+#define	PCM_MODE_PLAY		0x02
+#define	PCM_MODE_REC		0x04
 
 #define PCM_LOCKOWNED(d)	mtx_owned((d)->lock)
 #define	PCM_LOCK(d)		mtx_lock((d)->lock)

@@ -1,6 +1,6 @@
 #!/bin/sh
 #-
-# SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+# SPDX-License-Identifier: BSD-2-Clause
 #
 # Copyright (c) 2013 Dag-Erling Smørgrav
 # All rights reserved.
@@ -66,7 +66,7 @@ bkext=$(date "+%Y%m%d.%H%M%S")
 RE_octet="([0-9]|[1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|25[0-5])"
 RE_ipv4="(${RE_octet}(\\.${RE_octet}){3})"
 RE_word="([0-9A-Fa-f]{1,4})"
-RE_ipv6="((${RE_word}:){1,}(:|(:${RE_word})*)|::1)"
+RE_ipv6="((${RE_word}:){1,}(:|${RE_word}?(:${RE_word})*)|::1)"
 RE_port="([1-9][0-9]{0,3}|[1-5][0-9]{4,4}|6([0-4][0-9]{3}|5([0-4][0-9]{2}|5([0-2][0-9]|3[0-5]))))"
 RE_dnsname="([0-9A-Za-z-]{1,}(\\.[0-9A-Za-z-]{1,})*\\.?)"
 RE_forward_addr="((${RE_ipv4}|${RE_ipv6})(@${RE_port})?)"
@@ -195,7 +195,7 @@ do_not_edit() {
 gen_resolvconf_conf() {
 	local style="$1"
 	do_not_edit
-	echo "resolv_conf=\"/dev/null\" # prevent updating ${resolv_conf}"
+	echo "libc=\"NO\""
 	if [ "${style}" = "dynamic" ] ; then
 		echo "unbound_conf=\"${forward_conf}\""
 		echo "unbound_pid=\"${pidfile}\""
@@ -260,7 +260,7 @@ gen_unbound_conf() {
 	echo "        pidfile: ${pidfile}"
 	echo "        auto-trust-anchor-file: ${anchor}"
 	if [ "${use_tls}" = "yes" ] ; then
-		echo "        tls-cert-bundle: /etc/ssl/cert.pem"
+		echo "        tls-system-cert: yes"
 	fi
 	echo ""
 	if [ -f "${forward_conf}" ] ; then

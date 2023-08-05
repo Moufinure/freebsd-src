@@ -11,6 +11,7 @@ AC_DEFUN([ZFS_AC_DEBUG_ENABLE], [
 	DEBUG_CPPFLAGS="-DDEBUG -UNDEBUG"
 	DEBUG_LDFLAGS=""
 	DEBUG_ZFS="_with_debug"
+	WITH_DEBUG="true"
 	AC_DEFINE(ZFS_DEBUG, 1, [zfs debugging enabled])
 
 	KERNEL_DEBUG_CFLAGS="-Werror"
@@ -22,6 +23,7 @@ AC_DEFUN([ZFS_AC_DEBUG_DISABLE], [
 	DEBUG_CPPFLAGS="-UDEBUG -DNDEBUG"
 	DEBUG_LDFLAGS=""
 	DEBUG_ZFS="_without_debug"
+	WITH_DEBUG=""
 
 	KERNEL_DEBUG_CFLAGS=""
 	KERNEL_DEBUG_CPPFLAGS="-UDEBUG -DNDEBUG"
@@ -31,6 +33,9 @@ dnl #
 dnl # When debugging is enabled:
 dnl # - Enable all ASSERTs (-DDEBUG)
 dnl # - Promote all compiler warnings to errors (-Werror)
+dnl #
+dnl # (If INVARIANTS is detected, we need to force DEBUG, or strange panics
+dnl # can ensue.)
 dnl #
 AC_DEFUN([ZFS_AC_DEBUG], [
 	AC_MSG_CHECKING([whether assertion support will be enabled])
@@ -47,10 +52,25 @@ AC_DEFUN([ZFS_AC_DEBUG], [
 		[ZFS_AC_DEBUG_DISABLE],
 		[AC_MSG_ERROR([Unknown option $enable_debug])])
 
+	AS_CASE(["x$enable_invariants"],
+		["xyes"],
+		[],
+		["xno"],
+		[],
+		[ZFS_AC_DEBUG_INVARIANTS_DETECT])
+
+	AS_CASE(["x$enable_invariants"],
+		["xyes"],
+		[ZFS_AC_DEBUG_ENABLE],
+		["xno"],
+		[],
+		[AC_MSG_ERROR([Unknown option $enable_invariants])])
+
 	AC_SUBST(DEBUG_CFLAGS)
 	AC_SUBST(DEBUG_CPPFLAGS)
 	AC_SUBST(DEBUG_LDFLAGS)
 	AC_SUBST(DEBUG_ZFS)
+	AC_SUBST(WITH_DEBUG)
 
 	AC_SUBST(KERNEL_DEBUG_CFLAGS)
 	AC_SUBST(KERNEL_DEBUG_CPPFLAGS)
@@ -61,7 +81,7 @@ AC_DEFUN([ZFS_AC_DEBUG], [
 AC_DEFUN([ZFS_AC_DEBUGINFO_ENABLE], [
 	DEBUG_CFLAGS="$DEBUG_CFLAGS -g -fno-inline $NO_IPA_SRA"
 
-	KERNEL_DEBUG_CFLAGS="$KERNEL_DEBUG_CFLAGS -fno-inline $NO_IPA_SRA"
+	KERNEL_DEBUG_CFLAGS="$KERNEL_DEBUG_CFLAGS -fno-inline $KERNEL_NO_IPA_SRA"
 	KERNEL_MAKE="$KERNEL_MAKE CONFIG_DEBUG_INFO=y"
 
 	DEBUGINFO_ZFS="_with_debuginfo"
@@ -152,17 +172,52 @@ AC_DEFUN([ZFS_AC_DEBUG_KMEM_TRACKING], [
 	AC_MSG_RESULT([$enable_debug_kmem_tracking])
 ])
 
+AC_DEFUN([ZFS_AC_DEBUG_INVARIANTS_DETECT_FREEBSD], [
+	AS_IF([sysctl -n kern.conftxt | grep -Fqx $'options\tINVARIANTS'],
+		[enable_invariants="yes"],
+		[enable_invariants="no"])
+])
+
+AC_DEFUN([ZFS_AC_DEBUG_INVARIANTS_DETECT], [
+	AM_COND_IF([BUILD_FREEBSD],
+		[ZFS_AC_DEBUG_INVARIANTS_DETECT_FREEBSD],
+		[enable_invariants="no"])
+])
+
+dnl #
+dnl # Detected for the running kernel by default, enables INVARIANTS features
+dnl # in the FreeBSD kernel module.  This feature must be used when building
+dnl # for a FreeBSD kernel with "options INVARIANTS" in the KERNCONF and must
+dnl # not be used when the INVARIANTS option is absent.
+dnl #
+AC_DEFUN([ZFS_AC_DEBUG_INVARIANTS], [
+	AC_MSG_CHECKING([whether FreeBSD kernel INVARIANTS checks are enabled])
+	AC_ARG_ENABLE([invariants],
+		[AS_HELP_STRING([--enable-invariants],
+		[Enable FreeBSD kernel INVARIANTS checks [[default: detect]]])],
+		[], [ZFS_AC_DEBUG_INVARIANTS_DETECT])
+
+	AS_IF([test "x$enable_invariants" = xyes],
+		[WITH_INVARIANTS="true"],
+		[WITH_INVARIANTS=""])
+	AC_SUBST(WITH_INVARIANTS)
+
+	AC_MSG_RESULT([$enable_invariants])
+])
+
 AC_DEFUN([ZFS_AC_CONFIG_ALWAYS], [
 	AX_COUNT_CPUS([])
 	AC_SUBST(CPU_COUNT)
 
-	ZFS_AC_CONFIG_ALWAYS_CC_NO_UNUSED_BUT_SET_VARIABLE
-	ZFS_AC_CONFIG_ALWAYS_CC_NO_BOOL_COMPARE
+	ZFS_AC_CONFIG_ALWAYS_CC_NO_CLOBBERED
+	ZFS_AC_CONFIG_ALWAYS_CC_INFINITE_RECURSION
+	ZFS_AC_CONFIG_ALWAYS_CC_IMPLICIT_FALLTHROUGH
 	ZFS_AC_CONFIG_ALWAYS_CC_FRAME_LARGER_THAN
 	ZFS_AC_CONFIG_ALWAYS_CC_NO_FORMAT_TRUNCATION
 	ZFS_AC_CONFIG_ALWAYS_CC_NO_FORMAT_ZERO_LENGTH
 	ZFS_AC_CONFIG_ALWAYS_CC_NO_OMIT_FRAME_POINTER
 	ZFS_AC_CONFIG_ALWAYS_CC_NO_IPA_SRA
+	ZFS_AC_CONFIG_ALWAYS_KERNEL_CC_NO_IPA_SRA
 	ZFS_AC_CONFIG_ALWAYS_CC_ASAN
 	ZFS_AC_CONFIG_ALWAYS_TOOLCHAIN_SIMD
 	ZFS_AC_CONFIG_ALWAYS_SYSTEM
@@ -171,6 +226,8 @@ AC_DEFUN([ZFS_AC_CONFIG_ALWAYS], [
 	ZFS_AC_CONFIG_ALWAYS_PYZFS
 	ZFS_AC_CONFIG_ALWAYS_SED
 	ZFS_AC_CONFIG_ALWAYS_CPPCHECK
+	ZFS_AC_CONFIG_ALWAYS_SHELLCHECK
+	ZFS_AC_CONFIG_ALWAYS_PARALLEL
 ])
 
 AC_DEFUN([ZFS_AC_CONFIG], [
@@ -268,6 +325,10 @@ AC_DEFUN([ZFS_AC_RPM], [
 	RPM_DEFINE_COMMON=${RPM_DEFINE_COMMON}' --define "$(DEBUG_KMEM_TRACKING_ZFS) 1"'
 	RPM_DEFINE_COMMON=${RPM_DEFINE_COMMON}' --define "$(ASAN_ZFS) 1"'
 
+	AS_IF([test "x$enable_debuginfo" = xyes], [
+		RPM_DEFINE_COMMON=${RPM_DEFINE_COMMON}' --define "__strip /bin/true"'
+	])
+
 	RPM_DEFINE_UTIL=' --define "_initconfdir $(initconfdir)"'
 
 	dnl # Make the next three RPM_DEFINE_UTIL additions conditional, since
@@ -313,6 +374,9 @@ AC_DEFUN([ZFS_AC_RPM], [
 		RPM_DEFINE_KMOD=${RPM_DEFINE_KMOD}' --define "kernels $(LINUX_VERSION)"'
 		RPM_DEFINE_KMOD=${RPM_DEFINE_KMOD}' --define "ksrc $(LINUX)"'
 		RPM_DEFINE_KMOD=${RPM_DEFINE_KMOD}' --define "kobj $(LINUX_OBJ)"'
+		RPM_DEFINE_KMOD=${RPM_DEFINE_KMOD}' --define "kernel_cc KERNEL_CC=$(KERNEL_CC)"'
+		RPM_DEFINE_KMOD=${RPM_DEFINE_KMOD}' --define "kernel_ld KERNEL_LD=$(KERNEL_LD)"'
+		RPM_DEFINE_KMOD=${RPM_DEFINE_KMOD}' --define "kernel_llvm KERNEL_LLVM=$(KERNEL_LLVM)"'
 	])
 
 	RPM_DEFINE_DKMS=''
@@ -401,6 +465,9 @@ AC_DEFUN([ZFS_AC_ALIEN], [
 	AC_MSG_CHECKING([whether $ALIEN is available])
 	AS_IF([tmp=$($ALIEN --version 2>/dev/null)], [
 		ALIEN_VERSION=$(echo $tmp | $AWK '{ print $[3] }')
+		ALIEN_MAJOR=$(echo ${ALIEN_VERSION} | $AWK -F'.' '{ print $[1] }')
+		ALIEN_MINOR=$(echo ${ALIEN_VERSION} | $AWK -F'.' '{ print $[2] }')
+		ALIEN_POINT=$(echo ${ALIEN_VERSION} | $AWK -F'.' '{ print $[3] }')
 		HAVE_ALIEN=yes
 		AC_MSG_RESULT([$HAVE_ALIEN ($ALIEN_VERSION)])
 	],[
@@ -411,6 +478,9 @@ AC_DEFUN([ZFS_AC_ALIEN], [
 	AC_SUBST(HAVE_ALIEN)
 	AC_SUBST(ALIEN)
 	AC_SUBST(ALIEN_VERSION)
+	AC_SUBST(ALIEN_MAJOR)
+	AC_SUBST(ALIEN_MINOR)
+	AC_SUBST(ALIEN_POINT)
 ])
 
 dnl #
@@ -449,6 +519,8 @@ AC_DEFUN([ZFS_AC_DEFAULT_PACKAGE], [
 			VENDOR=alpine ;
 		elif test -f /bin/freebsd-version ; then
 			VENDOR=freebsd ;
+		elif test -f /etc/openEuler-release ; then
+			VENDOR=openeuler ;
 		else
 			VENDOR= ;
 		fi],
@@ -473,6 +545,7 @@ AC_DEFUN([ZFS_AC_DEFAULT_PACKAGE], [
 		ubuntu)     DEFAULT_PACKAGE=deb  ;;
 		debian)     DEFAULT_PACKAGE=deb  ;;
 		freebsd)    DEFAULT_PACKAGE=pkg  ;;
+		openeuler)  DEFAULT_PACKAGE=rpm  ;;
 		*)          DEFAULT_PACKAGE=rpm  ;;
 	esac
 	AC_MSG_RESULT([$DEFAULT_PACKAGE])
@@ -486,35 +559,14 @@ AC_DEFUN([ZFS_AC_DEFAULT_PACKAGE], [
 	AC_MSG_RESULT([$initdir])
 	AC_SUBST(initdir)
 
-	AC_MSG_CHECKING([default init script type and shell])
+	AC_MSG_CHECKING([default shell])
 	case "$VENDOR" in
-		toss)       DEFAULT_INIT_SCRIPT=redhat ;;
-		redhat)     DEFAULT_INIT_SCRIPT=redhat ;;
-		fedora)     DEFAULT_INIT_SCRIPT=fedora ;;
-		gentoo)     DEFAULT_INIT_SCRIPT=openrc ;;
-		alpine)     DEFAULT_INIT_SCRIPT=openrc ;;
-		arch)       DEFAULT_INIT_SCRIPT=lsb    ;;
-		sles)       DEFAULT_INIT_SCRIPT=lsb    ;;
-		slackware)  DEFAULT_INIT_SCRIPT=lsb    ;;
-		lunar)      DEFAULT_INIT_SCRIPT=lunar  ;;
-		ubuntu)     DEFAULT_INIT_SCRIPT=lsb    ;;
-		debian)     DEFAULT_INIT_SCRIPT=lsb    ;;
-		freebsd)    DEFAULT_INIT_SCRIPT=freebsd;;
-		*)          DEFAULT_INIT_SCRIPT=lsb    ;;
+		gentoo)     DEFAULT_INIT_SHELL="/sbin/openrc-run";;
+		alpine)     DEFAULT_INIT_SHELL="/sbin/openrc-run";;
+		*)          DEFAULT_INIT_SHELL="/bin/sh"         ;;
 	esac
 
-	# On gentoo, it's possible that OpenRC isn't installed.  Check if
-	# /sbin/openrc-run exists, and if not, fall back to generic defaults.
-
-	DEFAULT_INIT_SHELL="/bin/sh"
-	AS_IF([test "$DEFAULT_INIT_SCRIPT" = "openrc"], [
-		AS_IF([test -x "/sbin/openrc-run"],
-			[DEFAULT_INIT_SHELL="/sbin/openrc-run"],
-			[DEFAULT_INIT_SCRIPT=lsb])
-	])
-
-	AC_MSG_RESULT([$DEFAULT_INIT_SCRIPT:$DEFAULT_INIT_SHELL])
-	AC_SUBST(DEFAULT_INIT_SCRIPT)
+	AC_MSG_RESULT([$DEFAULT_INIT_SHELL])
 	AC_SUBST(DEFAULT_INIT_SHELL)
 
 	AC_MSG_CHECKING([default nfs server init script])
@@ -533,6 +585,7 @@ AC_DEFUN([ZFS_AC_DEFAULT_PACKAGE], [
 		redhat)     initconfdir=/etc/sysconfig ;;
 		fedora)     initconfdir=/etc/sysconfig ;;
 		sles)       initconfdir=/etc/sysconfig ;;
+		openeuler)  initconfdir=/etc/sysconfig ;;
 		ubuntu)     initconfdir=/etc/default   ;;
 		debian)     initconfdir=/etc/default   ;;
 		freebsd)    initconfdir=$sysconfdir/rc.conf.d;;

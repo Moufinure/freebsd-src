@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2002-2010 Adaptec, Inc.
  * Copyright (c) 2010-2012 PMC-Sierra, Inc.
@@ -1011,7 +1011,7 @@ aac_cam_action(struct cam_sim *sim, union ccb *ccb)
 		cpi->max_lun = 7;	/* Per the controller spec */
 		cpi->initiator_id = camsc->inf->InitiatorBusId;
 		cpi->bus_id = camsc->inf->BusNumber;
-		cpi->maxio = sc->aac_max_sectors << 9;
+		cpi->maxio = AAC_MAXIO_SIZE(sc);
 
 		/*
 		 * Resetting via the passthrough or parallel bus scan

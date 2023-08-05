@@ -1,7 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
- *
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2013-2014 Qlogic Corporation
  * All rights reserved.
@@ -130,12 +128,16 @@ qls_rx_comp(qla_host_t *ha, uint32_t rxr_idx, uint32_t cq_idx, q81_rx_t *cq_e)
 	device_t	dev = ha->pci_dev;
 	struct mbuf     *mp = NULL;
 	struct ifnet	*ifp = ha->ifp;
+#if defined(INET) || defined(INET6)
 	struct lro_ctrl	*lro;
+#endif
 	struct ether_vlan_header *eh;
 
 	rxr = &ha->rx_ring[rxr_idx];
 
+#if defined(INET) || defined(INET6)
 	lro = &rxr->lro;
+#endif
 
 	rxb = &rxr->rx_buf[rxr->rx_next];
 
@@ -200,9 +202,12 @@ qls_rx_comp(qla_host_t *ha, uint32_t rxr_idx, uint32_t cq_idx, q81_rx_t *cq_e)
 			}
 			if_inc_counter(ifp, IFCOUNTER_IPACKETS, 1);
 
+#if defined(INET) || defined(INET6)
 			if (lro->lro_cnt && (tcp_lro_rx(lro, mp, 0) == 0)) {
 				/* LRO packet has been successfully queued */
-			} else {
+			} else
+#endif
+			{
 				(*ifp->if_input)(ifp, mp);
 			}
 		}
@@ -228,10 +233,11 @@ qls_cq_isr(qla_host_t *ha, uint32_t cq_idx)
 	q81_cq_e_t *cq_e, *cq_b;
 	uint32_t i, cq_comp_idx;
 	int ret = 0, tx_comp_done = 0;
-	struct lro_ctrl	*lro;
+#if defined(INET) || defined(INET6)
+	struct lro_ctrl	*lro = &ha->rx_ring[cq_idx].lro;
+#endif
 
 	cq_b = ha->rx_ring[cq_idx].cq_base_vaddr;
-	lro = &ha->rx_ring[cq_idx].lro;
 
 	cq_comp_idx = *(ha->rx_ring[cq_idx].cqi_vaddr);
 
@@ -281,7 +287,9 @@ qls_cq_isr(qla_host_t *ha, uint32_t cq_idx)
                 }
 	}
 
+#if defined(INET) || defined(INET6)
 	tcp_lro_flush_all(lro);
+#endif
 
 	ha->rx_ring[cq_idx].cq_next = cq_comp_idx;
 

@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2014 The FreeBSD Foundation
  *
@@ -1202,6 +1202,19 @@ lesser_daemon(void)
 		/* Bloody hell. */
 		log_warn("close");
 	}
+}
+
+/*
+ * Applicable to NFSv3 only, see rpc.umntall(8).
+ */
+void
+rpc_umntall(void)
+{
+	FILE *f;
+
+	f = auto_popen("rpc.umntall", "-k", NULL);
+	assert(f != NULL);
+	auto_pclose(f);
 }
 
 int

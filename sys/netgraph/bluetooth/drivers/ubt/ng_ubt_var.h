@@ -3,7 +3,7 @@
  */
 
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2001-2009 Maksim Yevmenkin <m_evmenkin@yahoo.com>
  * All rights reserved.
@@ -102,6 +102,10 @@ struct ubt_hci_event_command_compl {
 } __attribute__ ((packed));
 #define	UBT_HCI_EVENT_SIZE(evt) \
 	((evt)->header.length + offsetof(struct ubt_hci_event, data))
+#define	UBT_HCI_EVENT_COMPL_HEAD_SIZE \
+	(offsetof(struct ubt_hci_event_command_compl, data) - \
+	 offsetof(struct ubt_hci_event_command_compl, numpkt))
+
 
 /* USB device softc structure */
 struct ubt_softc {

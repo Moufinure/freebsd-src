@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 1999 Mark Murray
  * Copyright (c) 2014 Dag-Erling Smørgrav
@@ -32,7 +32,6 @@ __FBSDID("$FreeBSD$");
 
 #include <sys/types.h>
 
-#include <libutil.h>
 #include <string.h>
 #include <unistd.h>
 

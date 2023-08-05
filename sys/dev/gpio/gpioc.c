@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2009 Oleksandr Tymoshenko <gonzo@freebsd.org>
  * All rights reserved.
@@ -269,7 +269,8 @@ gpioc_attach_priv_pin(struct gpioc_cdevpriv *priv,
 {
 	struct gpioc_privs	*priv_link;
 	struct gpioc_pins	*pin_link;
-	unsigned int		consistency_a, consistency_b;
+	unsigned int		consistency_a __diagused;
+	unsigned int		consistency_b __diagused;
 
 	consistency_a = 0;
 	consistency_b = 0;
@@ -319,7 +320,8 @@ gpioc_detach_priv_pin(struct gpioc_cdevpriv *priv,
 {
 	struct gpioc_privs	*priv_link, *priv_link_temp;
 	struct gpioc_pins	*pin_link, *pin_link_temp;
-	unsigned int		consistency_a, consistency_b;
+	unsigned int		consistency_a __diagused;
+	unsigned int		consistency_b __diagused;
 
 	consistency_a = 0;
 	consistency_b = 0;
@@ -618,7 +620,7 @@ gpioc_detach(device_t dev)
 
 	for (int i = 0; i < sc->sc_npins; i++) {
 		mtx_destroy(&sc->sc_pin_intr[i].mtx);
-		free(&sc->sc_pin_intr[i].pin, M_GPIOC);
+		free(sc->sc_pin_intr[i].pin, M_GPIOC);
 	}
 	free(sc->sc_pin_intr, M_GPIOC);
 
@@ -634,7 +636,7 @@ gpioc_cdevpriv_dtor(void *data)
 	struct gpioc_cdevpriv	*priv;
 	struct gpioc_privs	*priv_link, *priv_link_temp;
 	struct gpioc_pins	*pin_link, *pin_link_temp;
-	unsigned int		consistency;
+	unsigned int		consistency __diagused;
 
 	priv = data;
 

@@ -212,42 +212,26 @@ in6_delayed_cksum(struct mbuf *m, uint32_t plen, u_short offset)
 		*(u_short *)mtodo(m, offset) = csum;
 }
 
-static int
+static void
 ip6_output_delayed_csum(struct mbuf *m, struct ifnet *ifp, int csum_flags,
-    int plen, int optlen, bool frag)
+    int plen, int optlen)
 {
 
 	KASSERT((plen >= optlen), ("%s:%d: plen %d < optlen %d, m %p, ifp %p "
-	    "csum_flags %#x frag %d\n",
-	    __func__, __LINE__, plen, optlen, m, ifp, csum_flags, frag));
+	    "csum_flags %#x",
+	    __func__, __LINE__, plen, optlen, m, ifp, csum_flags));
 
-	if ((csum_flags & CSUM_DELAY_DATA_IPV6) ||
-#if defined(SCTP) || defined(SCTP_SUPPORT)
-	    (csum_flags & CSUM_SCTP_IPV6) ||
-#endif
-	    (!frag && (ifp->if_capenable & IFCAP_MEXTPG) == 0)) {
-		m = mb_unmapped_to_ext(m);
-		if (m == NULL) {
-			if (frag)
-				in6_ifstat_inc(ifp, ifs6_out_fragfail);
-			else
-				IP6STAT_INC(ip6s_odropped);
-			return (ENOBUFS);
-		}
-		if (csum_flags & CSUM_DELAY_DATA_IPV6) {
-			in6_delayed_cksum(m, plen - optlen,
-			    sizeof(struct ip6_hdr) + optlen);
-			m->m_pkthdr.csum_flags &= ~CSUM_DELAY_DATA_IPV6;
-		}
-#if defined(SCTP) || defined(SCTP_SUPPORT)
-		if (csum_flags & CSUM_SCTP_IPV6) {
-			sctp_delayed_cksum(m, sizeof(struct ip6_hdr) + optlen);
-			m->m_pkthdr.csum_flags &= ~CSUM_SCTP_IPV6;
-		}
-#endif
+	if (csum_flags & CSUM_DELAY_DATA_IPV6) {
+		in6_delayed_cksum(m, plen - optlen,
+		    sizeof(struct ip6_hdr) + optlen);
+		m->m_pkthdr.csum_flags &= ~CSUM_DELAY_DATA_IPV6;
 	}
-
-	return (0);
+#if defined(SCTP) || defined(SCTP_SUPPORT)
+	if (csum_flags & CSUM_SCTP_IPV6) {
+		sctp_delayed_cksum(m, sizeof(struct ip6_hdr) + optlen);
+		m->m_pkthdr.csum_flags &= ~CSUM_SCTP_IPV6;
+	}
+#endif
 }
 
 int
@@ -352,6 +336,7 @@ ip6_output_send(struct inpcb *inp, struct ifnet *ifp, struct ifnet *origifp,
 		 * packet.
 		 */
 		if (mst == NULL) {
+			m_freem(m);
 			error = EAGAIN;
 			goto done;
 		}
@@ -376,6 +361,7 @@ ip6_output_send(struct inpcb *inp, struct ifnet *ifp, struct ifnet *origifp,
 		KASSERT(m->m_pkthdr.rcvif == NULL,
 		    ("trying to add a send tag to a forwarded packet"));
 		if (mst->ifp != ifp) {
+			m_freem(m);
 			error = EAGAIN;
 			goto done;
 		}
@@ -475,6 +461,12 @@ ip6_output(struct mbuf *m0, struct ip6_pktopts *opt,
 	 * XXX: need scope argument.
 	 */
 	if (IPSEC_ENABLED(ipv6)) {
+		m = mb_unmapped_to_ext(m);
+		if (m == NULL) {
+			IP6STAT_INC(ip6s_odropped);
+			error = ENOBUFS;
+			goto bad;
+		}
 		if ((error = IPSEC_OUTPUT(ipv6, m, inp)) != 0) {
 			if (error == EINPROGRESS)
 				error = 0;
@@ -656,9 +648,9 @@ again:
 	if (opt && opt->ip6po_tclass >= 0) {
 		int mask = 0;
 
-		if ((ip6->ip6_flow & htonl(0xfc << 20)) == 0)
+		if (IPV6_DSCP(ip6) == 0)
 			mask |= 0xfc;
-		if ((ip6->ip6_flow & htonl(0x03 << 20)) == 0)
+		if (IPV6_ECN(ip6) == 0)
 			mask |= 0x03;
 		if (mask != 0)
 			ip6->ip6_flow |= htonl((opt->ip6po_tclass & mask) << 20);
@@ -786,6 +778,8 @@ again:
 		ia = ifatoia6(nh->nh_ifa);
 		if (nh->nh_flags & NHF_GATEWAY)
 			dst->sin6_addr = nh->gw6_sa.sin6_addr;
+		else if (fwd_tag != NULL)
+			dst->sin6_addr = dst_sa.sin6_addr;
 nonh6lookup:
 		;
 	}
@@ -1104,6 +1098,16 @@ nonh6lookup:
 passout:
 	if (vlan_pcp > -1)
 		EVL_APPLY_PRI(m, vlan_pcp);
+
+	/* Ensure the packet data is mapped if the interface requires it. */
+	if ((ifp->if_capenable & IFCAP_MEXTPG) == 0) {
+		m = mb_unmapped_to_ext(m);
+		if (m == NULL) {
+			IP6STAT_INC(ip6s_odropped);
+			return (ENOBUFS);
+		}
+	}
+
 	/*
 	 * Send the packet to the outgoing interface.
 	 * If necessary, do IPv6 fragmentation before sending.
@@ -1136,9 +1140,7 @@ passout:
 	 * XXX-BZ  Need a framework to know when the NIC can handle it, even
 	 * with ext. hdrs.
 	 */
-	error = ip6_output_delayed_csum(m, ifp, sw_csum, plen, optlen, false);
-	if (error != 0)
-		goto bad;
+	ip6_output_delayed_csum(m, ifp, sw_csum, plen, optlen);
 	/* XXX-BZ m->m_pkthdr.csum_flags &= ~ifp->if_hwassist; */
 	tlen = m->m_pkthdr.len;
 
@@ -1217,10 +1219,8 @@ passout:
 		 * fragmented packets, then do it here.
 		 * XXX-BZ handle the hw offloading case.  Need flags.
 		 */
-		error = ip6_output_delayed_csum(m, ifp, m->m_pkthdr.csum_flags,
-		    plen, optlen, true);
-		if (error != 0)
-			goto bad;
+		ip6_output_delayed_csum(m, ifp, m->m_pkthdr.csum_flags, plen,
+		    optlen);
 
 		/*
 		 * Change the next header field of the last header in the
@@ -2496,6 +2496,7 @@ ip6_pcbopts(struct ip6_pktopts **pktopt, struct mbuf *m,
 	struct ip6_pktopts *opt = *pktopt;
 	int error = 0;
 	struct thread *td = sopt->sopt_td;
+	struct epoch_tracker et;
 
 	/* turn off any old options. */
 	if (opt) {
@@ -2523,12 +2524,15 @@ ip6_pcbopts(struct ip6_pktopts **pktopt, struct mbuf *m,
 	}
 
 	/*  set options specified by user. */
+	NET_EPOCH_ENTER(et);
 	if ((error = ip6_setpktopts(m, opt, NULL, (td != NULL) ?
 	    td->td_ucred : NULL, so->so_proto->pr_protocol)) != 0) {
 		ip6_clearpktopts(opt, -1); /* XXX: discard all options */
 		free(opt, M_IP6OPT);
+		NET_EPOCH_EXIT(et);
 		return (error);
 	}
+	NET_EPOCH_EXIT(et);
 	*pktopt = opt;
 	return (0);
 }
@@ -2580,7 +2584,7 @@ ip6_pcbopt(int optname, u_char *buf, int len, struct ip6_pktopts **pktopt,
 		pktopt = inp->in6p_outputopts;					\
 		if (pktopt && pktopt->field) {					\
 			optdatalen = min(lenexpr, sopt->sopt_valsize);		\
-			bcopy(&pktopt->field, optdata, optdatalen);		\
+			bcopy(pktopt->field, optdata, optdatalen);		\
 		} else {							\
 			free(optdata, M_TEMP);					\
 			optdata = NULL;						\
@@ -2823,6 +2827,12 @@ ip6_setpktopts(struct mbuf *control, struct ip6_pktopts *opt,
 
 	if (control == NULL || opt == NULL)
 		return (EINVAL);
+
+	/*
+	 * ip6_setpktopt can call ifnet_by_index(), so it's imperative that we are
+	 * in the net epoch here.
+	 */
+	NET_EPOCH_ASSERT();
 
 	ip6_initpktopts(opt);
 	if (stickyopt) {

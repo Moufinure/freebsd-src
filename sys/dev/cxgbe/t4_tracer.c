@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2013 Chelsio Communications, Inc.
  * All rights reserved.
@@ -231,7 +231,7 @@ t4_cloner_destroy(struct if_clone *ifc, struct ifnet *ifp)
 }
 
 void
-t4_tracer_modload()
+t4_tracer_modload(void)
 {
 
 	sx_init(&t4_trace_lock, "T4/T5 tracer lock");
@@ -240,7 +240,7 @@ t4_tracer_modload()
 }
 
 void
-t4_tracer_modunload()
+t4_tracer_modunload(void)
 {
 
 	if (t4_cloner != NULL) {
@@ -288,6 +288,11 @@ t4_get_tracer(struct adapter *sc, struct t4_tracer *t)
 	    "t4gett");
 	if (rc)
 		return (rc);
+
+	if (hw_off_limits(sc)) {
+		rc = ENXIO;
+		goto done;
+	}
 
 	for (i = t->idx; i < NTRACE; i++) {
 		if (isset(&sc->tracer_valid, t->idx)) {
@@ -337,6 +342,11 @@ t4_set_tracer(struct adapter *sc, struct t4_tracer *t)
 	    "t4sett");
 	if (rc)
 		return (rc);
+
+	if (hw_off_limits(sc)) {
+		rc = ENXIO;
+		goto done;
+	}
 
 	/*
 	 * If no tracing filter is specified this time then check if the filter

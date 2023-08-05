@@ -284,11 +284,11 @@ struct mincore_args {
 	char vec_l_[PADL_(char *)]; char * vec; char vec_r_[PADR_(char *)];
 };
 struct getgroups_args {
-	char gidsetsize_l_[PADL_(u_int)]; u_int gidsetsize; char gidsetsize_r_[PADR_(u_int)];
+	char gidsetsize_l_[PADL_(int)]; int gidsetsize; char gidsetsize_r_[PADR_(int)];
 	char gidset_l_[PADL_(gid_t *)]; gid_t * gidset; char gidset_r_[PADR_(gid_t *)];
 };
 struct setgroups_args {
-	char gidsetsize_l_[PADL_(u_int)]; u_int gidsetsize; char gidsetsize_r_[PADR_(u_int)];
+	char gidsetsize_l_[PADL_(int)]; int gidsetsize; char gidsetsize_r_[PADR_(int)];
 	char gidset_l_[PADL_(gid_t *)]; gid_t * gidset; char gidset_r_[PADR_(gid_t *)];
 };
 struct getpgrp_args {
@@ -1138,7 +1138,7 @@ struct swapcontext_args {
 	char oucp_l_[PADL_(struct __ucontext *)]; struct __ucontext * oucp; char oucp_r_[PADR_(struct __ucontext *)];
 	char ucp_l_[PADL_(const struct __ucontext *)]; const struct __ucontext * ucp; char ucp_r_[PADR_(const struct __ucontext *)];
 };
-struct swapoff_args {
+struct freebsd13_swapoff_args {
 	char name_l_[PADL_(const char *)]; const char * name; char name_r_[PADR_(const char *)];
 };
 struct __acl_get_link_args {
@@ -1847,6 +1847,16 @@ struct aio_writev_args {
 struct aio_readv_args {
 	char aiocbp_l_[PADL_(struct aiocb *)]; struct aiocb * aiocbp; char aiocbp_r_[PADR_(struct aiocb *)];
 };
+struct sched_getcpu_args {
+	register_t dummy;
+};
+struct swapoff_args {
+	char name_l_[PADL_(const char *)]; const char * name; char name_r_[PADR_(const char *)];
+	char flags_l_[PADL_(u_int)]; u_int flags; char flags_r_[PADR_(u_int)];
+};
+struct kqueuex_args {
+	char flags_l_[PADL_(u_int)]; u_int flags; char flags_r_[PADR_(u_int)];
+};
 int	nosys(struct thread *, struct nosys_args *);
 void	sys_sys_exit(struct thread *, struct sys_exit_args *);
 int	sys_fork(struct thread *, struct fork_args *);
@@ -2100,7 +2110,7 @@ int	sys_sigreturn(struct thread *, struct sigreturn_args *);
 int	sys_getcontext(struct thread *, struct getcontext_args *);
 int	sys_setcontext(struct thread *, struct setcontext_args *);
 int	sys_swapcontext(struct thread *, struct swapcontext_args *);
-int	sys_swapoff(struct thread *, struct swapoff_args *);
+int	freebsd13_swapoff(struct thread *, struct freebsd13_swapoff_args *);
 int	sys___acl_get_link(struct thread *, struct __acl_get_link_args *);
 int	sys___acl_set_link(struct thread *, struct __acl_set_link_args *);
 int	sys___acl_delete_link(struct thread *, struct __acl_delete_link_args *);
@@ -2241,6 +2251,9 @@ int	sys_rpctls_syscall(struct thread *, struct rpctls_syscall_args *);
 int	sys___specialfd(struct thread *, struct __specialfd_args *);
 int	sys_aio_writev(struct thread *, struct aio_writev_args *);
 int	sys_aio_readv(struct thread *, struct aio_readv_args *);
+int	sys_sched_getcpu(struct thread *, struct sched_getcpu_args *);
+int	sys_swapoff(struct thread *, struct swapoff_args *);
+int	sys_kqueuex(struct thread *, struct kqueuex_args *);
 
 #ifdef COMPAT_43
 
@@ -2573,7 +2586,15 @@ int	freebsd7_shmctl(struct thread *, struct freebsd7_shmctl_args *);
 
 #ifdef COMPAT_FREEBSD10
 
+struct freebsd10__umtx_lock_args {
+	char umtx_l_[PADL_(struct umtx *)]; struct umtx * umtx; char umtx_r_[PADR_(struct umtx *)];
+};
+struct freebsd10__umtx_unlock_args {
+	char umtx_l_[PADL_(struct umtx *)]; struct umtx * umtx; char umtx_r_[PADR_(struct umtx *)];
+};
 int	freebsd10_pipe(struct thread *, struct freebsd10_pipe_args *);
+int	freebsd10__umtx_lock(struct thread *, struct freebsd10__umtx_lock_args *);
+int	freebsd10__umtx_unlock(struct thread *, struct freebsd10__umtx_unlock_args *);
 
 #endif /* COMPAT_FREEBSD10 */
 
@@ -3030,7 +3051,7 @@ int	freebsd12_closefrom(struct thread *, struct freebsd12_closefrom_args *);
 #define	SYS_AUE_getcontext	AUE_NULL
 #define	SYS_AUE_setcontext	AUE_NULL
 #define	SYS_AUE_swapcontext	AUE_NULL
-#define	SYS_AUE_swapoff	AUE_SWAPOFF
+#define	SYS_AUE_freebsd13_swapoff	AUE_SWAPOFF
 #define	SYS_AUE___acl_get_link	AUE_ACL_GET_LINK
 #define	SYS_AUE___acl_set_link	AUE_ACL_SET_LINK
 #define	SYS_AUE___acl_delete_link	AUE_ACL_DELETE_LINK
@@ -3040,6 +3061,8 @@ int	freebsd12_closefrom(struct thread *, struct freebsd12_closefrom_args *);
 #define	SYS_AUE_thr_exit	AUE_THR_EXIT
 #define	SYS_AUE_thr_self	AUE_NULL
 #define	SYS_AUE_thr_kill	AUE_THR_KILL
+#define	SYS_AUE_freebsd10__umtx_lock	AUE_NULL
+#define	SYS_AUE_freebsd10__umtx_unlock	AUE_NULL
 #define	SYS_AUE_jail_attach	AUE_JAIL_ATTACH
 #define	SYS_AUE_extattr_list_fd	AUE_EXTATTR_LIST_FD
 #define	SYS_AUE_extattr_list_file	AUE_EXTATTR_LIST_FILE
@@ -3175,6 +3198,9 @@ int	freebsd12_closefrom(struct thread *, struct freebsd12_closefrom_args *);
 #define	SYS_AUE___specialfd	AUE_SPECIALFD
 #define	SYS_AUE_aio_writev	AUE_AIO_WRITEV
 #define	SYS_AUE_aio_readv	AUE_AIO_READV
+#define	SYS_AUE_sched_getcpu	AUE_NULL
+#define	SYS_AUE_swapoff	AUE_SWAPOFF
+#define	SYS_AUE_kqueuex	AUE_KQUEUE
 
 #undef PAD_
 #undef PADL_

@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (C) 2007-2008 Semihalf, Rafal Jaworowski
  * Copyright (C) 2006-2007 Semihalf, Piotr Kruszynski
@@ -361,7 +361,7 @@ tsec_mii_wait(struct tsec_softc *sc, uint32_t flags)
 	int timeout;
 
 	/*
-	 * The status indicators are not set immediatly after a command.
+	 * The status indicators are not set immediately after a command.
 	 * Discard the first value.
 	 */
 	TSEC_PHY_READ(sc, TSEC_REG_MIIMIND);

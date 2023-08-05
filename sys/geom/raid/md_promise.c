@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2011 Alexander Motin <mav@FreeBSD.org>
  * Copyright (c) 2000 - 2008 Søren Schmidt <sos@FreeBSD.org>
@@ -344,6 +344,8 @@ promise_meta_read(struct g_consumer *cp, struct promise_raid_conf **metaarr)
 	pp = cp->provider;
 	subdisks = 0;
 
+	if (pp->sectorsize * 4 < sizeof(*meta))
+		return (subdisks);
 	if (pp->sectorsize * 4 > maxphys) {
 		G_RAID_DEBUG(1, "%s: Blocksize is too big.", pp->name);
 		return (subdisks);

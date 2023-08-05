@@ -40,7 +40,7 @@
 .\" ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS
 .\" SOFTWARE.
 .\"
-.Dd October 12, 2020
+.Dd September 22, 2022
 .Dt DEVD.CONF 5
 .Os
 .Sh NAME
@@ -177,8 +177,6 @@ For network devices,
 will match devices that have the given media type.
 Valid media types are:
 .Dq Li Ethernet ,
-.Dq Li Tokenring ,
-.Dq Li FDDI ,
 .Dq Li 802.11 ,
 and
 .Dq Li ATM .
@@ -547,7 +545,7 @@ device has detected the lid openinging.
 .It Li PMU Ta Li POWER Ta ACLINE Ta
 The
 .Xr pmc 4
-device has deteted an AC line state ($notify=0x00 is offline, 0x01 is online).
+device has detected an AC line state ($notify=0x00 is offline, 0x01 is online).
 .It Li PMU Ta Li USB Ta overvoltage Ta
 An over-voltage condition on the power lines for the USB power pins.
 .It Li PMU Ta Li USB Ta plugged Ta
@@ -594,6 +592,15 @@ Notification of a filesystem is mounted for the first time.
 Notification of a filesystem is remounted (whether or not the options actually change).
 .It Li VFS Ta Li FS Ta Li UNMOUNT Ta
 Notification of a filesystem being unmounted.
+.El
+.Pp
+.Bl -column "System" "Subsystem" "1234567" -compact
+.Sy "System" Ta Sy "Subsystem" Ta Sy "Type" Ta Sy "Description"
+.It Li VT Ta BELL Ta RING Ta
+Notification that the console bell has rung.
+See
+.Xr vt 4
+for details.
 .El
 .Pp
 .Bl -column "System" "Subsystem" "1234567" -compact

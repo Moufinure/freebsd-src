@@ -289,6 +289,8 @@ rm_init_flags(struct rmlock *rm, const char *name, int opts)
 		liflags |= LO_RECURSABLE;
 	if (opts & RM_NEW)
 		liflags |= LO_NEW;
+	if (opts & RM_DUPOK)
+		liflags |= LO_DUPOK;
 	rm->rm_writecpus = all_cpus;
 	LIST_INIT(&rm->rm_activeReaders);
 	if (opts & RM_SLEEPABLE) {
@@ -447,17 +449,13 @@ _rm_rlock(struct rmlock *rm, struct rm_priotracker *tracker, int trylock)
 		THREAD_NO_SLEEPING();
 
 	td->td_critnest++;	/* critical_enter(); */
-
 	atomic_interrupt_fence();
 
-	pc = cpuid_to_pcpu[td->td_oncpu]; /* pcpu_find(td->td_oncpu); */
-
+	pc = cpuid_to_pcpu[td->td_oncpu];
 	rm_tracker_add(pc, tracker);
-
 	sched_pin();
 
 	atomic_interrupt_fence();
-
 	td->td_critnest--;
 
 	/*
@@ -515,8 +513,12 @@ _rm_runlock(struct rmlock *rm, struct rm_priotracker *tracker)
 		return;
 
 	td->td_critnest++;	/* critical_enter(); */
-	pc = cpuid_to_pcpu[td->td_oncpu]; /* pcpu_find(td->td_oncpu); */
+	atomic_interrupt_fence();
+
+	pc = cpuid_to_pcpu[td->td_oncpu];
 	rm_tracker_remove(pc, tracker);
+
+	atomic_interrupt_fence();
 	td->td_critnest--;
 	sched_unpin();
 
@@ -547,7 +549,7 @@ _rm_wlock(struct rmlock *rm)
 	if (CPU_CMP(&rm->rm_writecpus, &all_cpus)) {
 		/* Get all read tokens back */
 		readcpus = all_cpus;
-		CPU_ANDNOT(&readcpus, &rm->rm_writecpus);
+		CPU_ANDNOT(&readcpus, &readcpus, &rm->rm_writecpus);
 		rm->rm_writecpus = all_cpus;
 
 		/*
@@ -1015,6 +1017,7 @@ rms_rlock_fallback(struct rmslock *rms)
 	rms_int_readers_inc(rms, rms_int_pcpu(rms));
 	mtx_unlock(&rms->mtx);
 	critical_exit();
+	TD_LOCKS_INC(curthread);
 }
 
 void
@@ -1038,6 +1041,7 @@ rms_rlock(struct rmslock *rms)
 	atomic_interrupt_fence();
 	rms_int_influx_exit(rms, pcpu);
 	critical_exit();
+	TD_LOCKS_INC(curthread);
 }
 
 int
@@ -1061,6 +1065,7 @@ rms_try_rlock(struct rmslock *rms)
 	atomic_interrupt_fence();
 	rms_int_influx_exit(rms, pcpu);
 	critical_exit();
+	TD_LOCKS_INC(curthread);
 	return (1);
 }
 
@@ -1080,6 +1085,7 @@ rms_runlock_fallback(struct rmslock *rms)
 	if (rms->readers == 0)
 		wakeup_one(&rms->writers);
 	mtx_unlock(&rms->mtx);
+	TD_LOCKS_DEC(curthread);
 }
 
 void
@@ -1100,6 +1106,7 @@ rms_runlock(struct rmslock *rms)
 	atomic_interrupt_fence();
 	rms_int_influx_exit(rms, pcpu);
 	critical_exit();
+	TD_LOCKS_DEC(curthread);
 }
 
 struct rmslock_ipi {
@@ -1217,6 +1224,7 @@ out_grab:
 	rms_assert_no_pcpu_readers(rms);
 	mtx_unlock(&rms->mtx);
 	MPASS(rms->readers == 0);
+	TD_LOCKS_INC(curthread);
 }
 
 void
@@ -1237,6 +1245,7 @@ rms_wunlock(struct rmslock *rms)
 		rms->owner = RMS_NOOWNER;
 	}
 	mtx_unlock(&rms->mtx);
+	TD_LOCKS_DEC(curthread);
 }
 
 void

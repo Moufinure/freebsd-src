@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: (BSD-4-Clause AND BSD-2-Clause-FreeBSD)
+ * SPDX-License-Identifier: (BSD-4-Clause AND BSD-2-Clause)
  *
  * Copyright (c) 1996, 1997
  *      HD Associates, Inc.  All rights reserved.
@@ -226,6 +226,11 @@ SYSINIT(name, SI_SUB_LAST, SI_ORDER_MIDDLE, name ## _add_proc, NULL);
  * Fixup scheduler state for proc0 and thread0
  */
 void schedinit(void);
+
+/*
+ * Fixup scheduler state for secondary APs
+ */
+void schedinit_ap(void);
 #endif /* _KERNEL */
 
 /* POSIX 1003.1b Process Scheduling */

@@ -75,7 +75,11 @@ static const char rcsid[] =
 #include <string.h>
 #include <unistd.h>
 
+#include <libifconfig.h>
+
 #include "ifconfig.h"
+
+ifconfig_handle_t *lifh;
 
 /*
  * Since "struct ifreq" is composed of various union members, callers
@@ -112,7 +116,7 @@ static	void status(const struct afswtch *afp, const struct sockaddr_dl *sdl,
 static	void tunnel_status(int s);
 static _Noreturn void usage(void);
 
-static int getifflags(const char *ifname, int us);
+static int getifflags(const char *ifname, int us, bool err_ok);
 
 static struct afswtch *af_getbyname(const char *name);
 static struct afswtch *af_getbyfamily(int af);
@@ -203,7 +207,7 @@ ioctl_ifcreate(int s, struct ifreq *ifr)
 		case EEXIST:
 			errx(1, "interface %s already exists", ifr->ifr_name);
 		default:
-			err(1, "SIOCIFCREATE2");
+			err(1, "SIOCIFCREATE2 (%s)", ifr->ifr_name);
 		}
 	}
 }
@@ -419,6 +423,10 @@ main(int argc, char *argv[])
 	f_inet = f_inet6 = f_ether = f_addr = NULL;
 	matchgroup = nogroup = NULL;
 
+	lifh = ifconfig_open();
+	if (lifh == NULL)
+		err(EXIT_FAILURE, "ifconfig_open");
+
 	envformat = getenv("IFCONFIG_FORMAT");
 	if (envformat != NULL)
 		setformat(envformat);
@@ -595,7 +603,7 @@ main(int argc, char *argv[])
 		if (iflen >= sizeof(name)) {
 			warnx("%s: interface name too long, skipping", ifname);
 		} else {
-			flags = getifflags(name, -1);
+			flags = getifflags(name, -1, false);
 			if (!(((flags & IFF_CANTCONFIG) != 0) ||
 				(downonly && (flags & IFF_UP) != 0) ||
 				(uponly && (flags & IFF_UP) == 0)))
@@ -691,6 +699,7 @@ main(int argc, char *argv[])
 
 done:
 	freeformat();
+	ifconfig_close(lifh);
 	exit(exit_code);
 }
 
@@ -991,7 +1000,7 @@ top:
 	 * Do any post argument processing required by the address family.
 	 */
 	if (afp->af_postproc != NULL)
-		afp->af_postproc(s, afp);
+		afp->af_postproc(s, afp, newaddr, getifflags(name, s, true));
 	/*
 	 * Do deferred callbacks registered while processing
 	 * command-line arguments.
@@ -1170,7 +1179,7 @@ setifdstaddr(const char *addr, int param __unused, int s,
 }
 
 static int
-getifflags(const char *ifname, int us)
+getifflags(const char *ifname, int us, bool err_ok)
 {
 	struct ifreq my_ifr;
 	int s;
@@ -1183,8 +1192,10 @@ getifflags(const char *ifname, int us)
 	} else
 		s = us;
  	if (ioctl(s, SIOCGIFFLAGS, (caddr_t)&my_ifr) < 0) {
- 		Perror("ioctl (SIOCGIFFLAGS)");
- 		exit(1);
+		if (!err_ok) {
+			Perror("ioctl (SIOCGIFFLAGS)");
+			exit(1);
+		}
  	}
 	if (us < 0)
 		close(s);
@@ -1202,7 +1213,7 @@ setifflags(const char *vname, int value, int s, const struct afswtch *afp)
 	struct ifreq		my_ifr;
 	int flags;
 
-	flags = getifflags(name, s);
+	flags = getifflags(name, s, false);
 	if (value < 0) {
 		value = -value;
 		flags &= ~value;
@@ -1232,6 +1243,9 @@ setifcap(const char *vname, int value, int s, const struct afswtch *afp)
 	} else
 		flags |= value;
 	flags &= ifr.ifr_reqcap;
+	/* Check for no change in capabilities. */
+	if (ifr.ifr_curcap == flags)
+		return;
 	ifr.ifr_reqcap = flags;
 	if (ioctl(s, SIOCSIFCAP, (caddr_t)&ifr) < 0)
 		Perror(vname);
@@ -1506,7 +1520,7 @@ printb(const char *s, unsigned v, const char *bits)
 		bits++;
 		putchar('<');
 		while ((i = *bits++) != '\0') {
-			if (v & (1 << (i-1))) {
+			if (v & (1u << (i-1))) {
 				if (any)
 					putchar(',');
 				any = 1;
@@ -1552,11 +1566,13 @@ ifmaybeload(const char *name)
 
 	/* trim the interface number off the end */
 	strlcpy(ifname, name, sizeof(ifname));
-	for (dp = ifname; *dp != 0; dp++)
-		if (isdigit(*dp)) {
-			*dp = 0;
+	dp = ifname + strlen(ifname) - 1;
+	for (; dp > ifname; dp--) {
+		if (isdigit(*dp))
+			*dp = '\0';
+		else
 			break;
-		}
+	}
 
 	/* Either derive it from the map or guess otherwise */
 	*ifkind = '\0';

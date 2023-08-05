@@ -115,7 +115,7 @@
  * Similarly to ZIL blocks, the core part of each dnode_phys_t needs to be left
  * in plaintext for scrubbing and claiming, but the bonus buffers might contain
  * sensitive user data. The function zio_crypt_init_uios_dnode() handles parsing
- * which which pieces of the block need to be encrypted. For more details about
+ * which pieces of the block need to be encrypted. For more details about
  * dnode authentication and encryption, see zio_crypt_init_uios_dnode().
  *
  * OBJECT SET AUTHENTICATION:
@@ -1045,17 +1045,23 @@ zio_crypt_do_dnode_hmac_updates(crypto_context_t ctx, uint64_t version,
     boolean_t should_bswap, dnode_phys_t *dnp)
 {
 	int ret, i;
-	dnode_phys_t *adnp;
+	dnode_phys_t *adnp, tmp_dncore;
+	size_t dn_core_size = offsetof(dnode_phys_t, dn_blkptr);
 	boolean_t le_bswap = (should_bswap == ZFS_HOST_BYTEORDER);
 	crypto_data_t cd;
-	uint8_t tmp_dncore[offsetof(dnode_phys_t, dn_blkptr)];
 
 	cd.cd_format = CRYPTO_DATA_RAW;
 	cd.cd_offset = 0;
 
-	/* authenticate the core dnode (masking out non-portable bits) */
-	bcopy(dnp, tmp_dncore, sizeof (tmp_dncore));
-	adnp = (dnode_phys_t *)tmp_dncore;
+	/*
+	 * Authenticate the core dnode (masking out non-portable bits).
+	 * We only copy the first 64 bytes we operate on to avoid the overhead
+	 * of copying 512-64 unneeded bytes. The compiler seems to be fine
+	 * with that.
+	 */
+	bcopy(dnp, &tmp_dncore, dn_core_size);
+	adnp = &tmp_dncore;
+
 	if (le_bswap) {
 		adnp->dn_datablkszsec = BSWAP_16(adnp->dn_datablkszsec);
 		adnp->dn_bonuslen = BSWAP_16(adnp->dn_bonuslen);
@@ -1065,7 +1071,7 @@ zio_crypt_do_dnode_hmac_updates(crypto_context_t ctx, uint64_t version,
 	adnp->dn_flags &= DNODE_CRYPT_PORTABLE_FLAGS_MASK;
 	adnp->dn_used = 0;
 
-	cd.cd_length = sizeof (tmp_dncore);
+	cd.cd_length = dn_core_size;
 	cd.cd_raw.iov_base = (char *)adnp;
 	cd.cd_raw.iov_len = cd.cd_length;
 
@@ -1199,29 +1205,31 @@ zio_crypt_do_objset_hmacs(zio_crypt_key_t *key, void *data, uint_t datalen,
 
 	/*
 	 * This is necessary here as we check next whether
-	 * OBJSET_FLAG_USERACCOUNTING_COMPLETE or
-	 * OBJSET_FLAG_USEROBJACCOUNTING are set in order to
-	 * decide if the local_mac should be zeroed out.
+	 * OBJSET_FLAG_USERACCOUNTING_COMPLETE is set in order to
+	 * decide if the local_mac should be zeroed out. That flag will always
+	 * be set by dmu_objset_id_quota_upgrade_cb() and
+	 * dmu_objset_userspace_upgrade_cb() if useraccounting has been
+	 * completed.
 	 */
 	intval = osp->os_flags;
 	if (should_bswap)
 		intval = BSWAP_64(intval);
+	boolean_t uacct_incomplete =
+	    !(intval & OBJSET_FLAG_USERACCOUNTING_COMPLETE);
 
 	/*
 	 * The local MAC protects the user, group and project accounting.
 	 * If these objects are not present, the local MAC is zeroed out.
 	 */
-	if ((datalen >= OBJSET_PHYS_SIZE_V3 &&
+	if (uacct_incomplete ||
+	    (datalen >= OBJSET_PHYS_SIZE_V3 &&
 	    osp->os_userused_dnode.dn_type == DMU_OT_NONE &&
 	    osp->os_groupused_dnode.dn_type == DMU_OT_NONE &&
 	    osp->os_projectused_dnode.dn_type == DMU_OT_NONE) ||
 	    (datalen >= OBJSET_PHYS_SIZE_V2 &&
 	    osp->os_userused_dnode.dn_type == DMU_OT_NONE &&
 	    osp->os_groupused_dnode.dn_type == DMU_OT_NONE) ||
-	    (datalen <= OBJSET_PHYS_SIZE_V1) ||
-	    (((intval & OBJSET_FLAG_USERACCOUNTING_COMPLETE) == 0 ||
-	    (intval & OBJSET_FLAG_USEROBJACCOUNTING_COMPLETE) == 0) &&
-	    key->zk_version > 0)) {
+	    (datalen <= OBJSET_PHYS_SIZE_V1)) {
 		bzero(local_mac, ZIO_OBJSET_MAC_LEN);
 		return (0);
 	}
@@ -1412,6 +1420,7 @@ zio_crypt_init_uios_zil(boolean_t encrypt, uint8_t *plainbuf,
 		nr_src = 1;
 		nr_dst = 0;
 	}
+	bzero(dst, datalen);
 
 	/* find the start and end record of the log block */
 	zilc = (zil_chain_t *)src;
@@ -1767,6 +1776,7 @@ zio_crypt_init_uios_normal(boolean_t encrypt, uint8_t *plainbuf,
     uint8_t *cipherbuf, uint_t datalen, zfs_uio_t *puio, zfs_uio_t *cuio,
     uint_t *enc_len)
 {
+	(void) encrypt;
 	int ret;
 	uint_t nr_plain = 1, nr_cipher = 2;
 	iovec_t *plain_iovecs = NULL, *cipher_iovecs = NULL;
@@ -1890,6 +1900,9 @@ zio_do_crypt_data(boolean_t encrypt, zio_crypt_key_t *key,
 	crypto_ctx_template_t tmpl;
 	uint8_t *authbuf = NULL;
 
+	memset(&puio, 0, sizeof (puio));
+	memset(&cuio, 0, sizeof (cuio));
+
 	/*
 	 * If the needed key is the current one, just use it. Otherwise we
 	 * need to generate a temporary one from the given salt + master key.
@@ -1927,7 +1940,7 @@ zio_do_crypt_data(boolean_t encrypt, zio_crypt_key_t *key,
 	 */
 	if (qat_crypt_use_accel(datalen) &&
 	    ot != DMU_OT_INTENT_LOG && ot != DMU_OT_DNODE) {
-		uint8_t *srcbuf, *dstbuf;
+		uint8_t __attribute__((unused)) *srcbuf, *dstbuf;
 
 		if (encrypt) {
 			srcbuf = plainbuf;
@@ -1949,9 +1962,6 @@ zio_do_crypt_data(boolean_t encrypt, zio_crypt_key_t *key,
 		}
 		/* If the hardware implementation fails fall back to software */
 	}
-
-	bzero(&puio, sizeof (zfs_uio_t));
-	bzero(&cuio, sizeof (zfs_uio_t));
 
 	/* create uios for encryption */
 	ret = zio_crypt_init_uios(encrypt, key->zk_version, ot, plainbuf,

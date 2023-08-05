@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2009-2013, 2016 Chelsio, Inc. All rights reserved.
  *
@@ -73,8 +73,6 @@ struct cpl_set_tcb_rpl;
 #include "iw_cxgbe.h"
 #include <linux/module.h>
 #include <linux/workqueue.h>
-#include <linux/notifier.h>
-#include <linux/inetdevice.h>
 #include <linux/if_vlan.h>
 #include <net/netevent.h>
 #include <rdma/rdma_cm.h>
@@ -236,8 +234,8 @@ struct listen_port_info {
  *   |listen_port_list  |
  *   |------------------|
  *            |
- *            |              |-----------|       |-----------|  
- *            |              | port_num:X|       | port_num:X|  
+ *            |              |-----------|       |-----------|
+ *            |              | port_num:X|       | port_num:X|
  *            |--------------|-list------|-------|-list------|-------....
  *                           | lep_list----|     | lep_list----|
  *                           | refcnt    | |     | refcnt    | |
@@ -247,13 +245,13 @@ struct listen_port_info {
  *                                         |                   |
  *                                         |                   |
  *                                         |                   |
- *                                         |                   |         lep1                  lep2         
+ *                                         |                   |         lep1                  lep2
  *                                         |                   |    |----------------|    |----------------|
  *                                         |                   |----| listen_ep_list |----| listen_ep_list |
  *                                         |                        |----------------|    |----------------|
  *                                         |
  *                                         |
- *                                         |        lep1                  lep2         
+ *                                         |        lep1                  lep2
  *                                         |   |----------------|    |----------------|
  *                                         |---| listen_ep_list |----| listen_ep_list |
  *                                             |----------------|    |----------------|
@@ -262,7 +260,7 @@ struct listen_port_info {
  * each TCP port number.
  *
  * Here 'lep1' is always marked as Master lep, because solisten() is always
- * called through first lep. 
+ * called through first lep.
  *
  */
 static struct listen_port_info *
@@ -940,8 +938,7 @@ static inline int c4iw_zero_addr(struct sockaddr *addr)
 	struct in6_addr *ip6;
 
 	if (addr->sa_family == AF_INET)
-		return IN_ZERONET(
-			ntohl(((struct sockaddr_in *)addr)->sin_addr.s_addr));
+		return (((struct sockaddr_in *)addr)->sin_addr.s_addr == 0);
 	else {
 		ip6 = &((struct sockaddr_in6 *) addr)->sin6_addr;
 		return (ip6->s6_addr32[0] | ip6->s6_addr32[1] |
@@ -1031,7 +1028,7 @@ process_newconn(struct c4iw_listen_ep *master_lep, struct socket *new_so)
 
 	/* MPA request might have been queued up on the socket already, so we
 	 * initialize the socket/upcall_handler under lock to prevent processing
-	 * MPA request on another thread(via process_req()) simultaniously.
+	 * MPA request on another thread(via process_req()) simultaneously.
 	 */
 	c4iw_get_ep(&new_ep->com); /* Dereferenced at the end below, this is to
 				      avoid freeing of ep before ep unlock. */
@@ -1120,7 +1117,7 @@ process_socket_event(struct c4iw_ep *ep)
 
 	if (ep->com.state == DEAD) {
 		CTR3(KTR_IW_CXGBE, "%s: Pending socket event discarded "
-			"ep %p ep_state %s", __func__, ep, states[state]); 
+		    "ep %p ep_state %s", __func__, ep, states[state]);
 		return;
 	}
 
@@ -1324,10 +1321,14 @@ alloc_ep(int size, gfp_t gfp)
 void _c4iw_free_ep(struct kref *kref)
 {
 	struct c4iw_ep *ep;
+#if defined(KTR) || defined(INVARIANTS)
 	struct c4iw_ep_common *epc;
+#endif
 
 	ep = container_of(kref, struct c4iw_ep, com.kref);
+#if defined(KTR) || defined(INVARIANTS)
 	epc = &ep->com;
+#endif
 	KASSERT(!epc->entry.tqe_prev, ("%s epc %p still on req list",
 	    __func__, epc));
 	if (test_bit(QP_REFERENCED, &ep->com.flags))
@@ -2354,7 +2355,9 @@ err_out:
  */
 int c4iw_reject_cr(struct iw_cm_id *cm_id, const void *pdata, u8 pdata_len)
 {
+#ifdef KTR
 	int err;
+#endif
 	struct c4iw_ep *ep = to_ep(cm_id);
 	int abort = 0;
 
@@ -2382,7 +2385,11 @@ int c4iw_reject_cr(struct iw_cm_id *cm_id, const void *pdata, u8 pdata_len)
 		abort = send_mpa_reject(ep, pdata, pdata_len);
 	}
 	STOP_EP_TIMER(ep);
+#ifdef KTR
 	err = c4iw_ep_disconnect(ep, abort != 0, GFP_KERNEL);
+#else
+	c4iw_ep_disconnect(ep, abort != 0, GFP_KERNEL);
+#endif
 	mutex_unlock(&ep->com.mutex);
 	c4iw_put_ep(&ep->com);
 	CTR3(KTR_IW_CXGBE, "%s:crc4 %p, err: %d", __func__, ep, err);
@@ -2730,7 +2737,7 @@ c4iw_create_listen(struct iw_cm_id *cm_id, int backlog)
 	if (c4iw_any_addr((struct sockaddr *)&lep->com.local_addr)) {
 		port_info = add_ep_to_listenlist(lep);
 		/* skip solisten() if refcnt > 1, as the listeners were
-		 * alredy created by 'Master lep'
+		 * already created by 'Master lep'
 		 */
 		if (port_info->refcnt > 1) {
 			/* As there will be only one listener socket for a TCP

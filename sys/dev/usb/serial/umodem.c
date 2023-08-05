@@ -4,7 +4,7 @@
 __FBSDID("$FreeBSD$");
 
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD AND BSD-2-Clause-NetBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2003 M. Warner Losh <imp@FreeBSD.org>
  *
@@ -146,6 +146,8 @@ static const STRUCT_USB_HOST_ID umodem_host_devs[] = {
 	{USB_VENDOR(USB_VENDOR_HUAWEI),USB_IFACE_CLASS(UICLASS_CDC),
 		USB_IFACE_SUBCLASS(UISUBCLASS_ABSTRACT_CONTROL_MODEL),
 		USB_IFACE_PROTOCOL(0xFF)},
+	{USB_VENDOR(USB_VENDOR_HUAWEI), USB_IFACE_CLASS(0xFF),
+		USB_IFACE_SUBCLASS(0xF), USB_IFACE_PROTOCOL(0xFF)},
 	/* Kyocera AH-K3001V */
 	{USB_VPI(USB_VENDOR_KYOCERA, USB_PRODUCT_KYOCERA_AHK3001V, 1)},
 	{USB_VPI(USB_VENDOR_SIERRA, USB_PRODUCT_SIERRA_MC5720, 1)},
@@ -216,6 +218,7 @@ static void	umodem_cfg_get_status(struct ucom_softc *, uint8_t *,
 		    uint8_t *);
 static int	umodem_pre_param(struct ucom_softc *, struct termios *);
 static void	umodem_cfg_param(struct ucom_softc *, struct termios *);
+static void	umodem_cfg_open(struct ucom_softc *);
 static int	umodem_ioctl(struct ucom_softc *, uint32_t, caddr_t, int,
 		    struct thread *);
 static void	umodem_cfg_set_dtr(struct ucom_softc *, uint8_t);
@@ -281,6 +284,7 @@ static const struct ucom_callback umodem_callback = {
 	.ucom_cfg_set_break = &umodem_cfg_set_break,
 	.ucom_cfg_param = &umodem_cfg_param,
 	.ucom_pre_param = &umodem_pre_param,
+	.ucom_cfg_open = &umodem_cfg_open,
 	.ucom_ioctl = &umodem_ioctl,
 	.ucom_start_read = &umodem_start_read,
 	.ucom_stop_read = &umodem_stop_read,
@@ -357,7 +361,9 @@ umodem_attach(device_t dev)
 
 	/* get the data interface number */
 
-	cmd = umodem_get_desc(uaa, UDESC_CS_INTERFACE, UDESCSUB_CDC_CM);
+	cmd = NULL;
+	if (!usb_test_quirk(uaa, UQ_IGNORE_CDC_CM))
+		cmd = umodem_get_desc(uaa, UDESC_CS_INTERFACE, UDESCSUB_CDC_CM);
 
 	if ((cmd == NULL) || (cmd->bLength < sizeof(*cmd))) {
 		cud = usbd_find_descriptor(uaa->device, NULL,
@@ -445,14 +451,6 @@ umodem_attach(device_t dev)
 	if (error) {
 		device_printf(dev, "Can't setup transfer\n");
 		goto detach;
-	}
-
-	/* clear stall at first run, if USB host mode */
-	if (uaa->usb_mode == USB_MODE_HOST) {
-		mtx_lock(&sc->sc_mtx);
-		usbd_xfer_set_stall(sc->sc_xfer[UMODEM_BULK_WR]);
-		usbd_xfer_set_stall(sc->sc_xfer[UMODEM_BULK_RD]);
-		mtx_unlock(&sc->sc_mtx);
 	}
 
 	ucom_set_usb_mode(&sc->sc_super_ucom, uaa->usb_mode);
@@ -631,6 +629,18 @@ umodem_cfg_param(struct ucom_softc *ucom, struct termios *t)
 
 	ucom_cfg_do_request(sc->sc_udev, &sc->sc_ucom, 
 	    &req, &ls, 0, 1000);
+}
+
+static void	
+umodem_cfg_open(struct ucom_softc *ucom)
+{
+	struct umodem_softc *sc = ucom->sc_parent;
+
+	/* clear stall, if in USB host mode */
+	if ((sc->sc_super_ucom.sc_flag & UCOM_FLAG_DEVICE_MODE) == 0) {
+		usbd_xfer_set_stall(sc->sc_xfer[UMODEM_BULK_WR]);
+		usbd_xfer_set_stall(sc->sc_xfer[UMODEM_BULK_RD]);
+	}
 }
 
 static int

@@ -1,7 +1,7 @@
 /*	$NetBSD: tmpfs.h,v 1.26 2007/02/22 06:37:00 thorpej Exp $	*/
 
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-NetBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2005, 2006 The NetBSD Foundation, Inc.
  * All rights reserved.
@@ -44,6 +44,9 @@
 #ifdef	_SYS_MALLOC_H_
 MALLOC_DECLARE(M_TMPFSNAME);
 #endif
+
+#define	OBJ_TMPFS	OBJ_PAGERPRIV1	/* has tmpfs vnode allocated */
+#define	OBJ_TMPFS_VREF	OBJ_PAGERPRIV2	/* vnode is referenced */
 
 /*
  * Internal representation of a tmpfs directory entry.
@@ -145,6 +148,7 @@ RB_HEAD(tmpfs_dir, tmpfs_dirent);
  * (i)  tn_interlock
  * (m)  tmpfs_mount tm_allnode_lock
  * (c)  stable after creation
+ * (v)  tn_reg.tn_aobj vm_object lock
  */
 struct tmpfs_node {
 	/*
@@ -296,6 +300,7 @@ struct tmpfs_node {
 			 */
 			vm_object_t		tn_aobj;	/* (c) */
 			struct tmpfs_mount	*tn_tmp;	/* (c) */
+			vm_pindex_t		tn_pages;	/* (v) */
 		} tn_reg;
 	} tn_spec;	/* (v) */
 };
@@ -485,7 +490,6 @@ tmpfs_update(struct vnode *vp)
  * Convenience macros to simplify some logical expressions.
  */
 #define IMPLIES(a, b) (!(a) || (b))
-#define IFF(a, b) (IMPLIES(a, b) && IMPLIES(b, a))
 
 /*
  * Checks that the directory entry pointed by 'de' matches the name 'name'
@@ -514,13 +518,46 @@ tmpfs_update(struct vnode *vp)
 
 size_t tmpfs_mem_avail(void);
 size_t tmpfs_pages_used(struct tmpfs_mount *tmp);
-void tmpfs_subr_init(void);
+int tmpfs_subr_init(void);
 void tmpfs_subr_uninit(void);
+
+extern int tmpfs_pager_type;
 
 /*
  * Macros/functions to convert from generic data structures to tmpfs
  * specific ones.
  */
+
+static inline struct vnode *
+VM_TO_TMPFS_VP(vm_object_t obj)
+{
+	struct tmpfs_node *node;
+
+	if ((obj->flags & OBJ_TMPFS) == 0)
+		return (NULL);
+
+	/*
+	 * swp_priv is the back-pointer to the tmpfs node, if any,
+	 * which uses the vm object as backing store.  The object
+	 * handle is not used to avoid locking sw_alloc_sx on tmpfs
+	 * node instantiation/destroy.
+	 */
+	node = obj->un_pager.swp.swp_priv;
+	return (node->tn_vnode);
+}
+
+static inline struct tmpfs_mount *
+VM_TO_TMPFS_MP(vm_object_t obj)
+{
+	struct tmpfs_node *node;
+
+	if ((obj->flags & OBJ_TMPFS) == 0)
+		return (NULL);
+
+	node = obj->un_pager.swp.swp_priv;
+	MPASS(node->tn_type == VREG);
+	return (node->tn_reg.tn_tmp);
+}
 
 static inline struct tmpfs_mount *
 VFS_TO_TMPFS(struct mount *mp)

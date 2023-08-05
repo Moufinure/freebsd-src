@@ -69,7 +69,9 @@ _ld_version!=	(${${ld}} -v 2>&1 || echo none) | sed -n 1p
 ${X_}LINKER_TYPE=	bfd
 ${X_}LINKER_FREEBSD_VERSION=	0
 _v=	${_ld_version:M[1-9]*.[0-9]*:[1]}
-.elif ${_ld_version:[1]} == "LLD"
+.elif ${_ld_version:MLLD}
+# Strip any leading PACKAGE_VENDOR string (e.g. "Homebrew")
+_ld_version:=${_ld_version:[*]:C/^.* LLD /LLD /:[@]}
 ${X_}LINKER_TYPE=	lld
 _v=	${_ld_version:[2]}
 .if ${_ld_version:[3]} == "(FreeBSD"
@@ -77,10 +79,10 @@ ${X_}LINKER_FREEBSD_VERSION:=	${_ld_version:[4]:C/.*-([^-]*)\)/\1/}
 .else
 ${X_}LINKER_FREEBSD_VERSION=	0
 .endif
-.elif ${_ld_version:[1]} == "@(\#)PROGRAM:ld"
+.elif ${_ld_version:[1]:S/-classic$//} == "@(\#)PROGRAM:ld"
 # bootstrap linker on MacOS
 ${X_}LINKER_TYPE=        mac
-_v=        ${_ld_version:[2]:S/PROJECT:ld64-//}
+_v=        ${_ld_version:[2]:C/PROJECT:(ld64|dyld)-//}
 # Convert version 409.12 to 409.12.0 so that the echo + awk below works
 .if empty(_v:M[1-9]*.[0-9]*.[0-9]*) && !empty(_v:M[1-9]*.[0-9]*)
 _v:=${_v}.0

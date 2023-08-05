@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2003 Sam Leffler, Errno Consulting
  * Copyright (c) 2003 Global Technology Associates, Inc.
@@ -1783,7 +1783,7 @@ safe_dmamap_aligned(const struct safe_operand *op)
  * fix that size at SAFE_MAX_DSIZE bytes.  This routine returns
  * 0 if some segment is not a multiple of of this size, 1 if all
  * segments are exactly this size, or 2 if segments are at worst
- * a multple of this size.
+ * a multiple of this size.
  */
 static int
 safe_dmamap_uniform(const struct safe_operand *op)

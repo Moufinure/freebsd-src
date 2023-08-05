@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2003-2012 Broadcom Corporation
  * All Rights Reserved
@@ -296,6 +296,7 @@ xlp_rsa_attach(device_t dev)
 	if (xlp_rsa_init(sc, node) != 0)
 		goto error_exit;
 	device_printf(dev, "RSA Initialization complete!\n");
+	gone_in_dev(dev, 14, "Asymmetric crypto");
 	return (0);
 
 error_exit:

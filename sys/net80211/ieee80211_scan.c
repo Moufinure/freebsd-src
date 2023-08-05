@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2002-2008 Sam Leffler, Errno Consulting
  * All rights reserved.
@@ -277,7 +277,8 @@ ieee80211_scan_update_locked(struct ieee80211vap *vap,
 	}
 }
 
-void
+#ifdef IEEE80211_DEBUG
+static void
 ieee80211_scan_dump_channels(const struct ieee80211_scan_state *ss)
 {
 	struct ieee80211com *ic = ss->ss_ic;
@@ -294,7 +295,6 @@ ieee80211_scan_dump_channels(const struct ieee80211_scan_state *ss)
 	}
 }
 
-#ifdef IEEE80211_DEBUG
 void
 ieee80211_scan_dump(struct ieee80211_scan_state *ss)
 {
@@ -607,7 +607,8 @@ ieee80211_scan_timeout(struct ieee80211com *ic)
  * Mark a scan cache entry after a successful associate.
  */
 void
-ieee80211_scan_assoc_success(struct ieee80211vap *vap, const uint8_t mac[])
+ieee80211_scan_assoc_success(struct ieee80211vap *vap,
+    const uint8_t mac[IEEE80211_ADDR_LEN])
 {
 	struct ieee80211_scan_state *ss = vap->iv_ic->ic_scan;
 
@@ -623,7 +624,7 @@ ieee80211_scan_assoc_success(struct ieee80211vap *vap, const uint8_t mac[])
  */
 void
 ieee80211_scan_assoc_fail(struct ieee80211vap *vap,
-	const uint8_t mac[], int reason)
+	const uint8_t mac[IEEE80211_ADDR_LEN], int reason)
 {
 	struct ieee80211_scan_state *ss = vap->iv_ic->ic_scan;
 

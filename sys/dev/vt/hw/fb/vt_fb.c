@@ -1,8 +1,7 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2013 The FreeBSD Foundation
- * All rights reserved.
  *
  * This software was developed by Aleksandr Rybalko under sponsorship from the
  * FreeBSD Foundation.
@@ -355,6 +354,9 @@ vt_fb_bitblt_text(struct vt_device *vd, const struct vt_window *vw,
 			    VTBUF_ISCURSOR(&vw->vw_buf, row, col), &fg, &bg);
 
 			z = row * PIXEL_WIDTH(VT_FB_MAX_WIDTH) + col;
+			if (z >= PIXEL_HEIGHT(VT_FB_MAX_HEIGHT) *
+			    PIXEL_WIDTH(VT_FB_MAX_WIDTH))
+				continue;
 			if (vd->vd_drawn && (vd->vd_drawn[z] == c) &&
 			    vd->vd_drawnfg && (vd->vd_drawnfg[z] == fg) &&
 			    vd->vd_drawnbg && (vd->vd_drawnbg[z] == bg))
@@ -405,6 +407,9 @@ vt_fb_invalidate_text(struct vt_device *vd, const term_rect_t *area)
 		for (col = area->tr_begin.tp_col; col < area->tr_end.tp_col;
 		    ++col) {
 			z = row * PIXEL_WIDTH(VT_FB_MAX_WIDTH) + col;
+			if (z >= PIXEL_HEIGHT(VT_FB_MAX_HEIGHT) *
+			    PIXEL_WIDTH(VT_FB_MAX_WIDTH))
+				continue;
 			if (vd->vd_drawn)
 				vd->vd_drawn[z] = 0;
 			if (vd->vd_drawnfg)
@@ -504,19 +509,21 @@ vt_fb_fini(struct vt_device *vd, void *softc)
 int
 vt_fb_attach(struct fb_info *info)
 {
+	int ret;
 
-	vt_allocate(&vt_fb_driver, info);
+	ret = vt_allocate(&vt_fb_driver, info);
 
-	return (0);
+	return (ret);
 }
 
 int
 vt_fb_detach(struct fb_info *info)
 {
+	int ret;
 
-	vt_deallocate(&vt_fb_driver, info);
+	ret = vt_deallocate(&vt_fb_driver, info);
 
-	return (0);
+	return (ret);
 }
 
 void

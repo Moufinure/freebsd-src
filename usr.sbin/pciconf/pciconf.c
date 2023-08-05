@@ -759,7 +759,7 @@ static struct
 	{PCIC_SATCOM,		PCIS_SATCOM_DATA,	"sat data"},
 	{PCIC_CRYPTO,		-1,			"encrypt/decrypt"},
 	{PCIC_CRYPTO,		PCIS_CRYPTO_NETCOMP,	"network/computer crypto"},
-	{PCIC_CRYPTO,		PCIS_CRYPTO_NETCOMP,	"entertainment crypto"},
+	{PCIC_CRYPTO,		PCIS_CRYPTO_ENTERTAIN,	"entertainment crypto"},
 	{PCIC_DASP,		-1,			"dasp"},
 	{PCIC_DASP,		PCIS_DASP_DPIO,		"DPIO module"},
 	{PCIC_DASP,		PCIS_DASP_PERFCNTRS,	"performance counters"},
@@ -1126,7 +1126,7 @@ dump_bar(const char *name, const char *reg, const char *bar_start,
 	if (*reg == '\0' || *el != '\0')
 		errx(1, "Invalid bar specification %s", reg);
 	pbm.pbm_flags = 0;
-	pbm.pbm_memattr = VM_MEMATTR_UNCACHEABLE; /* XXX */
+	pbm.pbm_memattr = VM_MEMATTR_DEVICE;
 
 	fd = open(_PATH_DEVPCI, O_RDWR, 0);
 	if (fd < 0)

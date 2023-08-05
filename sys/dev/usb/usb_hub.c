@@ -1,10 +1,10 @@
 /* $FreeBSD$ */
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-NetBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 1998 The NetBSD Foundation, Inc. All rights reserved.
  * Copyright (c) 1998 Lennart Augustsson. All rights reserved.
- * Copyright (c) 2008-2010 Hans Petter Selasky. All rights reserved.
+ * Copyright (c) 2008-2022 Hans Petter Selasky
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -513,7 +513,7 @@ uhub_explore_sub(struct uhub_softc *sc, struct usb_port *up)
 	usb_error_t err;
 
 	bus = sc->sc_udev->bus;
-	err = 0;
+	err = USB_ERR_NORMAL_COMPLETION;
 
 	/* get driver added refcount from USB bus */
 	refcount = bus->driver_added_refcount;
@@ -995,6 +995,7 @@ uhub_explore(struct usb_device *udev)
 	struct usb_hub *hub;
 	struct uhub_softc *sc;
 	struct usb_port *up;
+	usb_error_t retval;
 	usb_error_t err;
 	uint8_t portno;
 	uint8_t x;
@@ -1013,7 +1014,7 @@ uhub_explore(struct usb_device *udev)
 	if (udev->flags.self_suspended) {
 		/* need to wait until the child signals resume */
 		DPRINTF("Device is suspended!\n");
-		return (0);
+		return (USB_ERR_NORMAL_COMPLETION);
 	}
 
 	/*
@@ -1022,23 +1023,26 @@ uhub_explore(struct usb_device *udev)
 	 */
 	do_unlock = usbd_enum_lock(udev);
 
+	/*
+	 * Set default error code to avoid compiler warnings.
+	 * Note that hub->nports cannot be zero.
+	 */
+	retval = USB_ERR_NORMAL_COMPLETION;
+
 	for (x = 0; x != hub->nports; x++) {
 		up = hub->ports + x;
 		portno = x + 1;
 
 		err = uhub_read_port_status(sc, portno);
-		if (err) {
-			/* most likely the HUB is gone */
-			break;
-		}
+		if (err != USB_ERR_NORMAL_COMPLETION)
+			retval = err;
+
 		if (sc->sc_st.port_change & UPS_C_OVERCURRENT_INDICATOR) {
 			DPRINTF("Overcurrent on port %u.\n", portno);
 			err = usbd_req_clear_port_feature(
 			    udev, NULL, portno, UHF_C_PORT_OVER_CURRENT);
-			if (err) {
-				/* most likely the HUB is gone */
-				break;
-			}
+			if (err != USB_ERR_NORMAL_COMPLETION)
+				retval = err;
 		}
 		if (!(sc->sc_flags & UHUB_FLAG_DID_EXPLORE)) {
 			/*
@@ -1051,10 +1055,8 @@ uhub_explore(struct usb_device *udev)
 		if (sc->sc_st.port_change & UPS_C_PORT_ENABLED) {
 			err = usbd_req_clear_port_feature(
 			    udev, NULL, portno, UHF_C_PORT_ENABLE);
-			if (err) {
-				/* most likely the HUB is gone */
-				break;
-			}
+			if (err != USB_ERR_NORMAL_COMPLETION)
+				retval = err;
 			if (sc->sc_st.port_change & UPS_C_CONNECT_STATUS) {
 				/*
 				 * Ignore the port error if the device
@@ -1077,26 +1079,35 @@ uhub_explore(struct usb_device *udev)
 		}
 		if (sc->sc_st.port_change & UPS_C_CONNECT_STATUS) {
 			err = uhub_reattach_port(sc, portno);
-			if (err) {
-				/* most likely the HUB is gone */
-				break;
-			}
+			if (err != USB_ERR_NORMAL_COMPLETION)
+				retval = err;
 		}
 		if (sc->sc_st.port_change & (UPS_C_SUSPEND |
 		    UPS_C_PORT_LINK_STATE)) {
 			err = uhub_suspend_resume_port(sc, portno);
-			if (err) {
-				/* most likely the HUB is gone */
-				break;
-			}
+			if (err != USB_ERR_NORMAL_COMPLETION)
+				retval = err;
 		}
-		err = uhub_explore_sub(sc, up);
-		if (err) {
-			/* no device(s) present */
-			continue;
+		if (udev->speed == USB_SPEED_SUPER &&
+		    (sc->sc_st.port_change & UPS_C_BH_PORT_RESET) != 0) {
+			DPRINTF("Warm reset finished on port %u.\n", portno);
+			err = usbd_req_clear_port_feature(
+			    udev, NULL, portno, UHF_C_BH_PORT_RESET);
+			if (err != USB_ERR_NORMAL_COMPLETION)
+				retval = err;
 		}
-		/* explore succeeded - reset restart counter */
-		up->restartcnt = 0;
+		if (sc->sc_st.port_change & UPS_C_PORT_RESET) {
+			DPRINTF("Port reset finished on port %u.\n", portno);
+			err = usbd_req_clear_port_feature(
+			    udev, NULL, portno, UHF_C_PORT_RESET);
+			if (err != USB_ERR_NORMAL_COMPLETION)
+				retval = err;
+		}
+
+		if (uhub_explore_sub(sc, up) == USB_ERR_NORMAL_COMPLETION) {
+			/* explore succeeded - reset restart counter */
+			up->restartcnt = 0;
+		}
 	}
 
 	if (do_unlock)
@@ -1105,8 +1116,7 @@ uhub_explore(struct usb_device *udev)
 	/* initial status checked */
 	sc->sc_flags |= UHUB_FLAG_DID_EXPLORE;
 
-	/* return success */
-	return (USB_ERR_NORMAL_COMPLETION);
+	return (retval);
 }
 
 int
@@ -2666,18 +2676,15 @@ usb_dev_resume_peer(struct usb_device *udev)
 		/* resume current port (Valid in Host and Device Mode) */
 		err = usbd_req_clear_port_feature(udev->parent_hub,
 		    NULL, udev->port_no, UHF_PORT_SUSPEND);
-		if (err) {
-			DPRINTFN(0, "Resuming port failed\n");
-			return;
-		}
 	} else {
 		/* resume current port (Valid in Host and Device Mode) */
 		err = usbd_req_set_port_link_state(udev->parent_hub,
 		    NULL, udev->port_no, UPS_PORT_LS_U0);
-		if (err) {
-			DPRINTFN(0, "Resuming port failed\n");
-			return;
-		}
+	}
+
+	if (err != 0) {
+		DPRINTFN(0, "Resuming port failed: %s (ignored)\n",
+		    usbd_errstr(err));
 	}
 
 	/* resume settle time */

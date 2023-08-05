@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2019,2020 Jeffrey Roberson <jeff@FreeBSD.org>
  *
@@ -579,6 +579,7 @@ out:
 	 */
 	atomic_thread_fence_acq();
 
+	KASSERT(success || !wait, ("%s: blocking poll failed", __func__));
 	return (success);
 }
 

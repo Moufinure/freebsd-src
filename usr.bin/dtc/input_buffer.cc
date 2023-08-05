@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2013 David Chisnall
  * All rights reserved.
@@ -35,7 +35,6 @@
 #include "input_buffer.hh"
 #include <ctype.h>
 #include <errno.h>
-#include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -44,6 +43,7 @@
 #ifndef NDEBUG
 #include <iostream>
 #endif
+#include <limits>
 
 
 #include <sys/stat.h>

@@ -345,8 +345,9 @@ vdev_remove_initiate_sync(void *arg, dmu_tx_t *tx)
 	vdev_config_dirty(vd);
 
 	zfs_dbgmsg("starting removal thread for vdev %llu (%px) in txg %llu "
-	    "im_obj=%llu", vd->vdev_id, vd, dmu_tx_get_txg(tx),
-	    vic->vic_mapping_object);
+	    "im_obj=%llu", (u_longlong_t)vd->vdev_id, vd,
+	    (u_longlong_t)dmu_tx_get_txg(tx),
+	    (u_longlong_t)vic->vic_mapping_object);
 
 	spa_history_log_internal(spa, "vdev remove started", tx,
 	    "%s vdev %llu %s", spa_name(spa), (u_longlong_t)vd->vdev_id,
@@ -474,7 +475,8 @@ spa_restart_removal(spa_t *spa)
 	if (!spa_writeable(spa))
 		return;
 
-	zfs_dbgmsg("restarting removal of %llu", svr->svr_vdev_id);
+	zfs_dbgmsg("restarting removal of %llu",
+	    (u_longlong_t)svr->svr_vdev_id);
 	svr->svr_thread = thread_create(NULL, 0, spa_vdev_remove_thread, spa,
 	    0, &p0, TS_RUN, minclsyspri);
 }
@@ -1196,7 +1198,7 @@ vdev_remove_complete(spa_t *spa)
 	    ESC_ZFS_VDEV_REMOVE_DEV);
 
 	zfs_dbgmsg("finishing device removal for vdev %llu in txg %llu",
-	    vd->vdev_id, txg);
+	    (u_longlong_t)vd->vdev_id, (u_longlong_t)txg);
 
 	/*
 	 * Discard allocation state.
@@ -1205,7 +1207,6 @@ vdev_remove_complete(spa_t *spa)
 		vdev_metaslab_fini(vd);
 		metaslab_group_destroy(vd->vdev_mg);
 		vd->vdev_mg = NULL;
-		spa_log_sm_set_blocklimit(spa);
 	}
 	if (vd->vdev_log_mg != NULL) {
 		ASSERT0(vd->vdev_ms_count);
@@ -1490,8 +1491,9 @@ spa_vdev_remove_thread(void *arg)
 
 		vca.vca_msp = msp;
 		zfs_dbgmsg("copying %llu segments for metaslab %llu",
-		    zfs_btree_numnodes(&svr->svr_allocd_segs->rt_root),
-		    msp->ms_id);
+		    (u_longlong_t)zfs_btree_numnodes(
+		    &svr->svr_allocd_segs->rt_root),
+		    (u_longlong_t)msp->ms_id);
 
 		while (!svr->svr_thread_exit &&
 		    !range_tree_is_empty(svr->svr_allocd_segs)) {
@@ -1514,10 +1516,6 @@ spa_vdev_remove_thread(void *arg)
 			 * specified by zfs_removal_suspend_progress. We do this
 			 * solely from the test suite or during debugging.
 			 */
-			uint64_t bytes_copied =
-			    spa->spa_removing_phys.sr_copied;
-			for (int i = 0; i < TXG_SIZE; i++)
-				bytes_copied += svr->svr_bytes_done[i];
 			while (zfs_removal_suspend_progress &&
 			    !svr->svr_thread_exit)
 				delay(hz);
@@ -1592,8 +1590,8 @@ spa_vdev_remove_thread(void *arg)
 		    vca.vca_write_error_bytes > 0)) {
 			zfs_dbgmsg("canceling removal due to IO errors: "
 			    "[read_error_bytes=%llu] [write_error_bytes=%llu]",
-			    vca.vca_read_error_bytes,
-			    vca.vca_write_error_bytes);
+			    (u_longlong_t)vca.vca_read_error_bytes,
+			    (u_longlong_t)vca.vca_write_error_bytes);
 			spa_vdev_remove_cancel_impl(spa);
 		}
 	} else {
@@ -1620,10 +1618,10 @@ spa_vdev_remove_suspend(spa_t *spa)
 	mutex_exit(&svr->svr_lock);
 }
 
-/* ARGSUSED */
 static int
 spa_vdev_remove_cancel_check(void *arg, dmu_tx_t *tx)
 {
+	(void) arg;
 	spa_t *spa = dmu_tx_pool(tx)->dp_spa;
 
 	if (spa->spa_vdev_removal == NULL)
@@ -1635,10 +1633,10 @@ spa_vdev_remove_cancel_check(void *arg, dmu_tx_t *tx)
  * Cancel a removal by freeing all entries from the partial mapping
  * and marking the vdev as no longer being removing.
  */
-/* ARGSUSED */
 static void
 spa_vdev_remove_cancel_sync(void *arg, dmu_tx_t *tx)
 {
+	(void) arg;
 	spa_t *spa = dmu_tx_pool(tx)->dp_spa;
 	spa_vdev_removal_t *svr = spa->spa_vdev_removal;
 	vdev_t *vd = vdev_lookup_top(spa, svr->svr_vdev_id);
@@ -1765,7 +1763,7 @@ spa_vdev_remove_cancel_sync(void *arg, dmu_tx_t *tx)
 	vdev_config_dirty(vd);
 
 	zfs_dbgmsg("canceled device removal for vdev %llu in %llu",
-	    vd->vdev_id, dmu_tx_get_txg(tx));
+	    (u_longlong_t)vd->vdev_id, (u_longlong_t)dmu_tx_get_txg(tx));
 	spa_history_log_internal(spa, "vdev remove canceled", tx,
 	    "%s vdev %llu %s", spa_name(spa),
 	    (u_longlong_t)vd->vdev_id,
@@ -1936,7 +1934,6 @@ spa_vdev_remove_log(vdev_t *vd, uint64_t *txg)
 	 * metaslab_class_histogram_verify()
 	 */
 	vdev_metaslab_fini(vd);
-	spa_log_sm_set_blocklimit(spa);
 
 	spa_vdev_config_exit(spa, NULL, *txg, 0, FTAG);
 	*txg = spa_vdev_config_enter(spa);
@@ -2059,7 +2056,6 @@ spa_vdev_remove_top_check(vdev_t *vd)
 	 * and not be raidz or draid.
 	 */
 	vdev_t *rvd = spa->spa_root_vdev;
-	int num_indirect = 0;
 	for (uint64_t id = 0; id < rvd->vdev_children; id++) {
 		vdev_t *cvd = rvd->vdev_child[id];
 
@@ -2075,8 +2071,6 @@ spa_vdev_remove_top_check(vdev_t *vd)
 		if (cvd->vdev_ashift != 0 &&
 		    cvd->vdev_alloc_bias == VDEV_BIAS_NONE)
 			ASSERT3U(cvd->vdev_ashift, ==, spa->spa_max_ashift);
-		if (cvd->vdev_ops == &vdev_indirect_ops)
-			num_indirect++;
 		if (!vdev_is_concrete(cvd))
 			continue;
 		if (vdev_get_nparity(cvd) != 0)

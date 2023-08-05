@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 1998-2000 Doug Rabson
  * All rights reserved.
@@ -144,8 +144,12 @@ static int	link_elf_load_file(linker_class_t, const char *,
 		    linker_file_t *);
 static int	link_elf_lookup_symbol(linker_file_t, const char *,
 		    c_linker_sym_t *);
+static int	link_elf_lookup_debug_symbol(linker_file_t, const char *,
+		    c_linker_sym_t *);
 static int	link_elf_symbol_values(linker_file_t, c_linker_sym_t,
 		    linker_symval_t *);
+static int	link_elf_debug_symbol_values(linker_file_t, c_linker_sym_t,
+		    linker_symval_t*);
 static int	link_elf_search_symbol(linker_file_t, caddr_t,
 		    c_linker_sym_t *, long *);
 
@@ -164,7 +168,9 @@ static int	elf_lookup(linker_file_t, Elf_Size, int, Elf_Addr *);
 
 static kobj_method_t link_elf_methods[] = {
 	KOBJMETHOD(linker_lookup_symbol,	link_elf_lookup_symbol),
+	KOBJMETHOD(linker_lookup_debug_symbol,	link_elf_lookup_debug_symbol),
 	KOBJMETHOD(linker_symbol_values,	link_elf_symbol_values),
+	KOBJMETHOD(linker_debug_symbol_values,	link_elf_debug_symbol_values),
 	KOBJMETHOD(linker_search_symbol,	link_elf_search_symbol),
 	KOBJMETHOD(linker_unload,		link_elf_unload_file),
 	KOBJMETHOD(linker_load_file,		link_elf_load_file),
@@ -187,6 +193,11 @@ static struct linker_class link_elf_class = {
 #endif
 	link_elf_methods, sizeof(struct elf_file)
 };
+
+static bool link_elf_leak_locals = true;
+SYSCTL_BOOL(_debug, OID_AUTO, link_elf_leak_locals,
+    CTLFLAG_RWTUN, &link_elf_leak_locals, 0,
+    "Allow local symbols to participate in global module symbol resolution");
 
 typedef int (*elf_reloc_fn)(linker_file_t lf, Elf_Addr relocbase,
     const void *data, int type, elf_lookup_fn lookup);
@@ -769,7 +780,7 @@ parse_vnet(elf_file_t ef)
 static int
 preload_protect(elf_file_t ef, vm_prot_t prot)
 {
-#ifdef __amd64__
+#if defined(__aarch64__) || defined(__amd64__)
 	Elf_Ehdr *hdr;
 	Elf_Phdr *phdr, *phlimit;
 	vm_prot_t nprot;
@@ -1470,34 +1481,31 @@ relocate_file(elf_file_t ef)
 }
 
 /*
- * Hash function for symbol table lookup.  Don't even think about changing
- * this.  It is specified by the System V ABI.
+ * SysV hash function for symbol table lookup.  It is specified by the
+ * System V ABI.
  */
-static unsigned long
+static Elf32_Word
 elf_hash(const char *name)
 {
-	const unsigned char *p = (const unsigned char *) name;
-	unsigned long h = 0;
-	unsigned long g;
+	const unsigned char *p = (const unsigned char *)name;
+	Elf32_Word h = 0;
 
 	while (*p != '\0') {
 		h = (h << 4) + *p++;
-		if ((g = h & 0xf0000000) != 0)
-			h ^= g >> 24;
-		h &= ~g;
+		h ^= (h >> 24) & 0xf0;
 	}
-	return (h);
+	return (h & 0x0fffffff);
 }
 
 static int
-link_elf_lookup_symbol(linker_file_t lf, const char *name, c_linker_sym_t *sym)
+link_elf_lookup_symbol1(linker_file_t lf, const char *name, c_linker_sym_t *sym,
+    bool see_local)
 {
 	elf_file_t ef = (elf_file_t) lf;
 	unsigned long symnum;
 	const Elf_Sym* symp;
 	const char *strp;
-	unsigned long hash;
-	int i;
+	Elf32_Word hash;
 
 	/* If we don't have a hash, bail. */
 	if (ef->buckets == NULL || ef->nbuckets == 0) {
@@ -1528,8 +1536,11 @@ link_elf_lookup_symbol(linker_file_t lf, const char *name, c_linker_sym_t *sym)
 			    (symp->st_value != 0 &&
 			    (ELF_ST_TYPE(symp->st_info) == STT_FUNC ||
 			    ELF_ST_TYPE(symp->st_info) == STT_GNU_IFUNC))) {
-				*sym = (c_linker_sym_t) symp;
-				return (0);
+				if (see_local ||
+				    ELF_ST_BIND(symp->st_info) != STB_LOCAL) {
+					*sym = (c_linker_sym_t) symp;
+					return (0);
+				}
 			}
 			return (ENOENT);
 		}
@@ -1537,11 +1548,29 @@ link_elf_lookup_symbol(linker_file_t lf, const char *name, c_linker_sym_t *sym)
 		symnum = ef->chains[symnum];
 	}
 
-	/* If we have not found it, look at the full table (if loaded) */
-	if (ef->symtab == ef->ddbsymtab)
-		return (ENOENT);
+	return (ENOENT);
+}
 
-	/* Exhaustive search */
+static int
+link_elf_lookup_symbol(linker_file_t lf, const char *name, c_linker_sym_t *sym)
+{
+	if (link_elf_leak_locals)
+		return (link_elf_lookup_debug_symbol(lf, name, sym));
+	return (link_elf_lookup_symbol1(lf, name, sym, false));
+}
+
+static int
+link_elf_lookup_debug_symbol(linker_file_t lf, const char *name,
+    c_linker_sym_t *sym)
+{
+	elf_file_t ef = (elf_file_t)lf;
+	const Elf_Sym* symp;
+	const char *strp;
+	int i;
+
+	if (link_elf_lookup_symbol1(lf, name, sym, true) == 0)
+		return (0);
+
 	for (i = 0, symp = ef->ddbsymtab; i < ef->ddbsymcnt; i++, symp++) {
 		strp = ef->ddbstrtab + symp->st_name;
 		if (strcmp(name, strp) == 0) {
@@ -1560,8 +1589,8 @@ link_elf_lookup_symbol(linker_file_t lf, const char *name, c_linker_sym_t *sym)
 }
 
 static int
-link_elf_symbol_values(linker_file_t lf, c_linker_sym_t sym,
-    linker_symval_t *symval)
+link_elf_symbol_values1(linker_file_t lf, c_linker_sym_t sym,
+    linker_symval_t *symval, bool see_local)
 {
 	elf_file_t ef;
 	const Elf_Sym *es;
@@ -1569,7 +1598,9 @@ link_elf_symbol_values(linker_file_t lf, c_linker_sym_t sym,
 
 	ef = (elf_file_t)lf;
 	es = (const Elf_Sym *)sym;
-	if (es >= ef->symtab && es < (ef->symtab + ef->nchains)) {
+	if (es >= ef->symtab && es < ef->symtab + ef->nchains) {
+		if (!see_local && ELF_ST_BIND(es->st_info) == STB_LOCAL)
+			return (ENOENT);
 		symval->name = ef->strtab + es->st_name;
 		val = (caddr_t)ef->address + es->st_value;
 		if (ELF_ST_TYPE(es->st_info) == STT_GNU_IFUNC)
@@ -1578,8 +1609,31 @@ link_elf_symbol_values(linker_file_t lf, c_linker_sym_t sym,
 		symval->size = es->st_size;
 		return (0);
 	}
+	return (ENOENT);
+}
+
+static int
+link_elf_symbol_values(linker_file_t lf, c_linker_sym_t sym,
+    linker_symval_t *symval)
+{
+	if (link_elf_leak_locals)
+		return (link_elf_debug_symbol_values(lf, sym, symval));
+	return (link_elf_symbol_values1(lf, sym, symval, false));
+}
+
+static int
+link_elf_debug_symbol_values(linker_file_t lf, c_linker_sym_t sym,
+    linker_symval_t *symval)
+{
+	elf_file_t ef = (elf_file_t)lf;
+	const Elf_Sym *es = (const Elf_Sym *)sym;
+	caddr_t val;
+
+	if (link_elf_symbol_values1(lf, sym, symval, true) == 0)
+		return (0);
 	if (ef->symtab == ef->ddbsymtab)
 		return (ENOENT);
+
 	if (es >= ef->ddbsymtab && es < (ef->ddbsymtab + ef->ddbsymcnt)) {
 		symval->name = ef->ddbstrtab + es->st_name;
 		val = (caddr_t)ef->address + es->st_value;
@@ -1596,12 +1650,12 @@ static int
 link_elf_search_symbol(linker_file_t lf, caddr_t value,
     c_linker_sym_t *sym, long *diffp)
 {
-	elf_file_t ef = (elf_file_t) lf;
-	u_long off = (uintptr_t) (void *) value;
+	elf_file_t ef = (elf_file_t)lf;
+	u_long off = (uintptr_t)(void *)value;
 	u_long diff = off;
 	u_long st_value;
-	const Elf_Sym* es;
-	const Elf_Sym* best = NULL;
+	const Elf_Sym *es;
+	const Elf_Sym *best = NULL;
 	int i;
 
 	for (i = 0, es = ef->ddbsymtab; i < ef->ddbsymcnt; i++, es++) {
@@ -1711,7 +1765,7 @@ link_elf_each_function_nameval(linker_file_t file,
 {
 	linker_symval_t symval;
 	elf_file_t ef = (elf_file_t)file;
-	const Elf_Sym* symp;
+	const Elf_Sym *symp;
 	int i, error;
 
 	/* Exhaustive search */
@@ -1719,11 +1773,10 @@ link_elf_each_function_nameval(linker_file_t file,
 		if (symp->st_value != 0 &&
 		    (ELF_ST_TYPE(symp->st_info) == STT_FUNC ||
 		    ELF_ST_TYPE(symp->st_info) == STT_GNU_IFUNC)) {
-			error = link_elf_symbol_values(file,
+			error = link_elf_debug_symbol_values(file,
 			    (c_linker_sym_t) symp, &symval);
-			if (error != 0)
-				return (error);
-			error = callback(file, i, &symval, opaque);
+			if (error == 0)
+				error = callback(file, i, &symval, opaque);
 			if (error != 0)
 				return (error);
 		}

@@ -798,7 +798,7 @@ dhcpack(struct packet *packet)
             ACTION_SUPERSEDE)
 		ip->client->new->expiry = getULong(
 		    ip->client->config->defaults[DHO_DHCP_LEASE_TIME].data);
-        else if (ip->client->new->options[DHO_DHCP_LEASE_TIME].data)
+        else if (ip->client->new->options[DHO_DHCP_LEASE_TIME].len >= 4)
 		ip->client->new->expiry = getULong(
 		    ip->client->new->options[DHO_DHCP_LEASE_TIME].data);
 	else
@@ -821,7 +821,7 @@ dhcpack(struct packet *packet)
             ACTION_SUPERSEDE)
 		ip->client->new->renewal = getULong(
 		    ip->client->config->defaults[DHO_DHCP_RENEWAL_TIME].data);
-        else if (ip->client->new->options[DHO_DHCP_RENEWAL_TIME].len)
+        else if (ip->client->new->options[DHO_DHCP_RENEWAL_TIME].len >= 4)
 		ip->client->new->renewal = getULong(
 		    ip->client->new->options[DHO_DHCP_RENEWAL_TIME].data);
 	else
@@ -835,7 +835,7 @@ dhcpack(struct packet *packet)
             ACTION_SUPERSEDE)
 		ip->client->new->rebind = getULong(
 		    ip->client->config->defaults[DHO_DHCP_REBINDING_TIME].data);
-        else if (ip->client->new->options[DHO_DHCP_REBINDING_TIME].len)
+        else if (ip->client->new->options[DHO_DHCP_REBINDING_TIME].len >= 4)
 		ip->client->new->rebind = getULong(
 		    ip->client->new->options[DHO_DHCP_REBINDING_TIME].data);
 	else
@@ -931,6 +931,8 @@ void
 state_bound(void *ipp)
 {
 	struct interface_info *ip = ipp;
+	u_int8_t *dp = NULL;
+	int len;
 
 	ASSERT_STATE(state, S_BOUND);
 
@@ -938,10 +940,17 @@ state_bound(void *ipp)
 	make_request(ip, ip->client->active);
 	ip->client->xid = ip->client->packet.xid;
 
-	if (ip->client->active->options[DHO_DHCP_SERVER_IDENTIFIER].len == 4) {
-		memcpy(ip->client->destination.iabuf, ip->client->active->
-		    options[DHO_DHCP_SERVER_IDENTIFIER].data, 4);
-		ip->client->destination.len = 4;
+	if (ip->client->config->default_actions[DHO_DHCP_SERVER_IDENTIFIER] ==
+	    ACTION_SUPERSEDE) {
+		dp = ip->client->config->defaults[DHO_DHCP_SERVER_IDENTIFIER].data;
+		len = ip->client->config->defaults[DHO_DHCP_SERVER_IDENTIFIER].len;
+	} else {
+		dp = ip->client->active->options[DHO_DHCP_SERVER_IDENTIFIER].data;
+		len = ip->client->active->options[DHO_DHCP_SERVER_IDENTIFIER].len;
+	}
+	if (len == 4) {
+		memcpy(ip->client->destination.iabuf, dp, len);
+		ip->client->destination.len = len;
 	} else
 		ip->client->destination = iaddr_broadcast;
 

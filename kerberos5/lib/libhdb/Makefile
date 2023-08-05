@@ -1,5 +1,7 @@
 # $FreeBSD$
 
+PACKAGE=	kerberos-lib
+
 LIB=	hdb
 LDFLAGS=	-Wl,--no-undefined ${LDAPLDFLAGS}
 VERSION_MAP=	${KRB5DIR}/lib/hdb/version-script.map
@@ -41,7 +43,6 @@ INCS=	hdb-protos.h \
 
 SRCS=	common.c \
 	db.c \
-	db3.c \
 	dbinfo.c \
 	ext.c \
 	hdb-ldap.c \

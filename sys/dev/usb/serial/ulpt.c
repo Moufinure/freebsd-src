@@ -4,7 +4,7 @@ __FBSDID("$FreeBSD$");
 /*	$NetBSD: ulpt.c,v 1.60 2003/10/04 21:19:50 augustss Exp $	*/
 
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-NetBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 1998, 2003 The NetBSD Foundation, Inc.
  * All rights reserved.
@@ -499,6 +499,13 @@ static const STRUCT_USB_HOST_ID ulpt_devs[] = {
 	{USB_IFACE_CLASS(UICLASS_PRINTER),
 	 USB_IFACE_SUBCLASS(UISUBCLASS_PRINTER),
 	 USB_IFACE_PROTOCOL(UIPROTO_PRINTER_1284)},
+
+	/* Epson printer */
+	{USB_VENDOR(USB_VENDOR_EPSON),
+	 USB_PRODUCT(USB_PRODUCT_EPSON_TMU220B),
+	 USB_IFACE_CLASS(UICLASS_VENDOR),
+	 USB_IFACE_SUBCLASS(UISUBCLASS_VENDOR),
+	 USB_IFACE_PROTOCOL(UIPROTO_PRINTER_BI)},
 };
 
 static int
@@ -555,8 +562,10 @@ ulpt_attach(device_t dev)
 				break;
 			} else {
 				alt_index++;
-				if ((id->bInterfaceClass == UICLASS_PRINTER) &&
-				    (id->bInterfaceSubClass == UISUBCLASS_PRINTER) &&
+				if ((id->bInterfaceClass == UICLASS_PRINTER ||
+				     id->bInterfaceClass == UICLASS_VENDOR) &&
+				    (id->bInterfaceSubClass == UISUBCLASS_PRINTER ||
+				     id->bInterfaceSubClass == UISUBCLASS_VENDOR) &&
 				    (id->bInterfaceProtocol == UIPROTO_PRINTER_BI)) {
 					goto found;
 				}

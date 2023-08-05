@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2008 Paolo Pisati
  * All rights reserved.
@@ -307,6 +307,7 @@ ipfw_nat(struct ip_fw_args *args, struct cfg_nat *t, struct mbuf *m)
 		args->m = NULL;
 		return (IP_FW_DENY);
 	}
+	M_ASSERTMAPPED(mcl);
 	ip = mtod(mcl, struct ip *);
 
 	/*
@@ -417,7 +418,7 @@ ipfw_nat(struct ip_fw_args *args, struct cfg_nat *t, struct mbuf *m)
 		struct tcphdr 	*th;
 
 		th = (struct tcphdr *)(ip + 1);
-		if (th->th_x2)
+		if (th->th_x2 & (TH_RES1 >> 8))
 			ldt = 1;
 	}
 
@@ -437,7 +438,7 @@ ipfw_nat(struct ip_fw_args *args, struct cfg_nat *t, struct mbuf *m)
 			 * Maybe it was set in
 			 * libalias...
 			 */
-			th->th_x2 = 0;
+			th->th_x2 &= ~(TH_RES1 >> 8);
 			th->th_sum = cksum;
 			mcl->m_pkthdr.csum_data =
 			    offsetof(struct tcphdr, th_sum);

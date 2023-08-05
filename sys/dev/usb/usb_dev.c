@@ -1,8 +1,8 @@
 /* $FreeBSD$ */
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
- * Copyright (c) 2006-2008 Hans Petter Selasky. All rights reserved.
+ * Copyright (c) 2006-2023 Hans Petter Selasky
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -32,6 +32,9 @@
 #ifdef USB_GLOBAL_INCLUDE_FILE
 #include USB_GLOBAL_INCLUDE_FILE
 #else
+#ifdef COMPAT_FREEBSD32
+#include <sys/abi_compat.h>
+#endif
 #include <sys/stdint.h>
 #include <sys/stddef.h>
 #include <sys/param.h>
@@ -93,12 +96,7 @@ SYSCTL_INT(_hw_usb_dev, OID_AUTO, debug, CTLFLAG_RWTUN,
     &usb_fifo_debug, 0, "Debug Level");
 #endif
 
-#if ((__FreeBSD_version >= 700001) || (__FreeBSD_version == 0) || \
-     ((__FreeBSD_version >= 600034) && (__FreeBSD_version < 700000)))
 #define	USB_UCRED struct ucred *ucred,
-#else
-#define	USB_UCRED
-#endif
 
 /* prototypes */
 
@@ -388,6 +386,7 @@ usb_fifo_alloc(struct mtx *mtx)
 	f = malloc(sizeof(*f), M_USBDEV, M_WAITOK | M_ZERO);
 	cv_init(&f->cv_io, "FIFO-IO");
 	cv_init(&f->cv_drain, "FIFO-DRAIN");
+	sx_init(&f->fs_fastpath_lock, "FIFO-FP");
 	f->priv_mtx = mtx;
 	f->refcount = 1;
 	knlist_init_mtx(&f->selinfo.si_note, mtx);
@@ -628,6 +627,7 @@ usb_fifo_free(struct usb_fifo *f)
 
 	cv_destroy(&f->cv_io);
 	cv_destroy(&f->cv_drain);
+	sx_destroy(&f->fs_fastpath_lock);
 
 	knlist_clear(&f->selinfo.si_note, 0);
 	seldrain(&f->selinfo);
@@ -1650,6 +1650,9 @@ usb_static_ioctl(struct cdev *dev, u_long cmd, caddr_t data, int fflag,
 {
 	union {
 		struct usb_read_dir *urd;
+#ifdef COMPAT_FREEBSD32
+		struct usb_read_dir32 *urd32;
+#endif
 		void* data;
 	} u;
 	int err;
@@ -1660,6 +1663,12 @@ usb_static_ioctl(struct cdev *dev, u_long cmd, caddr_t data, int fflag,
 			err = usb_read_symlink(u.urd->urd_data,
 			    u.urd->urd_startentry, u.urd->urd_maxlen);
 			break;
+#ifdef COMPAT_FREEBSD32
+		case USB_READ_DIR32:
+			err = usb_read_symlink(PTRIN(u.urd32->urd_data),
+			    u.urd32->urd_startentry, u.urd32->urd_maxlen);
+			break;
+#endif
 		case USB_DEV_QUIRK_GET:
 		case USB_QUIRK_NAME_GET:
 		case USB_DEV_QUIRK_ADD:
@@ -1938,18 +1947,30 @@ int
 usb_fifo_alloc_buffer(struct usb_fifo *f, usb_size_t bufsize,
     uint16_t nbuf)
 {
+	struct usb_ifqueue temp_q = {};
+	void *queue_data;
+
 	usb_fifo_free_buffer(f);
 
-	/* allocate an endpoint */
-	f->free_q.ifq_maxlen = nbuf;
-	f->used_q.ifq_maxlen = nbuf;
+	temp_q.ifq_maxlen = nbuf;
 
-	f->queue_data = usb_alloc_mbufs(
-	    M_USBDEV, &f->free_q, bufsize, nbuf);
+	queue_data = usb_alloc_mbufs(
+	    M_USBDEV, &temp_q, bufsize, nbuf);
 
-	if ((f->queue_data == NULL) && bufsize && nbuf) {
+	if (queue_data == NULL && bufsize != 0 && nbuf != 0)
 		return (ENOMEM);
-	}
+
+	mtx_lock(f->priv_mtx);
+
+	/*
+	 * Setup queues and sizes under lock to avoid early use by
+	 * concurrent FIFO access:
+	 */
+	f->free_q = temp_q;
+	f->used_q.ifq_maxlen = nbuf;
+	f->queue_data = queue_data;
+	mtx_unlock(f->priv_mtx);
+
 	return (0);			/* success */
 }
 
@@ -1962,15 +1983,24 @@ usb_fifo_alloc_buffer(struct usb_fifo *f, usb_size_t bufsize,
 void
 usb_fifo_free_buffer(struct usb_fifo *f)
 {
-	if (f->queue_data) {
-		/* free old buffer */
-		free(f->queue_data, M_USBDEV);
-		f->queue_data = NULL;
-	}
-	/* reset queues */
+	void *queue_data;
 
+	mtx_lock(f->priv_mtx);
+
+	/* Get and clear pointer to free, if any. */
+	queue_data = f->queue_data;
+	f->queue_data = NULL;
+
+	/*
+	 * Reset queues under lock to avoid use of freed buffers by
+	 * concurrent FIFO activity:
+	 */
 	memset(&f->free_q, 0, sizeof(f->free_q));
 	memset(&f->used_q, 0, sizeof(f->used_q));
+	mtx_unlock(f->priv_mtx);
+
+	/* Free old buffer, if any. */
+	free(queue_data, M_USBDEV);
 }
 
 void

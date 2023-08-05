@@ -25,6 +25,7 @@
  * Copyright (c) 2017, Intel Corporation.
  * Copyright (c) 2019, Klara Inc.
  * Copyright (c) 2019, Allan Jude
+ * Copyright (c) 2021, Datto, Inc.
  */
 
 #include <sys/sysmacros.h>
@@ -247,13 +248,10 @@ zio_init(void)
 void
 zio_fini(void)
 {
-	size_t i, j, n;
-	kmem_cache_t *cache;
-
-	n = SPA_MAXBLOCKSIZE >> SPA_MINBLOCKSHIFT;
+	size_t n = SPA_MAXBLOCKSIZE >> SPA_MINBLOCKSHIFT;
 
 #if defined(ZFS_DEBUG) && !defined(_KERNEL)
-	for (i = 0; i < n; i++) {
+	for (size_t i = 0; i < n; i++) {
 		if (zio_buf_cache_allocs[i] != zio_buf_cache_frees[i])
 			(void) printf("zio_fini: [%d] %llu != %llu\n",
 			    (int)((i + 1) << SPA_MINBLOCKSHIFT),
@@ -267,11 +265,11 @@ zio_fini(void)
 	 * and zio_data_buf_cache. Do a wasteful but trivially correct scan to
 	 * sort it out.
 	 */
-	for (i = 0; i < n; i++) {
-		cache = zio_buf_cache[i];
+	for (size_t i = 0; i < n; i++) {
+		kmem_cache_t *cache = zio_buf_cache[i];
 		if (cache == NULL)
 			continue;
-		for (j = i; j < n; j++) {
+		for (size_t j = i; j < n; j++) {
 			if (cache == zio_buf_cache[j])
 				zio_buf_cache[j] = NULL;
 			if (cache == zio_data_buf_cache[j])
@@ -280,22 +278,20 @@ zio_fini(void)
 		kmem_cache_destroy(cache);
 	}
 
-	for (i = 0; i < n; i++) {
-		cache = zio_data_buf_cache[i];
+	for (size_t i = 0; i < n; i++) {
+		kmem_cache_t *cache = zio_data_buf_cache[i];
 		if (cache == NULL)
 			continue;
-		for (j = i; j < n; j++) {
+		for (size_t j = i; j < n; j++) {
 			if (cache == zio_data_buf_cache[j])
 				zio_data_buf_cache[j] = NULL;
 		}
 		kmem_cache_destroy(cache);
 	}
 
-	for (i = 0; i < n; i++) {
-		if (zio_buf_cache[i] != NULL)
-			panic("zio_fini: zio_buf_cache[%d] != NULL", (int)i);
-		if (zio_data_buf_cache[i] != NULL)
-			panic("zio_fini: zio_data_buf_cache[%d] != NULL", (int)i);
+	for (size_t i = 0; i < n; i++) {
+		VERIFY3P(zio_buf_cache[i], ==, NULL);
+		VERIFY3P(zio_data_buf_cache[i], ==, NULL);
 	}
 
 	kmem_cache_destroy(zio_link_cache);
@@ -373,6 +369,7 @@ zio_data_buf_free(void *buf, size_t size)
 static void
 zio_abd_free(void *abd, size_t size)
 {
+	(void) size;
 	abd_free((abd_t *)abd);
 }
 
@@ -881,8 +878,7 @@ zio_create(zio_t *pio, spa_t *spa, uint64_t txg, const blkptr_t *bp,
 		zio->io_bookmark = *zb;
 
 	if (pio != NULL) {
-		if (zio->io_metaslab_class == NULL)
-			zio->io_metaslab_class = pio->io_metaslab_class;
+		zio->io_metaslab_class = pio->io_metaslab_class;
 		if (zio->io_logical == NULL)
 			zio->io_logical = pio->io_logical;
 		if (zio->io_child_type == ZIO_CHILD_GANG)
@@ -1011,7 +1007,7 @@ zfs_blkptr_verify(spa_t *spa, const blkptr_t *bp, boolean_t config_held,
 	 * will be done once the zio is executed in vdev_mirror_map_alloc.
 	 */
 	if (!spa->spa_trust_config)
-		return (B_TRUE);
+		return (errors == 0);
 
 	if (!config_held)
 		spa_config_enter(spa, SCL_VDEV, bp, RW_READER);
@@ -1026,7 +1022,8 @@ zfs_blkptr_verify(spa_t *spa, const blkptr_t *bp, boolean_t config_held,
 	 * that are in the log) to be arbitrarily large.
 	 */
 	for (int i = 0; i < BP_GET_NDVAS(bp); i++) {
-		uint64_t vdevid = DVA_GET_VDEV(&bp->blk_dva[i]);
+		const dva_t *dva = &bp->blk_dva[i];
+		uint64_t vdevid = DVA_GET_VDEV(dva);
 
 		if (vdevid >= spa->spa_root_vdev->vdev_children) {
 			errors += zfs_blkptr_verify_log(spa, bp, blk_verify,
@@ -1055,10 +1052,10 @@ zfs_blkptr_verify(spa_t *spa, const blkptr_t *bp, boolean_t config_held,
 			 */
 			continue;
 		}
-		uint64_t offset = DVA_GET_OFFSET(&bp->blk_dva[i]);
-		uint64_t asize = DVA_GET_ASIZE(&bp->blk_dva[i]);
-		if (BP_IS_GANG(bp))
-			asize = vdev_psize_to_asize(vd, SPA_GANGBLOCKSIZE);
+		uint64_t offset = DVA_GET_OFFSET(dva);
+		uint64_t asize = DVA_GET_ASIZE(dva);
+		if (DVA_GET_GANG(dva))
+			asize = vdev_gang_header_asize(vd);
 		if (offset + asize > vd->vdev_asize) {
 			errors += zfs_blkptr_verify_log(spa, bp, blk_verify,
 			    "blkptr at %p DVA %u has invalid OFFSET %llu",
@@ -1076,6 +1073,7 @@ zfs_blkptr_verify(spa_t *spa, const blkptr_t *bp, boolean_t config_held,
 boolean_t
 zfs_dva_valid(spa_t *spa, const dva_t *dva, const blkptr_t *bp)
 {
+	(void) bp;
 	uint64_t vdevid = DVA_GET_VDEV(dva);
 
 	if (vdevid >= spa->spa_root_vdev->vdev_children)
@@ -1095,8 +1093,8 @@ zfs_dva_valid(spa_t *spa, const dva_t *dva, const blkptr_t *bp)
 	uint64_t offset = DVA_GET_OFFSET(dva);
 	uint64_t asize = DVA_GET_ASIZE(dva);
 
-	if (BP_IS_GANG(bp))
-		asize = vdev_psize_to_asize(vd, SPA_GANGBLOCKSIZE);
+	if (DVA_GET_GANG(dva))
+		asize = vdev_gang_header_asize(vd);
 	if (offset + asize > vd->vdev_asize)
 		return (B_FALSE);
 
@@ -1109,9 +1107,6 @@ zio_read(zio_t *pio, spa_t *spa, const blkptr_t *bp,
     zio_priority_t priority, enum zio_flag flags, const zbookmark_phys_t *zb)
 {
 	zio_t *zio;
-
-	(void) zfs_blkptr_verify(spa, bp, flags & ZIO_FLAG_CONFIG_WRITER,
-	    BLK_VERIFY_HALT);
 
 	zio = zio_create(pio, spa, BP_PHYSICAL_BIRTH(bp), bp,
 	    data, size, size, done, private,
@@ -1778,6 +1773,24 @@ zio_write_compress(zio_t *zio)
 		    zio->io_abd, NULL, lsize, zp->zp_complevel);
 		if (psize == 0 || psize >= lsize)
 			compress = ZIO_COMPRESS_OFF;
+	} else if (zio->io_flags & ZIO_FLAG_RAW_COMPRESS &&
+	    !(zio->io_flags & ZIO_FLAG_RAW_ENCRYPT)) {
+		/*
+		 * If we are raw receiving an encrypted dataset we should not
+		 * take this codepath because it will change the on-disk block
+		 * and decryption will fail.
+		 */
+		size_t rounded = MIN((size_t)roundup(psize,
+		    spa->spa_min_alloc), lsize);
+
+		if (rounded != psize) {
+			abd_t *cdata = abd_alloc_linear(rounded, B_TRUE);
+			abd_zero_off(cdata, psize, rounded - psize);
+			abd_copy_off(cdata, zio->io_abd, 0, 0, psize);
+			psize = rounded;
+			zio_push_transform(zio, cdata,
+			    psize, rounded, NULL);
+		}
 	} else {
 		ASSERT3U(psize, !=, 0);
 	}
@@ -1897,8 +1910,8 @@ zio_taskq_dispatch(zio_t *zio, zio_taskq_type_t q, boolean_t cutinline)
 	 * to dispatch the zio to another taskq at the same time.
 	 */
 	ASSERT(taskq_empty_ent(&zio->io_tqent));
-	spa_taskq_dispatch_ent(spa, t, q, (task_func_t *)zio_execute, zio,
-	    flags, &zio->io_tqent);
+	spa_taskq_dispatch_ent(spa, t, q, zio_execute, zio, flags,
+	    &zio->io_tqent);
 }
 
 static boolean_t
@@ -1929,7 +1942,7 @@ zio_issue_async(zio_t *zio)
 }
 
 void
-zio_interrupt(zio_t *zio)
+zio_interrupt(void *zio)
 {
 	zio_taskq_dispatch(zio, ZIO_TASKQ_INTERRUPT, B_FALSE);
 }
@@ -1987,8 +2000,8 @@ zio_delay_interrupt(zio_t *zio)
 				 * OpenZFS's timeout_generic().
 				 */
 				tid = taskq_dispatch_delay(system_taskq,
-				    (task_func_t *)zio_interrupt,
-				    zio, TQ_NOSLEEP, expire_at_tick);
+				    zio_interrupt, zio, TQ_NOSLEEP,
+				    expire_at_tick);
 				if (tid == TASKQID_INVALID) {
 					/*
 					 * Couldn't allocate a task.  Just
@@ -2020,18 +2033,24 @@ zio_deadman_impl(zio_t *pio, int ziodepth)
 
 		zfs_dbgmsg("slow zio[%d]: zio=%px timestamp=%llu "
 		    "delta=%llu queued=%llu io=%llu "
-		    "path=%s last=%llu "
-		    "type=%d priority=%d flags=0x%x "
-		    "stage=0x%x pipeline=0x%x pipeline-trace=0x%x "
-		    "objset=%llu object=%llu level=%llu blkid=%llu "
-		    "offset=%llu size=%llu error=%d",
+		    "path=%s "
+		    "last=%llu type=%d "
+		    "priority=%d flags=0x%x stage=0x%x "
+		    "pipeline=0x%x pipeline-trace=0x%x "
+		    "objset=%llu object=%llu "
+		    "level=%llu blkid=%llu "
+		    "offset=%llu size=%llu "
+		    "error=%d",
 		    ziodepth, pio, pio->io_timestamp,
-		    delta, pio->io_delta, pio->io_delay,
-		    vd ? vd->vdev_path : "NULL", vq ? vq->vq_io_complete_ts : 0,
-		    pio->io_type, pio->io_priority, pio->io_flags,
-		    pio->io_stage, pio->io_pipeline, pio->io_pipeline_trace,
-		    zb->zb_objset, zb->zb_object, zb->zb_level, zb->zb_blkid,
-		    pio->io_offset, pio->io_size, pio->io_error);
+		    (u_longlong_t)delta, pio->io_delta, pio->io_delay,
+		    vd ? vd->vdev_path : "NULL",
+		    vq ? vq->vq_io_complete_ts : 0, pio->io_type,
+		    pio->io_priority, pio->io_flags, pio->io_stage,
+		    pio->io_pipeline, pio->io_pipeline_trace,
+		    (u_longlong_t)zb->zb_objset, (u_longlong_t)zb->zb_object,
+		    (u_longlong_t)zb->zb_level, (u_longlong_t)zb->zb_blkid,
+		    (u_longlong_t)pio->io_offset, (u_longlong_t)pio->io_size,
+		    pio->io_error);
 		(void) zfs_ereport_post(FM_EREPORT_ZFS_DEADMAN,
 		    pio->io_spa, vd, zb, pio, 0);
 
@@ -2103,7 +2122,7 @@ static zio_pipe_stage_t *zio_pipeline[];
  * it is externally visible.
  */
 void
-zio_execute(zio_t *zio)
+zio_execute(void *zio)
 {
 	fstrans_cookie_t cookie;
 
@@ -2132,6 +2151,8 @@ zio_execute_stack_check(zio_t *zio)
 	    !zio_taskq_member(zio, ZIO_TASKQ_ISSUE) &&
 	    !zio_taskq_member(zio, ZIO_TASKQ_ISSUE_HIGH))
 		return (B_TRUE);
+#else
+	(void) zio;
 #endif /* HAVE_LARGE_STACKS */
 
 	return (B_FALSE);
@@ -2266,7 +2287,7 @@ zio_nowait(zio_t *zio)
 	ASSERT3P(zio->io_executor, ==, NULL);
 
 	if (zio->io_child_type == ZIO_CHILD_LOGICAL &&
-	    zio_unique_parent(zio) == NULL) {
+	    list_is_empty(&zio->io_parent_list)) {
 		zio_t *pio;
 
 		/*
@@ -2292,8 +2313,9 @@ zio_nowait(zio_t *zio)
  */
 
 static void
-zio_reexecute(zio_t *pio)
+zio_reexecute(void *arg)
 {
+	zio_t *pio = arg;
 	zio_t *cio, *cio_next;
 
 	ASSERT(pio->io_child_type == ZIO_CHILD_LOGICAL);
@@ -2543,11 +2565,12 @@ zio_rewrite_gang(zio_t *pio, blkptr_t *bp, zio_gang_node_t *gn, abd_t *data,
 	return (zio);
 }
 
-/* ARGSUSED */
 static zio_t *
 zio_free_gang(zio_t *pio, blkptr_t *bp, zio_gang_node_t *gn, abd_t *data,
     uint64_t offset)
 {
+	(void) gn, (void) data, (void) offset;
+
 	zio_t *zio = zio_free_sync(pio, pio->io_spa, pio->io_txg, bp,
 	    ZIO_GANG_CHILD_FLAGS(pio));
 	if (zio == NULL) {
@@ -2557,11 +2580,11 @@ zio_free_gang(zio_t *pio, blkptr_t *bp, zio_gang_node_t *gn, abd_t *data,
 	return (zio);
 }
 
-/* ARGSUSED */
 static zio_t *
 zio_claim_gang(zio_t *pio, blkptr_t *bp, zio_gang_node_t *gn, abd_t *data,
     uint64_t offset)
 {
+	(void) gn, (void) data, (void) offset;
 	return (zio_claim(pio, pio->io_spa, pio->io_txg, bp,
 	    NULL, NULL, ZIO_GANG_CHILD_FLAGS(pio)));
 }
@@ -3379,9 +3402,9 @@ zio_io_to_allocate(spa_t *spa, int allocator)
 {
 	zio_t *zio;
 
-	ASSERT(MUTEX_HELD(&spa->spa_alloc_locks[allocator]));
+	ASSERT(MUTEX_HELD(&spa->spa_allocs[allocator].spaa_lock));
 
-	zio = avl_first(&spa->spa_alloc_trees[allocator]);
+	zio = avl_first(&spa->spa_allocs[allocator].spaa_tree);
 	if (zio == NULL)
 		return (NULL);
 
@@ -3393,11 +3416,11 @@ zio_io_to_allocate(spa_t *spa, int allocator)
 	 */
 	ASSERT3U(zio->io_allocator, ==, allocator);
 	if (!metaslab_class_throttle_reserve(zio->io_metaslab_class,
-	    zio->io_prop.zp_copies, zio->io_allocator, zio, 0)) {
+	    zio->io_prop.zp_copies, allocator, zio, 0)) {
 		return (NULL);
 	}
 
-	avl_remove(&spa->spa_alloc_trees[allocator], zio);
+	avl_remove(&spa->spa_allocs[allocator].spaa_tree, zio);
 	ASSERT3U(zio->io_stage, <, ZIO_STAGE_DVA_ALLOCATE);
 
 	return (zio);
@@ -3421,8 +3444,8 @@ zio_dva_throttle(zio_t *zio)
 		return (zio);
 	}
 
+	ASSERT(zio->io_type == ZIO_TYPE_WRITE);
 	ASSERT(zio->io_child_type > ZIO_CHILD_GANG);
-
 	ASSERT3U(zio->io_queued_timestamp, >, 0);
 	ASSERT(zio->io_stage == ZIO_STAGE_DVA_THROTTLE);
 
@@ -3434,14 +3457,14 @@ zio_dva_throttle(zio_t *zio)
 	 * into 2^20 block regions, and then hash based on the objset, object,
 	 * level, and region to accomplish both of these goals.
 	 */
-	zio->io_allocator = cityhash4(bm->zb_objset, bm->zb_object,
+	int allocator = (uint_t)cityhash4(bm->zb_objset, bm->zb_object,
 	    bm->zb_level, bm->zb_blkid >> 20) % spa->spa_alloc_count;
-	mutex_enter(&spa->spa_alloc_locks[zio->io_allocator]);
-	ASSERT(zio->io_type == ZIO_TYPE_WRITE);
+	zio->io_allocator = allocator;
 	zio->io_metaslab_class = mc;
-	avl_add(&spa->spa_alloc_trees[zio->io_allocator], zio);
-	nio = zio_io_to_allocate(spa, zio->io_allocator);
-	mutex_exit(&spa->spa_alloc_locks[zio->io_allocator]);
+	mutex_enter(&spa->spa_allocs[allocator].spaa_lock);
+	avl_add(&spa->spa_allocs[allocator].spaa_tree, zio);
+	nio = zio_io_to_allocate(spa, allocator);
+	mutex_exit(&spa->spa_allocs[allocator].spaa_lock);
 	return (nio);
 }
 
@@ -3450,9 +3473,9 @@ zio_allocate_dispatch(spa_t *spa, int allocator)
 {
 	zio_t *zio;
 
-	mutex_enter(&spa->spa_alloc_locks[allocator]);
+	mutex_enter(&spa->spa_allocs[allocator].spaa_lock);
 	zio = zio_io_to_allocate(spa, allocator);
-	mutex_exit(&spa->spa_alloc_locks[allocator]);
+	mutex_exit(&spa->spa_allocs[allocator].spaa_lock);
 	if (zio == NULL)
 		return;
 
@@ -3539,7 +3562,8 @@ zio_dva_allocate(zio_t *zio)
 		if (zfs_flags & ZFS_DEBUG_METASLAB_ALLOC) {
 			zfs_dbgmsg("%s: metaslab allocation failure, "
 			    "trying normal class: zio %px, size %llu, error %d",
-			    spa_name(spa), zio, zio->io_size, error);
+			    spa_name(spa), zio, (u_longlong_t)zio->io_size,
+			    error);
 		}
 
 		error = metaslab_alloc(spa, mc, zio->io_size, bp,
@@ -3551,7 +3575,8 @@ zio_dva_allocate(zio_t *zio)
 		if (zfs_flags & ZFS_DEBUG_METASLAB_ALLOC) {
 			zfs_dbgmsg("%s: metaslab allocation failure, "
 			    "trying ganging: zio %px, size %llu, error %d",
-			    spa_name(spa), zio, zio->io_size, error);
+			    spa_name(spa), zio, (u_longlong_t)zio->io_size,
+			    error);
 		}
 		return (zio_write_gang_block(zio, mc));
 	}
@@ -3560,7 +3585,8 @@ zio_dva_allocate(zio_t *zio)
 		    (zfs_flags & ZFS_DEBUG_METASLAB_ALLOC)) {
 			zfs_dbgmsg("%s: metaslab allocation failure: zio %px, "
 			    "size %llu, error %d",
-			    spa_name(spa), zio, zio->io_size, error);
+			    spa_name(spa), zio, (u_longlong_t)zio->io_size,
+			    error);
 		}
 		zio->io_error = error;
 	}
@@ -3639,8 +3665,8 @@ zio_alloc_zil(spa_t *spa, objset_t *os, uint64_t txg, blkptr_t *new_bp,
 	 * some parallelism.
 	 */
 	int flags = METASLAB_FASTWRITE | METASLAB_ZIL;
-	int allocator = cityhash4(0, 0, 0, os->os_dsl_dataset->ds_object) %
-	    spa->spa_alloc_count;
+	int allocator = (uint_t)cityhash4(0, 0, 0,
+	    os->os_dsl_dataset->ds_object) % spa->spa_alloc_count;
 	error = metaslab_alloc(spa, spa_log_class(spa), size, new_bp, 1,
 	    txg, NULL, flags, &io_alloc_list, NULL, allocator);
 	*slog = (error == 0);
@@ -3686,7 +3712,8 @@ zio_alloc_zil(spa_t *spa, objset_t *os, uint64_t txg, blkptr_t *new_bp,
 		}
 	} else {
 		zfs_dbgmsg("%s: zil block allocation failure: "
-		    "size %llu, error %d", spa_name(spa), size, error);
+		    "size %llu, error %d", spa_name(spa), (u_longlong_t)size,
+		    error);
 	}
 
 	return (error);
@@ -3901,7 +3928,7 @@ zio_vdev_io_done(zio_t *zio)
 
 	ops->vdev_op_io_done(zio);
 
-	if (unexpected_error)
+	if (unexpected_error && vd->vdev_remove_wanted == B_FALSE)
 		VERIFY(vdev_probe(vd, zio) == NULL);
 
 	return (zio);
@@ -3948,9 +3975,8 @@ zio_vsd_default_cksum_finish(zio_cksum_report_t *zcr,
 	zfs_ereport_finish_checksum(zcr, good_buf, zcr->zcr_cbdata, B_FALSE);
 }
 
-/*ARGSUSED*/
 void
-zio_vsd_default_cksum_report(zio_t *zio, zio_cksum_report_t *zcr, void *ignored)
+zio_vsd_default_cksum_report(zio_t *zio, zio_cksum_report_t *zcr)
 {
 	void *abd = abd_alloc_sametype(zio->io_abd, zio->io_size);
 
@@ -4015,6 +4041,9 @@ zio_vdev_io_assess(zio_t *zio)
 	 */
 	if (zio->io_error == ENXIO && zio->io_type == ZIO_TYPE_WRITE &&
 	    vd != NULL && !vd->vdev_ops->vdev_op_leaf) {
+		vdev_dbgmsg(vd, "zio_vdev_io_assess(zio=%px) setting "
+		    "cant_write=TRUE due to write failure with ENXIO",
+		    zio);
 		vd->vdev_cant_write = B_TRUE;
 	}
 
@@ -4288,7 +4317,7 @@ zio_checksum_verify(zio_t *zio)
 		    !(zio->io_flags & ZIO_FLAG_SPECULATIVE)) {
 			(void) zfs_ereport_start_checksum(zio->io_spa,
 			    zio->io_vd, &zio->io_bookmark, zio,
-			    zio->io_offset, zio->io_size, NULL, &info);
+			    zio->io_offset, zio->io_size, &info);
 			mutex_enter(&zio->io_vd->vdev_stat_lock);
 			zio->io_vd->vdev_stat.vs_checksum_errors++;
 			mutex_exit(&zio->io_vd->vdev_stat_lock);
@@ -4566,7 +4595,7 @@ zio_done(zio_t *zio)
 			uint64_t asize = P2ROUNDUP(psize, align);
 			abd_t *adata = zio->io_abd;
 
-			if (asize != psize) {
+			if (adata != NULL && asize != psize) {
 				adata = abd_alloc(asize, B_TRUE);
 				abd_copy(adata, zio->io_abd, psize);
 				abd_zero_off(adata, psize, asize - psize);
@@ -4577,7 +4606,7 @@ zio_done(zio_t *zio)
 			zcr->zcr_finish(zcr, adata);
 			zfs_ereport_free_checksum(zcr);
 
-			if (asize != psize)
+			if (adata != NULL && asize != psize)
 				abd_free(adata);
 		}
 	}
@@ -4781,8 +4810,7 @@ zio_done(zio_t *zio)
 			ASSERT(taskq_empty_ent(&zio->io_tqent));
 			spa_taskq_dispatch_ent(zio->io_spa,
 			    ZIO_TYPE_CLAIM, ZIO_TASKQ_ISSUE,
-			    (task_func_t *)zio_reexecute, zio, 0,
-			    &zio->io_tqent);
+			    zio_reexecute, zio, 0, &zio->io_tqent);
 		}
 		return (NULL);
 	}
@@ -4980,7 +5008,7 @@ zbookmark_subtree_completed(const dnode_phys_t *dnp,
 {
 	zbookmark_phys_t mod_zb = *subtree_root;
 	mod_zb.zb_blkid++;
-	ASSERT(last_block->zb_level == 0);
+	ASSERT0(last_block->zb_level);
 
 	/* The objset_phys_t isn't before anything. */
 	if (dnp == NULL)
@@ -5004,6 +5032,22 @@ zbookmark_subtree_completed(const dnode_phys_t *dnp,
 	return (zbookmark_compare(dnp->dn_datablkszsec, dnp->dn_indblkshift,
 	    1ULL << (DNODE_BLOCK_SHIFT - SPA_MINBLOCKSHIFT), 0, &mod_zb,
 	    last_block) <= 0);
+}
+
+/*
+ * This function is similar to zbookmark_subtree_completed(), but returns true
+ * if subtree_root is equal or ahead of last_block, i.e. still to be done.
+ */
+boolean_t
+zbookmark_subtree_tbd(const dnode_phys_t *dnp,
+    const zbookmark_phys_t *subtree_root, const zbookmark_phys_t *last_block)
+{
+	ASSERT0(last_block->zb_level);
+	if (dnp == NULL)
+		return (B_FALSE);
+	return (zbookmark_compare(dnp->dn_datablkszsec, dnp->dn_indblkshift,
+	    1ULL << (DNODE_BLOCK_SHIFT - SPA_MINBLOCKSHIFT), 0, subtree_root,
+	    last_block) >= 0);
 }
 
 EXPORT_SYMBOL(zio_type_name);

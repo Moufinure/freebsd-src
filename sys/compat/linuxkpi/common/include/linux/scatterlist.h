@@ -4,6 +4,7 @@
  * Copyright (c) 2010 Panasas, Inc.
  * Copyright (c) 2013-2017 Mellanox Technologies, Ltd.
  * Copyright (c) 2015 Matthew Dillon <dillon@backplane.com>
+ * Copyright (c) 2016 Matthew Macy
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -29,8 +30,8 @@
  *
  * $FreeBSD$
  */
-#ifndef	_LINUX_SCATTERLIST_H_
-#define	_LINUX_SCATTERLIST_H_
+#ifndef	_LINUXKPI_LINUX_SCATTERLIST_H_
+#define	_LINUXKPI_LINUX_SCATTERLIST_H_
 
 #include <sys/types.h>
 #include <sys/sf_buf.h>
@@ -97,6 +98,18 @@ struct sg_dma_page_iter {
 
 #define	for_each_sg(sglist, sg, sgmax, iter)				\
 	for (iter = 0, sg = (sglist); iter < (sgmax); iter++, sg = sg_next(sg))
+
+#define	for_each_sgtable_sg(sgt, sg, i) \
+	for_each_sg((sgt)->sgl, sg, (sgt)->orig_nents, i)
+
+#define	for_each_sgtable_page(sgt, iter, pgoffset) \
+	for_each_sg_page((sgt)->sgl, iter, (sgt)->orig_nents, pgoffset)
+
+#define	for_each_sgtable_dma_sg(sgt, sg, iter)				\
+	for_each_sg((sgt)->sgl, sg, (sgt)->nents, iter)
+
+#define	for_each_sgtable_dma_page(sgt, iter, pgoffset)			\
+	for_each_sg_dma_page((sgt)->sgl, iter, (sgt)->nents, pgoffset)
 
 typedef struct scatterlist *(sg_alloc_fn) (unsigned int, gfp_t);
 typedef void (sg_free_fn) (struct scatterlist *, unsigned int);
@@ -179,6 +192,13 @@ sg_init_table(struct scatterlist *sg, unsigned int nents)
 {
 	bzero(sg, sizeof(*sg) * nents);
 	sg_mark_end(&sg[nents - 1]);
+}
+
+static inline void
+sg_init_one(struct scatterlist *sg, const void *buf, unsigned int buflen)
+{
+	sg_init_table(sg, 1);
+	sg_set_buf(sg, buf, buflen);
 }
 
 static struct scatterlist *
@@ -307,18 +327,40 @@ sg_alloc_table(struct sg_table *table, unsigned int nents, gfp_t gfp_mask)
 	return (ret);
 }
 
+#if defined(LINUXKPI_VERSION) && LINUXKPI_VERSION >= 51300
+static inline struct scatterlist *
+__sg_alloc_table_from_pages(struct sg_table *sgt,
+    struct page **pages, unsigned int count,
+    unsigned long off, unsigned long size,
+    unsigned int max_segment,
+    struct scatterlist *prv, unsigned int left_pages,
+    gfp_t gfp_mask)
+#else
 static inline int
 __sg_alloc_table_from_pages(struct sg_table *sgt,
     struct page **pages, unsigned int count,
     unsigned long off, unsigned long size,
     unsigned int max_segment, gfp_t gfp_mask)
+#endif
 {
 	unsigned int i, segs, cur, len;
 	int rc;
 	struct scatterlist *s;
 
+#if defined(LINUXKPI_VERSION) && LINUXKPI_VERSION >= 51300
+	if (prv != NULL) {
+		panic(
+		    "Support for prv != NULL not implemented in "
+		    "__sg_alloc_table_from_pages()");
+	}
+#endif
+
 	if (__predict_false(!max_segment || offset_in_page(max_segment)))
+#if defined(LINUXKPI_VERSION) && LINUXKPI_VERSION >= 51300
+		return (ERR_PTR(-EINVAL));
+#else
 		return (-EINVAL);
+#endif
 
 	len = 0;
 	for (segs = i = 1; i < count; ++i) {
@@ -330,12 +372,18 @@ __sg_alloc_table_from_pages(struct sg_table *sgt,
 		}
 	}
 	if (__predict_false((rc = sg_alloc_table(sgt, segs, gfp_mask))))
+#if defined(LINUXKPI_VERSION) && LINUXKPI_VERSION >= 51300
+		return (ERR_PTR(rc));
+#else
 		return (rc);
+#endif
 
 	cur = 0;
-	for_each_sg(sgt->sgl, s, sgt->orig_nents, i) {
+	for (i = 0, s = sgt->sgl; i < sgt->orig_nents; i++) {
 		unsigned long seg_size;
 		unsigned int j;
+
+		s = sg_next(s);
 
 		len = 0;
 		for (j = cur + 1; j < count; ++j) {
@@ -351,7 +399,16 @@ __sg_alloc_table_from_pages(struct sg_table *sgt,
 		off = 0;
 		cur = j;
 	}
+	KASSERT(s != NULL, ("s is NULL after loop in __sg_alloc_table_from_pages()"));
+
+#if defined(LINUXKPI_VERSION) && LINUXKPI_VERSION >= 51300
+	if (left_pages == 0)
+		sg_mark_end(s);
+
+	return (s);
+#else
 	return (0);
+#endif
 }
 
 static inline int
@@ -361,8 +418,27 @@ sg_alloc_table_from_pages(struct sg_table *sgt,
     gfp_t gfp_mask)
 {
 
+#if defined(LINUXKPI_VERSION) && LINUXKPI_VERSION >= 51300
+	return (PTR_ERR_OR_ZERO(__sg_alloc_table_from_pages(sgt, pages, count, off, size,
+	    SCATTERLIST_MAX_SEGMENT, NULL, 0, gfp_mask)));
+#else
 	return (__sg_alloc_table_from_pages(sgt, pages, count, off, size,
 	    SCATTERLIST_MAX_SEGMENT, gfp_mask));
+#endif
+}
+
+static inline int
+sg_alloc_table_from_pages_segment(struct sg_table *sgt,
+    struct page **pages, unsigned int count, unsigned int off,
+    unsigned long size, unsigned int max_segment, gfp_t gfp_mask)
+{
+#if defined(LINUXKPI_VERSION) && LINUXKPI_VERSION >= 51300
+	return (PTR_ERR_OR_ZERO(__sg_alloc_table_from_pages(sgt, pages, count, off, size,
+	    max_segment, NULL, 0, gfp_mask)));
+#else
+	return (__sg_alloc_table_from_pages(sgt, pages, count, off, size,
+	    max_segment, gfp_mask));
+#endif
 }
 
 static inline int
@@ -520,12 +596,13 @@ sg_pcopy_from_buffer(struct scatterlist *sgl, unsigned int nents,
 		memcpy(p, b, len);
 		sf_buf_free(sf);
 
+		/* We copied so nothing more to skip. */
+		skip = 0;
 		copied += len;
 		/* Either we exactly filled the page, or we are done. */
 		buflen -= len;
 		if (buflen == 0)
 			break;
-		skip -= len;
 		b += len;
 	}
 	sched_unpin();
@@ -533,4 +610,61 @@ sg_pcopy_from_buffer(struct scatterlist *sgl, unsigned int nents,
 	return (copied);
 }
 
-#endif					/* _LINUX_SCATTERLIST_H_ */
+static inline size_t
+sg_copy_from_buffer(struct scatterlist *sgl, unsigned int nents,
+    const void *buf, size_t buflen)
+{
+	return (sg_pcopy_from_buffer(sgl, nents, buf, buflen, 0));
+}
+
+static inline size_t
+sg_pcopy_to_buffer(struct scatterlist *sgl, unsigned int nents,
+    void *buf, size_t buflen, off_t offset)
+{
+	struct sg_page_iter iter;
+	struct scatterlist *sg;
+	struct page *page;
+	struct sf_buf *sf;
+	char *vaddr;
+	size_t total = 0;
+	size_t len;
+
+	if (!PMAP_HAS_DMAP)
+		sched_pin();
+	for_each_sg_page(sgl, &iter, nents, 0) {
+		sg = iter.sg;
+
+		if (offset >= sg->length) {
+			offset -= sg->length;
+			continue;
+		}
+		len = ulmin(buflen, sg->length - offset);
+		if (len == 0)
+			break;
+
+		page = sg_page_iter_page(&iter);
+		if (!PMAP_HAS_DMAP) {
+			sf = sf_buf_alloc(page, SFB_CPUPRIVATE | SFB_NOWAIT);
+			if (sf == NULL)
+				break;
+			vaddr = (char *)sf_buf_kva(sf);
+		} else
+			vaddr = (char *)PHYS_TO_DMAP(VM_PAGE_TO_PHYS(page));
+		memcpy(buf, vaddr + sg->offset + offset, len);
+		if (!PMAP_HAS_DMAP)
+			sf_buf_free(sf);
+
+		/* start at beginning of next page */
+		offset = 0;
+
+		/* advance buffer */
+		buf = (char *)buf + len;
+		buflen -= len;
+		total += len;
+	}
+	if (!PMAP_HAS_DMAP)
+		sched_unpin();
+	return (total);
+}
+
+#endif					/* _LINUXKPI_LINUX_SCATTERLIST_H_ */

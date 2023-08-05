@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2008, 2009 Rui Paulo <rpaulo@FreeBSD.org>
  * Copyright (c) 2009 Norikatsu Shigemura <nork@FreeBSD.org>
@@ -41,7 +41,9 @@ __FBSDID("$FreeBSD$");
 #include <sys/bus.h>
 #include <sys/conf.h>
 #include <sys/kernel.h>
+#include <sys/lock.h>
 #include <sys/module.h>
+#include <sys/mutex.h>
 #include <sys/sysctl.h>
 #include <sys/systm.h>
 
@@ -86,6 +88,7 @@ struct amdtemp_softc {
 	struct sysctl_oid *sc_sysctl_cpu[MAXCPU];
 	struct intr_config_hook sc_ich;
 	device_t	sc_smn;
+	struct mtx	sc_lock;
 };
 
 /*
@@ -162,6 +165,12 @@ static const struct amdtemp_product {
  */
 #define	AMDTEMP_17H_CUR_TMP		0x59800
 #define	AMDTEMP_17H_CUR_TMP_RANGE_SEL	(1u << 19)
+/*
+ * Bits 16-17, when set, mean that CUR_TMP is read-write. When it is, the
+ * 49 degree offset should apply as well. This was revealed in a Linux
+ * patch from an AMD employee.
+ */
+#define	AMDTEMP_17H_CUR_TMP_TJ_SEL	((1u << 17) | (1u << 16))
 /*
  * The following register set was discovered experimentally by Ondrej Čerman
  * and collaborators, but is not (yet) documented in a PPR/OSRR (other than
@@ -479,6 +488,7 @@ amdtemp_attach(device_t dev)
 	if (sc->sc_ncores > MAXCPU)
 		return (ENXIO);
 
+	mtx_init(&sc->sc_lock, "amdtemp", NULL, MTX_DEF);
 	if (erratum319)
 		device_printf(dev,
 		    "Erratum 319: temperature measurement may be inaccurate\n");
@@ -506,7 +516,7 @@ amdtemp_attach(device_t dev)
 	SYSCTL_ADD_PROC(sysctlctx,
 	    SYSCTL_CHILDREN(sysctlnode),
 	    OID_AUTO, "sensor0",
-	    CTLTYPE_INT | CTLFLAG_RD | CTLFLAG_NEEDGIANT,
+	    CTLTYPE_INT | CTLFLAG_RD | CTLFLAG_MPSAFE,
 	    dev, CORE0_SENSOR0, amdtemp_sysctl, "IK",
 	    "Core 0 / Sensor 0 temperature");
 
@@ -518,7 +528,7 @@ amdtemp_attach(device_t dev)
 		SYSCTL_ADD_PROC(sysctlctx,
 		    SYSCTL_CHILDREN(sysctlnode),
 		    OID_AUTO, "sensor1",
-		    CTLTYPE_INT | CTLFLAG_RD | CTLFLAG_NEEDGIANT,
+		    CTLTYPE_INT | CTLFLAG_RD | CTLFLAG_MPSAFE,
 		    dev, CORE0_SENSOR1, amdtemp_sysctl, "IK",
 		    "Core 0 / Sensor 1 temperature");
 
@@ -531,14 +541,14 @@ amdtemp_attach(device_t dev)
 			SYSCTL_ADD_PROC(sysctlctx,
 			    SYSCTL_CHILDREN(sysctlnode),
 			    OID_AUTO, "sensor0",
-			    CTLTYPE_INT | CTLFLAG_RD | CTLFLAG_NEEDGIANT,
+			    CTLTYPE_INT | CTLFLAG_RD | CTLFLAG_MPSAFE,
 			    dev, CORE1_SENSOR0, amdtemp_sysctl, "IK",
 			    "Core 1 / Sensor 0 temperature");
 
 			SYSCTL_ADD_PROC(sysctlctx,
 			    SYSCTL_CHILDREN(sysctlnode),
 			    OID_AUTO, "sensor1",
-			    CTLTYPE_INT | CTLFLAG_RD | CTLFLAG_NEEDGIANT,
+			    CTLTYPE_INT | CTLFLAG_RD | CTLFLAG_MPSAFE,
 			    dev, CORE1_SENSOR1, amdtemp_sysctl, "IK",
 			    "Core 1 / Sensor 1 temperature");
 		}
@@ -591,7 +601,7 @@ amdtemp_intrhook(void *arg)
 			sc->sc_sysctl_cpu[i] = SYSCTL_ADD_PROC(sysctlctx,
 			    SYSCTL_CHILDREN(device_get_sysctl_tree(cpu)),
 			    OID_AUTO, "temperature",
-			    CTLTYPE_INT | CTLFLAG_RD | CTLFLAG_NEEDGIANT,
+			    CTLTYPE_INT | CTLFLAG_RD | CTLFLAG_MPSAFE,
 			    dev, sensor, amdtemp_sysctl, "IK",
 			    "Current temparature");
 		}
@@ -612,6 +622,7 @@ amdtemp_detach(device_t dev)
 
 	/* NewBus removes the dev.amdtemp.N tree by itself. */
 
+	mtx_destroy(&sc->sc_lock);
 	return (0);
 }
 
@@ -652,6 +663,8 @@ amdtemp_gettemp0f(device_t dev, amdsensor_t sensor)
 	struct amdtemp_softc *sc = device_get_softc(dev);
 	uint32_t mask, offset, temp;
 
+	mtx_lock(&sc->sc_lock);
+
 	/* Set Sensor/Core selector. */
 	temp = pci_read_config(dev, AMDTEMP_THERMTP_STAT, 1);
 	temp &= ~(AMDTEMP_TTSR_SELCORE | AMDTEMP_TTSR_SELSENSOR);
@@ -683,6 +696,7 @@ amdtemp_gettemp0f(device_t dev, amdsensor_t sensor)
 	temp = ((temp >> 14) & mask) * 5 / 2;
 	temp += AMDTEMP_ZERO_C_TO_K + (sc->sc_offset - offset) * 10;
 
+	mtx_unlock(&sc->sc_lock);
 	return (temp);
 }
 
@@ -724,7 +738,8 @@ amdtemp_decode_fam17h_tctl(int32_t sc_offset, uint32_t val)
 {
 	bool minus49;
 
-	minus49 = ((val & AMDTEMP_17H_CUR_TMP_RANGE_SEL) != 0);
+	minus49 = ((val & AMDTEMP_17H_CUR_TMP_RANGE_SEL) != 0)
+	    || ((val & AMDTEMP_17H_CUR_TMP_TJ_SEL) == AMDTEMP_17H_CUR_TMP_TJ_SEL);
 	return (amdtemp_decode_fam10h_to_17h(sc_offset,
 	    val >> AMDTEMP_REPTMP10H_CURTMP_SHIFT, minus49));
 }

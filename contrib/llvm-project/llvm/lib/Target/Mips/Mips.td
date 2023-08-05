@@ -191,7 +191,7 @@ def FeatureUseTCCInDIV : SubtargetFeature<
                                "UseTCCInDIV", "false",
                                "Force the assembler to use trapping">;
 
-def FeatureMadd4
+def FeatureNoMadd4
     : SubtargetFeature<"nomadd4", "DisableMadd4", "true",
                        "Disable 4-operand madd.fmt and related instructions">;
 
@@ -217,12 +217,14 @@ include "MipsSchedule.td"
 include "MipsInstrInfo.td"
 include "MipsCallingConv.td"
 include "MipsRegisterBanks.td"
+include "MipsCombine.td"
 
 // Avoid forward declaration issues.
 include "MipsScheduleP5600.td"
 include "MipsScheduleGeneric.td"
 
-def MipsInstrInfo : InstrInfo;
+def MipsInstrInfo : InstrInfo {
+}
 
 //===----------------------------------------------------------------------===//
 // Mips processors supported.
@@ -267,8 +269,13 @@ def MipsAsmParserVariant : AsmParserVariant {
   string RegisterPrefix = "$";
 }
 
+def MipsAsmWriter : AsmWriter {
+  int PassSubtarget = 1;
+}
+
 def Mips : Target {
   let InstructionSet = MipsInstrInfo;
+  let AssemblyWriters = [MipsAsmWriter];
   let AssemblyParsers = [MipsAsmParser];
   let AssemblyParserVariants = [MipsAsmParserVariant];
   let AllowRegisterRenaming = 1;

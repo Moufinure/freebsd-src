@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2002 Poul-Henning Kamp
  * Copyright (c) 2002 Networks Associates Technology, Inc.
@@ -208,8 +208,7 @@ g_bde_create_geom(struct gctl_req *req, struct g_class *mp, struct g_provider *p
 	g_access(cp, -1, -1, -1);
 	g_detach(cp);
 	g_destroy_consumer(cp);
-	if (gp->softc != NULL)
-		g_free(gp->softc);
+	g_free(gp->softc);
 	g_destroy_geom(gp);
 	switch (error) {
 	case ENOENT:

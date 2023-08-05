@@ -16,20 +16,20 @@ public:
   RegisterContextMach_i386(lldb_private::Thread &thread,
                            uint32_t concrete_frame_idx);
 
-  virtual ~RegisterContextMach_i386();
+  ~RegisterContextMach_i386() override;
 
 protected:
-  virtual int DoReadGPR(lldb::tid_t tid, int flavor, GPR &gpr);
+  int DoReadGPR(lldb::tid_t tid, int flavor, GPR &gpr) override;
 
-  int DoReadFPU(lldb::tid_t tid, int flavor, FPU &fpu);
+  int DoReadFPU(lldb::tid_t tid, int flavor, FPU &fpu) override;
 
-  int DoReadEXC(lldb::tid_t tid, int flavor, EXC &exc);
+  int DoReadEXC(lldb::tid_t tid, int flavor, EXC &exc) override;
 
-  int DoWriteGPR(lldb::tid_t tid, int flavor, const GPR &gpr);
+  int DoWriteGPR(lldb::tid_t tid, int flavor, const GPR &gpr) override;
 
-  int DoWriteFPU(lldb::tid_t tid, int flavor, const FPU &fpu);
+  int DoWriteFPU(lldb::tid_t tid, int flavor, const FPU &fpu) override;
 
-  int DoWriteEXC(lldb::tid_t tid, int flavor, const EXC &exc);
+  int DoWriteEXC(lldb::tid_t tid, int flavor, const EXC &exc) override;
 };
 
 #endif // LLDB_SOURCE_PLUGINS_PROCESS_UTILITY_REGISTERCONTEXTMACH_I386_H

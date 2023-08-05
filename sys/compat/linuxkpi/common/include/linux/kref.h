@@ -29,8 +29,8 @@
  *
  * $FreeBSD$
  */
-#ifndef _LINUX_KREF_H_
-#define _LINUX_KREF_H_
+#ifndef _LINUXKPI_LINUX_KREF_H_
+#define _LINUXKPI_LINUX_KREF_H_
 
 #include <sys/types.h>
 #include <sys/refcount.h>
@@ -43,6 +43,7 @@
 #include <asm/atomic.h>
 
 struct kref {
+	/* XXX In Linux this is a refcount_t */
 	atomic_t refcount;
 };
 
@@ -128,4 +129,4 @@ static inline int kref_put_mutex(struct kref *kref,
 	return 0;
 }
 
-#endif /* _LINUX_KREF_H_ */
+#endif /* _LINUXKPI_LINUX_KREF_H_ */

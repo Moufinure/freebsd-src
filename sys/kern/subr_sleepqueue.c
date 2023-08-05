@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2004 John Baldwin <jhb@FreeBSD.org>
  *
@@ -146,12 +146,12 @@ struct sleepqueue_chain {
 } __aligned(CACHE_LINE_SIZE);
 
 #ifdef SLEEPQUEUE_PROFILING
-u_int sleepq_max_depth;
 static SYSCTL_NODE(_debug, OID_AUTO, sleepq, CTLFLAG_RD | CTLFLAG_MPSAFE, 0,
     "sleepq profiling");
 static SYSCTL_NODE(_debug_sleepq, OID_AUTO, chains,
     CTLFLAG_RD | CTLFLAG_MPSAFE, 0,
     "sleepq chain stats");
+static u_int sleepq_max_depth;
 SYSCTL_UINT(_debug_sleepq, OID_AUTO, max_depth, CTLFLAG_RD, &sleepq_max_depth,
     0, "maxmimum depth achieved of a single chain");
 
@@ -388,8 +388,9 @@ sleepq_add(const void *wchan, struct lock_object *lock, const char *wmesg,
 }
 
 /*
- * Sets a timeout that will remove the current thread from the specified
- * sleep queue after timo ticks if the thread has not already been awakened.
+ * Sets a timeout that will remove the current thread from the
+ * specified sleep queue at the specified time if the thread has not
+ * already been awakened.  Flags are from C_* (callout) namespace.
  */
 void
 sleepq_set_timeout_sbt(const void *wchan, sbintime_t sbt, sbintime_t pr,
@@ -482,7 +483,7 @@ sleepq_check_ast_sc_locked(struct thread *td, struct sleepqueue_chain *sc)
 	 * Lock the per-process spinlock prior to dropping the
 	 * PROC_LOCK to avoid a signal delivery race.
 	 * PROC_LOCK, PROC_SLOCK, and thread_lock() are
-	 * currently held in tdsendsignal().
+	 * currently held in tdsendsignal() and thread_single().
 	 */
 	PROC_SLOCK(p);
 	mtx_lock_spin(&sc->sc_lock);
@@ -854,6 +855,26 @@ sleepq_remove_thread(struct sleepqueue *sq, struct thread *td)
 	    (void *)td, (long)td->td_proc->p_pid, td->td_name);
 }
 
+void
+sleepq_remove_nested(struct thread *td)
+{
+	struct sleepqueue_chain *sc;
+	struct sleepqueue *sq;
+	const void *wchan;
+
+	MPASS(TD_ON_SLEEPQ(td));
+
+	wchan = td->td_wchan;
+	sc = SC_LOOKUP(wchan);
+	mtx_lock_spin(&sc->sc_lock);
+	sq = sleepq_lookup(wchan);
+	MPASS(sq != NULL);
+	thread_lock(td);
+	sleepq_remove_thread(sq, td);
+	mtx_unlock_spin(&sc->sc_lock);
+	/* Returns with the thread lock owned. */
+}
+
 #ifdef INVARIANTS
 /*
  * UMA zone item deallocator.
@@ -907,8 +928,11 @@ sleepq_signal(const void *wchan, int flags, int pri, int queue)
 	KASSERT(wchan != NULL, ("%s: invalid NULL wait channel", __func__));
 	MPASS((queue >= 0) && (queue < NR_SLEEPQS));
 	sq = sleepq_lookup(wchan);
-	if (sq == NULL)
+	if (sq == NULL) {
+		if (flags & SLEEPQ_DROP)
+			sleepq_release(wchan);
 		return (0);
+	}
 	KASSERT(sq->sq_type == (flags & SLEEPQ_TYPE),
 	    ("%s: mismatch between sleep/wakeup and cv_*", __func__));
 
@@ -941,7 +965,8 @@ sleepq_signal(const void *wchan, int flags, int pri, int queue)
 		}
 	}
 	MPASS(besttd != NULL);
-	wakeup_swapper = sleepq_resume_thread(sq, besttd, pri, SRQ_HOLD);
+	wakeup_swapper = sleepq_resume_thread(sq, besttd, pri,
+	    (flags & SLEEPQ_DROP) ? 0 : SRQ_HOLD);
 	return (wakeup_swapper);
 }
 
@@ -1016,7 +1041,8 @@ sleepq_timeout(void *arg)
 	    (void *)td, (long)td->td_proc->p_pid, (void *)td->td_name);
 
 	thread_lock(td);
-	if (td->td_sleeptimo == 0 || td->td_sleeptimo > sbinuptime()) {
+	if (td->td_sleeptimo == 0 ||
+	    td->td_sleeptimo > td->td_slpcallout.c_time) {
 		/*
 		 * The thread does not want a timeout (yet).
 		 */
@@ -1101,7 +1127,8 @@ sleepq_abort(struct thread *td, int intrval)
 	THREAD_LOCK_ASSERT(td, MA_OWNED);
 	MPASS(TD_ON_SLEEPQ(td));
 	MPASS(td->td_flags & TDF_SINTR);
-	MPASS(intrval == EINTR || intrval == ERESTART);
+	MPASS((intrval == 0 && (td->td_flags & TDF_SIGWAIT) != 0) ||
+	    intrval == EINTR || intrval == ERESTART);
 
 	/*
 	 * If the TDF_TIMEOUT flag is set, just leave. A

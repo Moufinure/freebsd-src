@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2019 The FreeBSD Foundation
  *
@@ -52,10 +52,7 @@ using namespace testing;
 class Write: public FuseTest {
 
 public:
-static sig_atomic_t s_sigxfsz;
-
 void SetUp() {
-	s_sigxfsz = 0;
 	FuseTest::SetUp();
 }
 
@@ -100,6 +97,8 @@ void maybe_expect_write(uint64_t ino, uint64_t offset, uint64_t size,
 			const char *buf = (const char*)in.body.bytes +
 				sizeof(struct fuse_write_in);
 
+			assert(size <= sizeof(in.body.bytes) -
+				sizeof(struct fuse_write_in));
 			return (in.header.opcode == FUSE_WRITE &&
 				in.header.nodeid == ino &&
 				in.body.write.offset == offset  &&
@@ -117,8 +116,6 @@ void maybe_expect_write(uint64_t ino, uint64_t offset, uint64_t size,
 }
 
 };
-
-sig_atomic_t Write::s_sigxfsz = 0;
 
 class Write_7_8: public FuseTest {
 
@@ -208,8 +205,31 @@ virtual void SetUp() {
 }
 };
 
+class WriteEofDuringVnopStrategy: public Write, public WithParamInterface<int>
+{};
+
+class WriteRlimitFsize: public Write, public WithParamInterface<int> {
+public:
+static sig_atomic_t s_sigxfsz;
+struct rlimit	m_initial_limit;
+
+void SetUp() {
+	s_sigxfsz = 0;
+	getrlimit(RLIMIT_FSIZE, &m_initial_limit);
+	FuseTest::SetUp();
+}
+
+void TearDown() {
+	setrlimit(RLIMIT_FSIZE, &m_initial_limit);
+
+	FuseTest::TearDown();
+}
+};
+
+sig_atomic_t WriteRlimitFsize::s_sigxfsz = 0;
+
 void sigxfsz_handler(int __unused sig) {
-	Write::s_sigxfsz = 1;
+	WriteRlimitFsize::s_sigxfsz = 1;
 }
 
 /* AIO writes need to set the header's pid field correctly */
@@ -407,6 +427,67 @@ TEST_F(Write, indirect_io_short_write)
 	leak(fd);
 }
 
+/* It is an error if the daemon claims to have written more data than we sent */
+TEST_F(Write, indirect_io_long_write)
+{
+	const char FULLPATH[] = "mountpoint/some_file.txt";
+	const char RELPATH[] = "some_file.txt";
+	const char *CONTENTS = "abcdefghijklmnop";
+	uint64_t ino = 42;
+	int fd;
+	ssize_t bufsize = strlen(CONTENTS);
+	ssize_t bufsize_out = 100;
+	off_t some_other_size = 25;
+	struct stat sb;
+
+	expect_lookup(RELPATH, ino, 0);
+	expect_open(ino, 0, 1);
+	expect_write(ino, 0, bufsize, bufsize_out, CONTENTS);
+	expect_getattr(ino, some_other_size);
+
+	fd = open(FULLPATH, O_WRONLY);
+	ASSERT_LE(0, fd) << strerror(errno);
+
+	ASSERT_EQ(-1, write(fd, CONTENTS, bufsize)) << strerror(errno);
+	ASSERT_EQ(EINVAL, errno);
+
+	/*
+	 * Following such an error, we should requery the server for the file's
+	 * size.
+	 */
+	fstat(fd, &sb);
+	ASSERT_EQ(sb.st_size, some_other_size);
+
+	leak(fd);
+}
+
+/*
+ * Don't crash if the server returns a write that can't be represented as a
+ * signed 32 bit number.  Regression test for
+ * https://bugs.freebsd.org/bugzilla/show_bug.cgi?id=263263
+ */
+TEST_F(Write, indirect_io_very_long_write)
+{
+	const char FULLPATH[] = "mountpoint/some_file.txt";
+	const char RELPATH[] = "some_file.txt";
+	const char *CONTENTS = "abcdefghijklmnop";
+	uint64_t ino = 42;
+	int fd;
+	ssize_t bufsize = strlen(CONTENTS);
+	ssize_t bufsize_out = 3 << 30;
+
+	expect_lookup(RELPATH, ino, 0);
+	expect_open(ino, 0, 1);
+	expect_write(ino, 0, bufsize, bufsize_out, CONTENTS);
+
+	fd = open(FULLPATH, O_WRONLY);
+	ASSERT_LE(0, fd) << strerror(errno);
+
+	ASSERT_EQ(-1, write(fd, CONTENTS, bufsize)) << strerror(errno);
+	ASSERT_EQ(EINVAL, errno);
+	leak(fd);
+}
+
 /* 
  * When the direct_io option is used, filesystems are allowed to write less
  * data than requested.  We should return the short write to userland.
@@ -467,7 +548,7 @@ TEST_F(Write, direct_io_short_write_iov)
 }
 
 /* fusefs should respect RLIMIT_FSIZE */
-TEST_F(Write, rlimit_fsize)
+TEST_P(WriteRlimitFsize, rlimit_fsize)
 {
 	const char FULLPATH[] = "mountpoint/some_file.txt";
 	const char RELPATH[] = "some_file.txt";
@@ -476,17 +557,19 @@ TEST_F(Write, rlimit_fsize)
 	ssize_t bufsize = strlen(CONTENTS);
 	off_t offset = 1'000'000'000;
 	uint64_t ino = 42;
-	int fd;
+	int fd, oflag;
+
+	oflag = GetParam();
 
 	expect_lookup(RELPATH, ino, 0);
 	expect_open(ino, 0, 1);
 
 	rl.rlim_cur = offset;
-	rl.rlim_max = 10 * offset;
+	rl.rlim_max = m_initial_limit.rlim_max;
 	ASSERT_EQ(0, setrlimit(RLIMIT_FSIZE, &rl)) << strerror(errno);
 	ASSERT_NE(SIG_ERR, signal(SIGXFSZ, sigxfsz_handler)) << strerror(errno);
 
-	fd = open(FULLPATH, O_WRONLY);
+	fd = open(FULLPATH, O_WRONLY | oflag);
 
 	ASSERT_LE(0, fd) << strerror(errno);
 
@@ -495,6 +578,47 @@ TEST_F(Write, rlimit_fsize)
 	EXPECT_EQ(1, s_sigxfsz);
 	leak(fd);
 }
+
+/*
+ * When crossing the RLIMIT_FSIZE boundary, writes should be truncated, not
+ * aborted.
+ * https://bugs.freebsd.org/bugzilla/show_bug.cgi?id=164793
+ */
+TEST_P(WriteRlimitFsize, rlimit_fsize_truncate)
+{
+	const char FULLPATH[] = "mountpoint/some_file.txt";
+	const char RELPATH[] = "some_file.txt";
+	const char *CONTENTS = "abcdefghijklmnopqrstuvwxyz";
+	struct rlimit rl;
+	ssize_t bufsize = strlen(CONTENTS);
+	uint64_t ino = 42;
+	off_t offset = 1 << 30;
+	off_t limit = offset + strlen(CONTENTS) / 2;
+	int fd, oflag;
+
+	oflag = GetParam();
+
+	expect_lookup(RELPATH, ino, 0);
+	expect_open(ino, 0, 1);
+	expect_write(ino, offset, bufsize / 2, bufsize / 2, CONTENTS);
+
+	rl.rlim_cur = limit;
+	rl.rlim_max = m_initial_limit.rlim_max;
+	ASSERT_EQ(0, setrlimit(RLIMIT_FSIZE, &rl)) << strerror(errno);
+	ASSERT_NE(SIG_ERR, signal(SIGXFSZ, sigxfsz_handler)) << strerror(errno);
+
+	fd = open(FULLPATH, O_WRONLY | oflag);
+
+	ASSERT_LE(0, fd) << strerror(errno);
+
+	ASSERT_EQ(bufsize / 2, pwrite(fd, CONTENTS, bufsize, offset))
+		<< strerror(errno);
+	leak(fd);
+}
+
+INSTANTIATE_TEST_CASE_P(W, WriteRlimitFsize,
+	Values(0, O_DIRECT)
+);
 
 /* 
  * A short read indicates EOF.  Test that nothing bad happens if we get EOF
@@ -525,6 +649,84 @@ TEST_F(Write, eof_during_rmw)
 		<< strerror(errno);
 	leak(fd);
 }
+
+/*
+ * VOP_STRATEGY should not query the server for the file's size, even if its
+ * cached attributes have expired.
+ * Regression test for https://bugs.freebsd.org/bugzilla/show_bug.cgi?id=256937
+ */
+TEST_P(WriteEofDuringVnopStrategy, eof_during_vop_strategy)
+{
+	const char FULLPATH[] = "mountpoint/some_file.txt";
+	const char RELPATH[] = "some_file.txt";
+	Sequence seq;
+	const off_t filesize = 2 * m_maxbcachebuf;
+	void *contents;
+	uint64_t ino = 42;
+	uint64_t attr_valid = 0;
+	uint64_t attr_valid_nsec = 0;
+	mode_t mode = S_IFREG | 0644;
+	int fd;
+	int ngetattrs;
+
+	ngetattrs = GetParam();
+	contents = calloc(1, filesize);
+
+	EXPECT_LOOKUP(FUSE_ROOT_ID, RELPATH)
+	.WillRepeatedly(Invoke(
+		ReturnImmediate([=](auto in __unused, auto& out) {
+		SET_OUT_HEADER_LEN(out, entry);
+		out.body.entry.attr.mode = mode;
+		out.body.entry.nodeid = ino;
+		out.body.entry.attr.nlink = 1;
+		out.body.entry.attr.size = filesize;
+		out.body.entry.attr_valid = attr_valid;
+		out.body.entry.attr_valid_nsec = attr_valid_nsec;
+	})));
+	expect_open(ino, 0, 1);
+	EXPECT_CALL(*m_mock, process(
+		ResultOf([=](auto in) {
+			return (in.header.opcode == FUSE_GETATTR &&
+				in.header.nodeid == ino);
+		}, Eq(true)),
+		_)
+	).Times(Between(ngetattrs - 1, ngetattrs))
+	.InSequence(seq)
+	.WillRepeatedly(Invoke(ReturnImmediate([=](auto i __unused, auto& out) {
+		SET_OUT_HEADER_LEN(out, attr);
+		out.body.attr.attr.ino = ino;
+		out.body.attr.attr.mode = mode;
+		out.body.attr.attr_valid = attr_valid;
+		out.body.attr.attr_valid_nsec = attr_valid_nsec;
+		out.body.attr.attr.size = filesize;
+	})));
+	EXPECT_CALL(*m_mock, process(
+		ResultOf([=](auto in) {
+			return (in.header.opcode == FUSE_GETATTR &&
+				in.header.nodeid == ino);
+		}, Eq(true)),
+		_)
+	).InSequence(seq)
+	.WillRepeatedly(Invoke(ReturnImmediate([=](auto i __unused, auto& out) {
+		SET_OUT_HEADER_LEN(out, attr);
+		out.body.attr.attr.ino = ino;
+		out.body.attr.attr.mode = mode;
+		out.body.attr.attr_valid = attr_valid;
+		out.body.attr.attr_valid_nsec = attr_valid_nsec;
+		out.body.attr.attr.size = filesize / 2;
+	})));
+	expect_write(ino, 0, filesize / 2, filesize / 2, contents);
+
+	fd = open(FULLPATH, O_RDWR);
+	ASSERT_LE(0, fd) << strerror(errno);
+	ASSERT_EQ(filesize / 2, write(fd, contents, filesize / 2))
+		<< strerror(errno);
+
+}
+
+INSTANTIATE_TEST_CASE_P(W, WriteEofDuringVnopStrategy,
+	Values(1, 2, 3)
+);
 
 /*
  * If the kernel cannot be sure which uid, gid, or pid was responsible for a
@@ -806,10 +1008,10 @@ TEST_F(WriteCluster, clustering)
  * not panic the system on unmount
  */
 /*
- * Disabled because it panics.
+ * Regression test for bug 238585
  * https://bugs.freebsd.org/bugzilla/show_bug.cgi?id=238565
  */
-TEST_F(WriteCluster, DISABLED_cluster_write_err)
+TEST_F(WriteCluster, cluster_write_err)
 {
 	const char FULLPATH[] = "mountpoint/some_file.txt";
 	const char RELPATH[] = "some_file.txt";

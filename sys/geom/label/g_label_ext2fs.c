@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2005 Stanislav Sedov
  * All rights reserved.
@@ -62,10 +62,13 @@ g_label_ext2fs_taste(struct g_consumer *cp, char *label, size_t size)
 	pp = cp->provider;
 	label[0] = '\0';
 
+	KASSERT(pp->sectorsize != 0, ("Tasting a disk with 0 sectorsize"));
+	if (pp->sectorsize < sizeof(*fs))
+		return;
 	if ((EXT2FS_SB_OFFSET % pp->sectorsize) != 0)
 		return;
 
-	fs = (e2sb_t *)g_read_data(cp, EXT2FS_SB_OFFSET, pp->sectorsize, NULL);
+	fs = g_read_data(cp, EXT2FS_SB_OFFSET, pp->sectorsize, NULL);
 	if (fs == NULL)
 		return;
 

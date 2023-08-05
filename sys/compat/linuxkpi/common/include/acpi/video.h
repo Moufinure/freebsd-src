@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2020 Vladimir Kondratyev <wulf@FreeBSD.org>
  *
@@ -28,11 +28,25 @@
  * $FreeBSD$
  */
 
-#ifndef _ACPI_VIDEO_H_
-#define _ACPI_VIDEO_H_
+#ifndef _LINUXKPI_ACPI_VIDEO_H_
+#define _LINUXKPI_ACPI_VIDEO_H_
+
+#include <sys/errno.h>
 
 #define	ACPI_VIDEO_CLASS	"video"
 
 #define	ACPI_VIDEO_NOTIFY_PROBE	0x81
 
-#endif	/* !_ACPI_VIDEO_H_ */
+static inline int
+acpi_video_register(void)
+{
+
+	return (-ENODEV);
+}
+
+static inline void
+acpi_video_unregister(void)
+{
+}
+
+#endif	/* _LINUXKPI_ACPI_VIDEO_H_ */

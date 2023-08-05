@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2009-2010
  *	Swinburne University of Technology, Melbourne, Australia
@@ -118,7 +118,7 @@ struct cc_algo vegas_cc_algo = {
 
 /*
  * The vegas window adjustment is done once every RTT, as indicated by the
- * ERTT_NEW_MEASUREMENT flag. This flag is reset once the new measurment data
+ * ERTT_NEW_MEASUREMENT flag. This flag is reset once the new measurement data
  * has been used.
  */
 static void

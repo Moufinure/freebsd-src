@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2013 Anish Gupta (akgupt3@gmail.com)
  * All rights reserved.
@@ -33,6 +33,7 @@
 
 struct pcpu;
 struct svm_softc;
+struct svm_vcpu;
 
 /*
  * Guest register state that is saved outside the VMCB.
@@ -68,7 +69,7 @@ struct svm_regctx {
 
 void svm_launch(uint64_t pa, struct svm_regctx *gctx, struct pcpu *pcpu);
 #ifdef BHYVE_SNAPSHOT
-int  svm_set_tsc_offset(struct svm_softc *sc, int vcpu, uint64_t offset);
+void svm_set_tsc_offset(struct svm_vcpu *vcpu, uint64_t offset);
 #endif
 
 #endif /* _SVM_H_ */

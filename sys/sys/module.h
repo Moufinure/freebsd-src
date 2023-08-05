@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 1997 Doug Rabson
  * All rights reserved.
@@ -253,7 +253,9 @@ extern int mod_debug;
 #endif
 #endif	/* _KERNEL */
 
-#define	MAXMODNAME	32
+#define	MAXMODNAMEV1V2	32
+#define	MAXMODNAMEV3	MAXPATHLEN
+#define	MAXMODNAME	MAXMODNAMEV3
 
 struct module_stat {
 	int		version;	/* set to sizeof(struct module_stat) */

@@ -26,11 +26,12 @@
  * $FreeBSD$
  */
 
-#ifndef __LINUX_DCACHE_H
-#define	__LINUX_DCACHE_H
+#ifndef _LINUXKPI_LINUX_DCACHE_H
+#define	_LINUXKPI_LINUX_DCACHE_H
 
-struct vnode;
-struct pfs_node;
+#include <sys/vnode.h>
+
+#include <fs/pseudofs/pseudofs.h>
 
 struct dentry {
 	struct vnode *d_inode;
@@ -43,4 +44,4 @@ d_inode(const struct dentry *dentry)
 	return (dentry->d_inode);
 }
 
-#endif /* __LINUX_DCACHE_H */
+#endif /* _LINUXKPI_LINUX_DCACHE_H */

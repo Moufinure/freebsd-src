@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2008 Alexander Motin <mav@FreeBSD.org>
  * Copyright (c) 2017 Marius Strobl <marius@FreeBSD.org>
@@ -890,7 +890,8 @@ sdhci_init_slot(device_t dev, struct sdhci_slot *slot, int num)
 		    "support voltages.\n");
 	}
 
-	host_caps = MMC_CAP_4_BIT_DATA;
+	host_caps = slot->host.caps;
+	host_caps |= MMC_CAP_4_BIT_DATA;
 	if (caps & SDHCI_CAN_DO_8BITBUS)
 		host_caps |= MMC_CAP_8_BIT_DATA;
 	if (caps & SDHCI_CAN_DO_HISPD)
@@ -2537,6 +2538,7 @@ sdhci_cam_action(struct cam_sim *sim, union ccb *ccb)
 		mmc_path_inq(&ccb->cpi, "Deglitch Networks", sim, maxphys);
 		break;
 
+	case XPT_MMC_GET_TRAN_SETTINGS:
 	case XPT_GET_TRAN_SETTINGS:
 	{
 		struct ccb_trans_settings *cts = &ccb->cts;
@@ -2571,6 +2573,7 @@ sdhci_cam_action(struct cam_sim *sim, union ccb *ccb)
 		ccb->ccb_h.status = CAM_REQ_CMP;
 		break;
 	}
+	case XPT_MMC_SET_TRAN_SETTINGS:
 	case XPT_SET_TRAN_SETTINGS:
 		if (sdhci_debug > 1)
 			slot_printf(slot, "Got XPT_SET_TRAN_SETTINGS\n");
@@ -2606,7 +2609,7 @@ sdhci_cam_action(struct cam_sim *sim, union ccb *ccb)
 void
 sdhci_cam_poll(struct cam_sim *sim)
 {
-	return;
+	sdhci_generic_intr(cam_sim_softc(sim));
 }
 
 static int
@@ -2767,12 +2770,6 @@ sdhci_cam_request(struct sdhci_slot *slot, union ccb *ccb)
 	slot->flags = 0;
 	sdhci_start(slot);
 	SDHCI_UNLOCK(slot);
-	if (dumping) {
-		while (slot->ccb != NULL) {
-			sdhci_generic_intr(slot);
-			DELAY(10);
-		}
-	}
 	return (0);
 }
 #endif /* MMCCAM */

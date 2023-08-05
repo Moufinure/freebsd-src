@@ -74,6 +74,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/rwlock.h>
 #include <sys/sf_buf.h>
 #include <sys/domainset.h>
+#include <sys/user.h>
 
 #include <machine/atomic.h>
 
@@ -105,8 +106,10 @@ static void vnode_pager_update_writecount(vm_object_t, vm_offset_t,
     vm_offset_t);
 static void vnode_pager_release_writecount(vm_object_t, vm_offset_t,
     vm_offset_t);
+static void vnode_pager_getvp(vm_object_t, struct vnode **, bool *);
 
-struct pagerops vnodepagerops = {
+const struct pagerops vnodepagerops = {
+	.pgo_kvme_type = KVME_TYPE_VNODE,
 	.pgo_alloc =	vnode_pager_alloc,
 	.pgo_dealloc =	vnode_pager_dealloc,
 	.pgo_getpages =	vnode_pager_getpages,
@@ -115,6 +118,9 @@ struct pagerops vnodepagerops = {
 	.pgo_haspage =	vnode_pager_haspage,
 	.pgo_update_writecount = vnode_pager_update_writecount,
 	.pgo_release_writecount = vnode_pager_release_writecount,
+	.pgo_set_writeable_dirty = vm_object_set_writeable_dirty_,
+	.pgo_mightbedirty = vm_object_mightbedirty_,
+	.pgo_getvp = vnode_pager_getvp,
 };
 
 static struct domainset *vnode_domainset = NULL;
@@ -562,6 +568,13 @@ vnode_pager_addr(struct vnode *vp, vm_ooffset_t address, daddr_t *rtaddress,
 	return (err);
 }
 
+static void
+vnode_pager_input_bdone(struct buf *bp)
+{
+	runningbufwakeup(bp);
+	bdone(bp);
+}
+
 /*
  * small block filesystem vnode pager input
  */
@@ -608,7 +621,7 @@ vnode_pager_input_smlfs(vm_object_t object, vm_page_t m)
 
 			/* build a minimal buffer header */
 			bp->b_iocmd = BIO_READ;
-			bp->b_iodone = bdone;
+			bp->b_iodone = vnode_pager_input_bdone;
 			KASSERT(bp->b_rcred == NOCRED, ("leaking read ucred"));
 			KASSERT(bp->b_wcred == NOCRED, ("leaking write ucred"));
 			bp->b_rcred = crhold(curthread->td_ucred);
@@ -1126,6 +1139,8 @@ vnode_pager_generic_getpages_done(struct buf *bp)
 	error = (bp->b_ioflags & BIO_ERROR) != 0 ? bp->b_error : 0;
 	object = bp->b_vp->v_object;
 
+	runningbufwakeup(bp);
+
 	if (error == 0 && bp->b_bcount != bp->b_npages * PAGE_SIZE) {
 		if (!buf_mapped(bp)) {
 			bp->b_data = bp->b_kvabase;
@@ -1601,4 +1616,10 @@ vnode_pager_release_writecount(vm_object_t object, vm_offset_t start,
 	vdrop(vp);
 	if (mp != NULL)
 		vn_finished_write(mp);
+}
+
+static void
+vnode_pager_getvp(vm_object_t object, struct vnode **vpp, bool *vp_heldp)
+{
+	*vpp = object->handle;
 }

@@ -30,9 +30,9 @@
 #define	_ZFS_BLKDEV_H
 
 #include <linux/blkdev.h>
-#include <linux/elevator.h>
 #include <linux/backing-dev.h>
 #include <linux/hdreg.h>
+#include <linux/major.h>
 #include <linux/msdos_fs.h>	/* for SECTOR_* */
 
 #ifndef HAVE_BLK_QUEUE_FLAG_SET
@@ -52,7 +52,7 @@ blk_queue_flag_clear(unsigned int flag, struct request_queue *q)
 #endif
 
 /*
- * 4.7 - 4.x API,
+ * 4.7 API,
  * The blk_queue_write_cache() interface has replaced blk_queue_flush()
  * interface.  However, the new interface is GPL-only thus we implement
  * our own trivial wrapper when the GPL-only version is detected.
@@ -92,10 +92,13 @@ blk_queue_set_write_cache(struct request_queue *q, bool wc, bool fua)
 static inline void
 blk_queue_set_read_ahead(struct request_queue *q, unsigned long ra_pages)
 {
+#if !defined(HAVE_BLK_QUEUE_UPDATE_READAHEAD) && \
+	!defined(HAVE_DISK_UPDATE_READAHEAD)
 #ifdef HAVE_BLK_QUEUE_BDI_DYNAMIC
 	q->backing_dev_info->ra_pages = ra_pages;
 #else
 	q->backing_dev_info.ra_pages = ra_pages;
+#endif
 #endif
 }
 
@@ -254,14 +257,40 @@ bio_set_bi_error(struct bio *bio, int error)
 #endif /* HAVE_1ARG_BIO_END_IO_T */
 
 /*
- * 4.1 - x.y.z API,
+ * 5.15 MACRO,
+ *   GD_DEAD
+ *
+ * 2.6.36 - 5.14 MACRO,
+ *   GENHD_FL_UP
+ *
+ * Check the disk status and return B_TRUE if alive
+ * otherwise B_FALSE
+ */
+static inline boolean_t
+zfs_check_disk_status(struct block_device *bdev)
+{
+#if defined(GENHD_FL_UP)
+	return (!!(bdev->bd_disk->flags & GENHD_FL_UP));
+#elif defined(GD_DEAD)
+	return (!test_bit(GD_DEAD, &bdev->bd_disk->state));
+#else
+/*
+ * This is encountered if neither GENHD_FL_UP nor GD_DEAD is available in
+ * the kernel - likely due to an MACRO change that needs to be chased down.
+ */
+#error "Unsupported kernel: no usable disk status check"
+#endif
+}
+
+/*
+ * 4.1 API,
  * 3.10.0 CentOS 7.x API,
  *   blkdev_reread_part()
  *
  * For older kernels trigger a re-reading of the partition table by calling
  * check_disk_change() which calls flush_disk() to invalidate the device.
  *
- * For newer kernels (as of 5.10), bdev_check_media_chage is used, in favor of
+ * For newer kernels (as of 5.10), bdev_check_media_change is used, in favor of
  * check_disk_change(), with the modification that invalidation is no longer
  * forced.
  */
@@ -277,18 +306,22 @@ bio_set_bi_error(struct bio *bio, int error)
 static inline int
 zfs_check_media_change(struct block_device *bdev)
 {
+#ifdef HAVE_BLOCK_DEVICE_OPERATIONS_REVALIDATE_DISK
 	struct gendisk *gd = bdev->bd_disk;
 	const struct block_device_operations *bdo = gd->fops;
+#endif
 
 	if (!bdev_check_media_change(bdev))
 		return (0);
 
+#ifdef HAVE_BLOCK_DEVICE_OPERATIONS_REVALIDATE_DISK
 	/*
 	 * Force revalidation, to mimic the old behavior of
 	 * check_disk_change()
 	 */
 	if (bdo->revalidate_disk)
 		bdo->revalidate_disk(gd);
+#endif
 
 	return (0);
 }
@@ -350,7 +383,11 @@ vdev_lookup_bdev(const char *path, dev_t *dev)
 static inline void
 bio_set_op_attrs(struct bio *bio, unsigned rw, unsigned flags)
 {
+#if defined(HAVE_BIO_BI_OPF)
+	bio->bi_opf = rw | flags;
+#else
 	bio->bi_rw |= rw | flags;
+#endif /* HAVE_BIO_BI_OPF */
 }
 #endif
 
@@ -366,7 +403,7 @@ bio_set_op_attrs(struct bio *bio, unsigned rw, unsigned flags)
  *
  * 4.8 - 4.9 API,
  *   REQ_FLUSH was renamed to REQ_PREFLUSH.  For consistency with previous
- *   ZoL releases, prefer the WRITE_FLUSH_FUA flag set if it's available.
+ *   OpenZFS releases, prefer the WRITE_FLUSH_FUA flag set if it's available.
  *
  * 4.10 API,
  *   The read/write flags and their modifiers, including WRITE_FLUSH,
@@ -378,7 +415,7 @@ static inline void
 bio_set_flush(struct bio *bio)
 {
 #if defined(HAVE_REQ_PREFLUSH)	/* >= 4.10 */
-	bio_set_op_attrs(bio, 0, REQ_PREFLUSH);
+	bio_set_op_attrs(bio, 0, REQ_PREFLUSH | REQ_OP_WRITE);
 #elif defined(WRITE_FLUSH_FUA)	/* >= 2.6.37 and <= 4.9 */
 	bio_set_op_attrs(bio, 0, WRITE_FLUSH_FUA);
 #else
@@ -387,7 +424,7 @@ bio_set_flush(struct bio *bio)
 }
 
 /*
- * 4.8 - 4.x API,
+ * 4.8 API,
  *   REQ_OP_FLUSH
  *
  * 4.8-rc0 - 4.8-rc1,
@@ -417,7 +454,7 @@ bio_is_flush(struct bio *bio)
 }
 
 /*
- * 4.8 - 4.x API,
+ * 4.8 API,
  *   REQ_FUA flag moved to bio->bi_opf
  *
  * 2.6.x - 4.7 API,
@@ -436,7 +473,7 @@ bio_is_fua(struct bio *bio)
 }
 
 /*
- * 4.8 - 4.x API,
+ * 4.8 API,
  *   REQ_OP_DISCARD
  *
  * 2.6.36 - 4.7 API,
@@ -458,7 +495,7 @@ bio_is_discard(struct bio *bio)
 }
 
 /*
- * 4.8 - 4.x API,
+ * 4.8 API,
  *   REQ_OP_SECURE_ERASE
  *
  * 2.6.36 - 4.7 API,
@@ -488,21 +525,45 @@ blk_queue_discard_granularity(struct request_queue *q, unsigned int dg)
 }
 
 /*
- * 4.8 - 4.x API,
+ * 5.19 API,
+ *   bdev_max_discard_sectors()
+ *
+ * 2.6.32 API,
+ *   blk_queue_discard()
+ */
+static inline boolean_t
+bdev_discard_supported(struct block_device *bdev)
+{
+#if defined(HAVE_BDEV_MAX_DISCARD_SECTORS)
+	return (!!bdev_max_discard_sectors(bdev));
+#elif defined(HAVE_BLK_QUEUE_DISCARD)
+	return (!!blk_queue_discard(bdev_get_queue(bdev)));
+#else
+#error "Unsupported kernel"
+#endif
+}
+
+/*
+ * 5.19 API,
+ *   bdev_max_secure_erase_sectors()
+ *
+ * 4.8 API,
  *   blk_queue_secure_erase()
  *
  * 2.6.36 - 4.7 API,
  *   blk_queue_secdiscard()
  */
-static inline int
-blk_queue_discard_secure(struct request_queue *q)
+static inline boolean_t
+bdev_secure_discard_supported(struct block_device *bdev)
 {
-#if defined(HAVE_BLK_QUEUE_SECURE_ERASE)
-	return (blk_queue_secure_erase(q));
+#if defined(HAVE_BDEV_MAX_SECURE_ERASE_SECTORS)
+	return (!!bdev_max_secure_erase_sectors(bdev));
+#elif defined(HAVE_BLK_QUEUE_SECURE_ERASE)
+	return (!!blk_queue_secure_erase(bdev_get_queue(bdev)));
 #elif defined(HAVE_BLK_QUEUE_SECDISCARD)
-	return (blk_queue_secdiscard(q));
+	return (!!blk_queue_secdiscard(bdev_get_queue(bdev)));
 #else
-	return (0);
+#error "Unsupported kernel"
 #endif
 }
 
@@ -520,7 +581,13 @@ blk_generic_start_io_acct(struct request_queue *q __attribute__((unused)),
     struct gendisk *disk __attribute__((unused)),
     int rw __attribute__((unused)), struct bio *bio)
 {
-#if defined(HAVE_DISK_IO_ACCT)
+#if defined(HAVE_BDEV_IO_ACCT_63)
+	return (bdev_start_io_acct(bio->bi_bdev, bio_op(bio),
+	    jiffies));
+#elif defined(HAVE_BDEV_IO_ACCT_OLD)
+	return (bdev_start_io_acct(bio->bi_bdev, bio_sectors(bio),
+	    bio_op(bio), jiffies));
+#elif defined(HAVE_DISK_IO_ACCT)
 	return (disk_start_io_acct(disk, bio_sectors(bio), bio_op(bio)));
 #elif defined(HAVE_BIO_IO_ACCT)
 	return (bio_start_io_acct(bio));
@@ -543,7 +610,12 @@ blk_generic_end_io_acct(struct request_queue *q __attribute__((unused)),
     struct gendisk *disk __attribute__((unused)),
     int rw __attribute__((unused)), struct bio *bio, unsigned long start_time)
 {
-#if defined(HAVE_DISK_IO_ACCT)
+#if defined(HAVE_BDEV_IO_ACCT_63)
+	bdev_end_io_acct(bio->bi_bdev, bio_op(bio), bio_sectors(bio),
+	    start_time);
+#elif defined(HAVE_BDEV_IO_ACCT_OLD)
+	bdev_end_io_acct(bio->bi_bdev, bio_op(bio), start_time);
+#elif defined(HAVE_DISK_IO_ACCT)
 	disk_end_io_acct(disk, bio_op(bio), start_time);
 #elif defined(HAVE_BIO_IO_ACCT)
 	bio_end_io_acct(bio, start_time);

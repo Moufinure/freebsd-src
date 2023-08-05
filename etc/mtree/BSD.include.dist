@@ -17,11 +17,61 @@
     ..
     c++
         v1
+            __algorithm
+            ..
+            __bit
+            ..
+            __charconv
+            ..
+            __chrono
+            ..
+            __compare
+            ..
+            __concepts
+            ..
+            __coroutine
+            ..
+            __debug_utils
+            ..
+            __expected
+            ..
+            __filesystem
+            ..
+            __format
+            ..
+            __functional
+            ..
+            __fwd
+            ..
+            __ios
+            ..
+            __iterator
+            ..
+            __memory
+            ..
+            __memory_resource
+            ..
+            __numeric
+            ..
+            __random
+            ..
+            __ranges
+            ..
+            __string
+            ..
+            __thread
+            ..
+            __tuple_dir
+            ..
+            __type_traits
+            ..
+            __utility
+            ..
+            __variant
+            ..
             experimental
             ..
             ext
-            ..
-            tr1
             ..
         ..
     ..
@@ -102,6 +152,8 @@
         ..
         vkbd
         ..
+        wg
+        ..
         wi
         ..
     ..
@@ -131,10 +183,6 @@
         udf
         ..
         unionfs
-        ..
-    ..
-    gcc
-        4.2
         ..
     ..
     geom
@@ -232,6 +280,10 @@
         ..
     ..
     netinet6
+    ..
+    netlink
+        route
+        ..
     ..
     netipsec
     ..

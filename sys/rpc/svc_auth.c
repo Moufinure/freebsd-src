@@ -48,6 +48,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/param.h>
 #include <sys/lock.h>
 #include <sys/mutex.h>
+#include <sys/proc.h>
 #include <sys/systm.h>
 #include <sys/jail.h>
 #include <sys/ucred.h>
@@ -60,7 +61,7 @@ static enum auth_stat (*_svcauth_rpcsec_gss)(struct svc_req *,
 static int (*_svcauth_rpcsec_gss_getcred)(struct svc_req *,
     struct ucred **, int *);
 
-static struct svc_auth_ops svc_auth_null_ops;
+static const struct svc_auth_ops svc_auth_null_ops;
 
 /*
  * The call rpc message, msg has been obtained from the wire.  The msg contains
@@ -70,7 +71,7 @@ static struct svc_auth_ops svc_auth_null_ops;
  * set rqst->rq_xprt->verf to the appropriate response verifier;
  * sets rqst->rq_client_cred to the "cooked" form of the credentials.
  *
- * NB: rqst->rq_cxprt->verf must be pre-alloctaed;
+ * NB: rqst->rq_cxprt->verf must be pre-allocated;
  * its length is set appropriately.
  *
  * The caller still owns and is responsible for msg->u.cmb.cred and
@@ -145,10 +146,10 @@ svcauth_null_release(SVCAUTH *auth)
 
 }
 
-static struct svc_auth_ops svc_auth_null_ops = {
-	svcauth_null_wrap,
-	svcauth_null_unwrap,
-	svcauth_null_release,
+static const struct svc_auth_ops svc_auth_null_ops = {
+	.svc_ah_wrap = svcauth_null_wrap,
+	.svc_ah_unwrap = svcauth_null_unwrap,
+	.svc_ah_release = svcauth_null_release,
 };
 
 /*ARGSUSED*/
@@ -197,7 +198,7 @@ svc_getcred(struct svc_req *rqst, struct ucred **crp, int *flavorp)
 		cr->cr_uid = cr->cr_ruid = cr->cr_svuid = xprt->xp_uid;
 		crsetgroups(cr, xprt->xp_ngrps, xprt->xp_gidp);
 		cr->cr_rgid = cr->cr_svgid = xprt->xp_gidp[0];
-		cr->cr_prison = &prison0;
+		cr->cr_prison = curthread->td_ucred->cr_prison;
 		prison_hold(cr->cr_prison);
 		*crp = cr;
 		return (TRUE);
@@ -210,7 +211,7 @@ svc_getcred(struct svc_req *rqst, struct ucred **crp, int *flavorp)
 		cr->cr_uid = cr->cr_ruid = cr->cr_svuid = xcr->cr_uid;
 		crsetgroups(cr, xcr->cr_ngroups, xcr->cr_groups);
 		cr->cr_rgid = cr->cr_svgid = cr->cr_groups[0];
-		cr->cr_prison = &prison0;
+		cr->cr_prison = curthread->td_ucred->cr_prison;
 		prison_hold(cr->cr_prison);
 		*crp = cr;
 		return (TRUE);

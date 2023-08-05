@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2013 David Chisnall
  * All rights reserved.
@@ -38,6 +38,7 @@
 #include "dtb.hh"
 
 #include <algorithm>
+#include <limits>
 #include <sstream>
 
 #include <ctype.h>

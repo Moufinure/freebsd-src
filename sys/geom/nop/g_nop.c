@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2004-2006 Pawel Jakub Dawidek <pjd@FreeBSD.org>
  * Copyright (c) 2019 Mariusz Zaborski <oshogbo@FreeBSD.org>
@@ -130,8 +130,7 @@ g_nop_resize(struct g_consumer *cp)
 }
 
 static int
-g_nop_dumper(void *priv, void *virtual, vm_offset_t physical, off_t offset,
-    size_t length)
+g_nop_dumper(void *priv, void *virtual, off_t offset, size_t length)
 {
 
 	return (0);

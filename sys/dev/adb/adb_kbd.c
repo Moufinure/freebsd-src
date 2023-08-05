@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (C) 2008 Nathan Whitehorn
  * All rights reserved.
@@ -800,6 +800,7 @@ static int akbd_ioctl(keyboard_t *kbd, u_long cmd, caddr_t data)
 	case OPIO_KEYMAP:
 	case PIO_KEYMAPENT:
 	case PIO_DEADKEYMAP:
+	case OPIO_DEADKEYMAP:
 	default:
 		return (genkbd_commonioctl(kbd, cmd, data));
 	}

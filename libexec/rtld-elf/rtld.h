@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright 1996, 1997, 1998, 1999, 2000 John D. Polstra.
  * All rights reserved.
@@ -55,6 +55,7 @@ extern int tls_max_index;
 
 extern int npagesizes;
 extern size_t *pagesizes;
+extern size_t page_size;
 
 extern int main_argc;
 extern char **main_argv;
@@ -174,6 +175,8 @@ typedef struct Struct_Obj_Entry {
     unsigned long relsize;	/* Size in bytes of relocation info */
     const Elf_Rela *rela;	/* Relocation entries with addend */
     unsigned long relasize;	/* Size in bytes of addend relocation info */
+    const Elf_Relr *relr;	/* RELR relocation entries */
+    unsigned long relrsize;	/* Size in bytes of RELR relocations */
     const Elf_Rel *pltrel;	/* PLT relocation entries */
     unsigned long pltrelsize;	/* Size in bytes of PLT relocation info */
     const Elf_Rela *pltrela;	/* PLT relocation entries with addend */
@@ -248,7 +251,8 @@ typedef struct Struct_Obj_Entry {
     bool traced : 1;		/* Already printed in ldd trace output */
     bool jmpslots_done : 1;	/* Already have relocated the jump slots */
     bool init_done : 1;		/* Already have added object to init list */
-    bool tls_done : 1;		/* Already allocated offset for static TLS */
+    bool tls_static : 1;	/* Already allocated offset for static TLS */
+    bool tls_dynamic : 1;	/* A non-static DTV entry has been allocated */
     bool phdr_alloc : 1;	/* Phdr is allocated and needs to be freed. */
     bool z_origin : 1;		/* Process rpath and soname tokens */
     bool z_nodelete : 1;	/* Do not unload the object and dependencies */
@@ -380,7 +384,9 @@ void dump_Elf_Rela(Obj_Entry *, const Elf_Rela *, u_long);
 /*
  * Function declarations.
  */
-unsigned long elf_hash(const char *);
+uintptr_t rtld_round_page(uintptr_t);
+uintptr_t rtld_trunc_page(uintptr_t);
+Elf32_Word elf_hash(const char *);
 const Elf_Sym *find_symdef(unsigned long, const Obj_Entry *,
   const Obj_Entry **, int, SymCache *, struct Struct_RtldLockState *);
 void lockdflt_init(void);
@@ -389,11 +395,12 @@ Obj_Entry *globallist_curr(const Obj_Entry *obj);
 Obj_Entry *globallist_next(const Obj_Entry *obj);
 void obj_free(Obj_Entry *);
 Obj_Entry *obj_new(void);
+Obj_Entry *obj_from_addr(const void *);
 void _rtld_bind_start(void);
 void *rtld_resolve_ifunc(const Obj_Entry *obj, const Elf_Sym *def);
 void symlook_init(SymLook *, const char *);
 int symlook_obj(SymLook *, const Obj_Entry *);
-void *tls_get_addr_common(Elf_Addr** dtvp, int index, size_t offset);
+void *tls_get_addr_common(uintptr_t **dtvp, int index, size_t offset);
 void *allocate_tls(Obj_Entry *, void *, size_t, size_t);
 void free_tls(void *, size_t, size_t);
 void *allocate_module_tls(int index);
@@ -401,6 +408,7 @@ bool allocate_tls_offset(Obj_Entry *obj);
 void free_tls_offset(Obj_Entry *obj);
 const Ver_Entry *fetch_ventry(const Obj_Entry *obj, unsigned long);
 int convert_prot(int elfflags);
+bool check_elf_headers(const Elf_Ehdr *hdr, const char *path);
 
 /*
  * MD function declarations.
@@ -416,10 +424,5 @@ int reloc_gnu_ifunc(Obj_Entry *, int flags, struct Struct_RtldLockState *);
 void ifunc_init(Elf_Auxinfo[__min_size(AT_COUNT)]);
 void init_pltgot(Obj_Entry *);
 void allocate_initial_tls(Obj_Entry *);
-
-void *__crt_calloc(size_t num, size_t size);
-void __crt_free(void *cp);
-void *__crt_malloc(size_t nbytes);
-void *__crt_realloc(void *cp, size_t nbytes);
 
 #endif /* } */

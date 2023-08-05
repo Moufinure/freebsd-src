@@ -53,9 +53,12 @@ static char *rcsid = "$FreeBSD$";
 #include <stddef.h>
 #include <string.h>
 #include <unistd.h>
+#ifdef IN_RTLD
 #include "rtld.h"
 #include "rtld_printf.h"
-#include "paths.h"
+#include "rtld_paths.h"
+#endif
+#include "rtld_malloc.h"
 
 /*
  * Pre-allocate mmap'ed pages
@@ -68,10 +71,6 @@ static caddr_t		pagepool_start, pagepool_end;
  * contains a pointer to the next free block, and the bottom two bits must
  * be zero.  When in use, the first byte is set to MAGIC, and the second
  * byte is the size index.  The remaining bytes are for alignment.
- * If range checking is enabled then a second word holds the size of the
- * requested block, less 1, rounded up to a multiple of sizeof(RMAGIC).
- * The order of elements is critical: ov_magic must overlay the low order
- * bits of ov_next, and ov_magic can not be a valid ov_next bit pattern.
  */
 union	overhead {
 	union	overhead *ov_next;	/* when free */
@@ -106,6 +105,12 @@ static	int pagesz;			/* page size */
  * must contain at least one page size.  The page sizes must be stored in
  * increasing order.
  */
+
+static union overhead *
+cp2op(void *cp)
+{
+	return ((union overhead *)((caddr_t)cp - sizeof(union overhead)));
+}
 
 void *
 __crt_malloc(size_t nbytes)
@@ -184,7 +189,9 @@ morecore(int bucket)
 		nblks = 1;
 	}
 	if (amt > pagepool_end - pagepool_start)
-		if (morepages(amt/pagesz + NPOOLPAGES) == 0)
+		if (morepages(amt / pagesz + NPOOLPAGES) == 0 &&
+		    /* Retry with min required size */
+		    morepages(amt / pagesz) == 0)
 			return;
 	op = (union overhead *)pagepool_start;
 	pagepool_start += amt;
@@ -208,7 +215,7 @@ __crt_free(void *cp)
 
   	if (cp == NULL)
   		return;
-	op = (union overhead *)((caddr_t)cp - sizeof (union overhead));
+	op = cp2op(cp);
 	if (op->ov_magic != MAGIC)
 		return;				/* sanity */
   	size = op->ov_index;
@@ -226,7 +233,7 @@ __crt_realloc(void *cp, size_t nbytes)
 
   	if (cp == NULL)
 		return (__crt_malloc(nbytes));
-	op = (union overhead *)((caddr_t)cp - sizeof (union overhead));
+	op = cp2op(cp);
 	if (op->ov_magic != MAGIC)
 		return (NULL);	/* Double-free or bad argument */
 	i = op->ov_index;
@@ -259,7 +266,7 @@ morepages(int n)
 	int offset;
 
 	if (pagepool_end - pagepool_start > pagesz) {
-		addr = (caddr_t)roundup2((long)pagepool_start, pagesz);
+		addr = roundup2(pagepool_start, pagesz);
 		if (munmap(addr, pagepool_end - addr) != 0) {
 #ifdef IN_RTLD
 			rtld_fdprintf(STDERR_FILENO, _BASENAME_RTLD ": "
@@ -269,19 +276,21 @@ morepages(int n)
 		}
 	}
 
-	offset = (long)pagepool_start - rounddown2((long)pagepool_start,
-	    pagesz);
+	offset = (uintptr_t)pagepool_start - rounddown2(
+	    (uintptr_t)pagepool_start, pagesz);
 
-	pagepool_start = mmap(0, n * pagesz, PROT_READ | PROT_WRITE,
+	addr = mmap(0, n * pagesz, PROT_READ | PROT_WRITE,
 	    MAP_ANON | MAP_PRIVATE, -1, 0);
-	if (pagepool_start == MAP_FAILED) {
+	if (addr == MAP_FAILED) {
 #ifdef IN_RTLD
 		rtld_fdprintf(STDERR_FILENO, _BASENAME_RTLD ": morepages: "
 		    "cannot mmap anonymous memory: %s\n",
 		    rtld_strerror(errno));
 #endif
+		pagepool_start = pagepool_end = NULL;
 		return (0);
 	}
+	pagepool_start = addr;
 	pagepool_end = pagepool_start + n * pagesz;
 	pagepool_start += offset;
 

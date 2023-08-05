@@ -79,7 +79,7 @@ __FBSDID("$FreeBSD$");
 #define	fxrstor(addr)		__asm __volatile("fxrstor %0" : : "m" (*(addr)))
 #define	fxsave(addr)		__asm __volatile("fxsave %0" : "=m" (*(addr)))
 #define	ldmxcsr(csr)		__asm __volatile("ldmxcsr %0" : : "m" (csr))
-#define	stmxcsr(addr)		__asm __volatile("stmxcsr %0" : : "m" (*(addr)))
+#define	stmxcsr(addr)		__asm __volatile("stmxcsr %0" : "=m" (*(addr)))
 
 static __inline void
 xrstor32(char *addr, uint64_t mask)
@@ -260,22 +260,8 @@ fpurestore_fxrstor(void *addr)
 	fxrstor((char *)addr);
 }
 
-static void
-init_xsave(void)
-{
-
-	if (use_xsave)
-		return;
-	if ((cpu_feature2 & CPUID2_XSAVE) == 0)
-		return;
-	use_xsave = 1;
-	TUNABLE_INT_FETCH("hw.use_xsave", &use_xsave);
-}
-
 DEFINE_IFUNC(, void, fpusave, (void *))
 {
-
-	init_xsave();
 	if (!use_xsave)
 		return (fpusave_fxsave);
 	if ((cpu_stdext_feature & CPUID_EXTSTATE_XSAVEOPT) != 0) {
@@ -288,8 +274,6 @@ DEFINE_IFUNC(, void, fpusave, (void *))
 
 DEFINE_IFUNC(, void, fpurestore, (void *))
 {
-
-	init_xsave();
 	if (!use_xsave)
 		return (fpurestore_fxrstor);
 	return ((cpu_stdext_feature & CPUID_STDEXT_NFPUSG) != 0 ?
@@ -394,6 +378,7 @@ void
 fpuinit(void)
 {
 	register_t saveintr;
+	uint64_t cr4;
 	u_int mxcsr;
 	u_short control;
 
@@ -401,7 +386,22 @@ fpuinit(void)
 		fpuinit_bsp1();
 
 	if (use_xsave) {
-		load_cr4(rcr4() | CR4_XSAVE);
+		cr4 = rcr4();
+
+		/*
+		 * Revert enablement of PKRU if user disabled its
+		 * saving on context switches by clearing the bit in
+		 * the xsave mask.  Also redundantly clear the bit in
+		 * cpu_stdext_feature2 to prevent pmap from ever
+		 * trying to set the page table bits.
+		 */
+		if ((cpu_stdext_feature2 & CPUID_STDEXT2_PKU) != 0 &&
+		    (xsave_mask & XFEATURE_ENABLED_PKRU) == 0) {
+			cr4 &= ~CR4_PKE;
+			cpu_stdext_feature2 &= ~CPUID_STDEXT2_PKU;
+		}
+
+		load_cr4(cr4 | CR4_XSAVE);
 		load_xcr(XCR0, xsave_mask);
 	}
 
@@ -448,6 +448,8 @@ fpuinitstate(void *arg __unused)
 		    xsave_area_elm_descr), M_DEVBUF, M_WAITOK | M_ZERO);
 	}
 
+	cpu_thread_alloc(&thread0);
+
 	saveintr = intr_disable();
 	stop_emulating();
 
@@ -470,7 +472,8 @@ fpuinitstate(void *arg __unused)
 
 	/*
 	 * Create a table describing the layout of the CPU Extended
-	 * Save Area.
+	 * Save Area.  See Intel SDM rev. 075 Vol. 1 13.4.1 "Legacy
+	 * Region of an XSAVE Area" for the source of offsets/sizes.
 	 */
 	if (use_xsave) {
 		xstate_bv = (uint64_t *)((char *)(fpu_initialstate + 1) +
@@ -482,7 +485,7 @@ fpuinitstate(void *arg __unused)
 		xsave_area_desc[0].size = 160;
 		/* XMM */
 		xsave_area_desc[1].offset = 160;
-		xsave_area_desc[1].size = 288 - 160;
+		xsave_area_desc[1].size = 416 - 160;
 
 		for (i = 2; i < max_ext_n; i++) {
 			cpuid_count(0xd, i, cp);
@@ -495,7 +498,7 @@ fpuinitstate(void *arg __unused)
 	intr_restore(saveintr);
 }
 /* EFIRT needs this to be initialized before we can enter our EFI environment */
-SYSINIT(fpuinitstate, SI_SUB_DRIVERS, SI_ORDER_FIRST, fpuinitstate, NULL);
+SYSINIT(fpuinitstate, SI_SUB_CPU, SI_ORDER_ANY, fpuinitstate, NULL);
 
 /*
  * Free coprocessor (if we have it).
@@ -521,14 +524,14 @@ fpuformat(void)
 	return (_MC_FPFMT_XMM);
 }
 
-/* 
+/*
  * The following mechanism is used to ensure that the FPE_... value
  * that is passed as a trapcode to the signal handler of the user
  * process does not have more than one bit set.
- * 
+ *
  * Multiple bits may be set if the user process modifies the control
  * word while a status word bit is already set.  While this is a sign
- * of bad coding, we have no choise than to narrow them down to one
+ * of bad coding, we have no choice than to narrow them down to one
  * bit, since we must not send a trapcode that is not exactly one of
  * the FPE_ macros.
  *

@@ -94,6 +94,11 @@ static const struct {
 	{0x06221b21, 0x00, "ASMedia ASM106x",	AHCI_Q_NOCCS|AHCI_Q_NOAUX},
 	{0x06241b21, 0x00, "ASMedia ASM106x",	AHCI_Q_NOCCS|AHCI_Q_NOAUX},
 	{0x06251b21, 0x00, "ASMedia ASM106x",	AHCI_Q_NOCCS|AHCI_Q_NOAUX},
+	{0x10621b21, 0x00, "ASMedia ASM116x",	0},
+	{0x10641b21, 0x00, "ASMedia ASM116x",	0},
+	{0x11641b21, 0x00, "ASMedia ASM116x",	0},
+	{0x11651b21, 0x00, "ASMedia ASM116x",	0},
+	{0x11661b21, 0x00, "ASMedia ASM116x",	0},
 	{0x79011d94, 0x00, "Hygon KERNCZ",	0},
 	{0x26528086, 0x00, "Intel ICH6",	AHCI_Q_NOFORCE},
 	{0x26538086, 0x00, "Intel ICH6M",	AHCI_Q_NOFORCE},
@@ -186,6 +191,7 @@ static const struct {
 	{0x23a38086, 0x00, "Intel Coleto Creek",	0},
 	{0x31e38086, 0x00, "Intel Gemini Lake",	0},
 	{0x5ae38086, 0x00, "Intel Apollo Lake",	0},
+	{0x7ae28086, 0x00, "Intel Alder Lake",	0},
 	{0x8c028086, 0x00, "Intel Lynx Point",	0},
 	{0x8c038086, 0x00, "Intel Lynx Point",	0},
 	{0x8c048086, 0x00, "Intel Lynx Point (RAID)",	0},
@@ -286,7 +292,7 @@ static const struct {
 	{0x92201b4b, 0x00, "Marvell 88SE9220",  AHCI_Q_ALTSIG |
 	    AHCI_Q_IOMMU_BUSWIDE},
 	{0x92301b4b, 0x00, "Marvell 88SE9230",  AHCI_Q_ALTSIG |
-	    AHCI_Q_IOMMU_BUSWIDE},
+	    AHCI_Q_IOMMU_BUSWIDE | AHCI_Q_SLOWDEV},
 	{0x92351b4b, 0x00, "Marvell 88SE9235",  0},
 	{0x06201103, 0x00, "HighPoint RocketRAID 620",	0},
 	{0x06201b4b, 0x00, "HighPoint RocketRAID 620",	0},
@@ -377,6 +383,7 @@ static const struct {
 	{0xa01c177d, 0x00, "ThunderX",		AHCI_Q_ABAR0|AHCI_Q_1MSI},
 	{0x00311c36, 0x00, "Annapurna",		AHCI_Q_FORCE_PI|AHCI_Q_RESTORE_CAP|AHCI_Q_NOMSIX},
 	{0x1600144d, 0x00, "Samsung",		AHCI_Q_NOMSI},
+	{0x07e015ad, 0x00, "VMware",		0},
 	{0x00000000, 0x00, NULL,		0}
 };
 

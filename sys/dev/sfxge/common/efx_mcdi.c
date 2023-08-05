@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2008-2016 Solarflare Communications Inc.
  * All rights reserved.
@@ -1269,7 +1269,7 @@ fail1:
 }
 
 /*
- * Internal routines for for specific MCDI requests.
+ * Internal routines for specific MCDI requests.
  */
 
 	__checkReturn	efx_rc_t

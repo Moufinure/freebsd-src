@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2006-2009 University of Zagreb
  * Copyright (c) 2006-2009 FreeBSD Foundation
@@ -354,12 +354,6 @@ struct vnet_sysinit {
 	    vnet_register_sysuninit, &ident ## _vnet_uninit);		\
 	SYSUNINIT(vnet_uninit_ ## ident, subsystem, order,		\
 	    vnet_deregister_sysuninit, &ident ## _vnet_uninit)
-
-/*
- * Run per-vnet sysinits or sysuninits during vnet creation/destruction.
- */
-void	 vnet_sysinit(void);
-void	 vnet_sysuninit(void);
 
 /*
  * Interfaces for managing per-vnet constructors and destructors.

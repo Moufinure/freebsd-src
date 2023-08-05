@@ -127,14 +127,7 @@ fifo_cleanup(struct vnode *vp)
  */
 /* ARGSUSED */
 static int
-fifo_open(ap)
-	struct vop_open_args /* {
-		struct vnode *a_vp;
-		int  a_mode;
-		struct ucred *a_cred;
-		struct thread *a_td;
-		struct file *a_fp;
-	} */ *ap;
+fifo_open(struct vop_open_args *ap)
 {
 	struct vnode *vp;
 	struct file *fp;
@@ -154,9 +147,9 @@ fifo_open(ap)
 		error = pipe_named_ctor(&fpipe, td);
 		if (error != 0)
 			return (error);
-		fip = malloc(sizeof(*fip), M_VNODE, M_WAITOK);
+		fip = malloc(sizeof(*fip), M_VNODE, M_WAITOK | M_ZERO);
 		fip->fi_pipe = fpipe;
-		fpipe->pipe_wgen = fip->fi_readers = fip->fi_writers = 0;
+		fpipe->pipe_wgen = 0;
  		KASSERT(vp->v_fifoinfo == NULL, ("fifo_open: v_fifoinfo race"));
 		vp->v_fifoinfo = fip;
 	}
@@ -269,22 +262,28 @@ fifo_open(ap)
  */
 /* ARGSUSED */
 static int
-fifo_close(ap)
-	struct vop_close_args /* {
-		struct vnode *a_vp;
-		int  a_fflag;
-		struct ucred *a_cred;
-		struct thread *a_td;
-	} */ *ap;
+fifo_close(struct vop_close_args *ap)
 {
 	struct vnode *vp;
 	struct fifoinfo *fip;
 	struct pipe *cpipe;
 
 	vp = ap->a_vp;
-	fip = vp->v_fifoinfo;
-	cpipe = fip->fi_pipe;
 	ASSERT_VOP_ELOCKED(vp, "fifo_close");
+	fip = vp->v_fifoinfo;
+
+	/*
+	 * During open, it is possible that the fifo vnode is relocked
+	 * after the vnode is instantiated but before VOP_OPEN() is
+	 * done.  For instance, vn_open_vnode() might need to upgrade
+	 * vnode lock, or ffs_vput_pair() needs to unlock vp to sync
+	 * dvp.  In this case, reclaim can observe us with v_fifoinfo
+	 * equal to NULL.
+	 */
+	if (fip == NULL)
+		return (0);
+
+	cpipe = fip->fi_pipe;
 	if (ap->a_fflag & FREAD) {
 		fip->fi_readers--;
 		if (fip->fi_readers == 0) {
@@ -320,8 +319,7 @@ fifo_close(ap)
  * Print out internal contents of a fifo vnode.
  */
 int
-fifo_printinfo(vp)
-	struct vnode *vp;
+fifo_printinfo(struct vnode *vp)
 {
 	struct fifoinfo *fip = vp->v_fifoinfo;
 
@@ -338,10 +336,7 @@ fifo_printinfo(vp)
  * Print out the contents of a fifo vnode.
  */
 static int
-fifo_print(ap)
-	struct vop_print_args /* {
-		struct vnode *a_vp;
-	} */ *ap;
+fifo_print(struct vop_print_args *ap)
 {
 	printf("    ");
 	fifo_printinfo(ap->a_vp);
@@ -354,15 +349,10 @@ fifo_print(ap)
  */
 /* ARGSUSED */
 static int
-fifo_advlock(ap)
-	struct vop_advlock_args /* {
-		struct vnode *a_vp;
-		caddr_t  a_id;
-		int  a_op;
-		struct flock *a_fl;
-		int  a_flags;
-	} */ *ap;
+fifo_advlock(struct vop_advlock_args *ap)
 {
 
-	return (ap->a_flags & F_FLOCK ? EOPNOTSUPP : EINVAL);
+	if ((ap->a_flags & F_FLOCK) == 0)
+		return (EINVAL);
+	return (vop_stdadvlock(ap));
 }

@@ -23,8 +23,7 @@
 using namespace llvm;
 
 void llvm::initializeIPO(PassRegistry &Registry) {
-  initializeOpenMPOptLegacyPassPass(Registry);
-  initializeArgPromotionPass(Registry);
+  initializeAnnotation2MetadataLegacyPass(Registry);
   initializeCalledValuePropagationLegacyPassPass(Registry);
   initializeConstantMergeLegacyPassPass(Registry);
   initializeCrossDSOCFIPass(Registry);
@@ -35,22 +34,19 @@ void llvm::initializeIPO(PassRegistry &Registry) {
   initializeGlobalOptLegacyPassPass(Registry);
   initializeGlobalSplitPass(Registry);
   initializeHotColdSplittingLegacyPassPass(Registry);
-  initializeIPCPPass(Registry);
+  initializeIROutlinerLegacyPassPass(Registry);
   initializeAlwaysInlinerLegacyPassPass(Registry);
   initializeSimpleInlinerPass(Registry);
   initializeInferFunctionAttrsLegacyPassPass(Registry);
   initializeInternalizeLegacyPassPass(Registry);
-  initializeLoopExtractorPass(Registry);
-  initializeBlockExtractorPass(Registry);
+  initializeLoopExtractorLegacyPassPass(Registry);
   initializeSingleLoopExtractorPass(Registry);
-  initializeLowerTypeTestsPass(Registry);
   initializeMergeFunctionsLegacyPassPass(Registry);
   initializePartialInlinerLegacyPassPass(Registry);
   initializeAttributorLegacyPassPass(Registry);
   initializeAttributorCGSCCLegacyPassPass(Registry);
   initializePostOrderFunctionAttrsLegacyPassPass(Registry);
   initializeReversePostOrderFunctionAttrsLegacyPassPass(Registry);
-  initializePruneEHPass(Registry);
   initializeIPSCCPLegacyPassPass(Registry);
   initializeStripDeadPrototypesLegacyPassPass(Registry);
   initializeStripSymbolsPass(Registry);
@@ -59,17 +55,10 @@ void llvm::initializeIPO(PassRegistry &Registry) {
   initializeStripNonDebugSymbolsPass(Registry);
   initializeBarrierNoopPass(Registry);
   initializeEliminateAvailableExternallyLegacyPassPass(Registry);
-  initializeSampleProfileLoaderLegacyPassPass(Registry);
-  initializeFunctionImportLegacyPassPass(Registry);
-  initializeWholeProgramDevirtPass(Registry);
 }
 
 void LLVMInitializeIPO(LLVMPassRegistryRef R) {
   initializeIPO(*unwrap(R));
-}
-
-void LLVMAddArgumentPromotionPass(LLVMPassManagerRef PM) {
-  unwrap(PM)->add(createArgumentPromotionPass());
 }
 
 void LLVMAddCalledValuePropagationPass(LLVMPassManagerRef PM) {
@@ -102,14 +91,6 @@ void LLVMAddGlobalDCEPass(LLVMPassManagerRef PM) {
 
 void LLVMAddGlobalOptimizerPass(LLVMPassManagerRef PM) {
   unwrap(PM)->add(createGlobalOptimizerPass());
-}
-
-void LLVMAddIPConstantPropagationPass(LLVMPassManagerRef PM) {
-  unwrap(PM)->add(createIPConstantPropagationPass());
-}
-
-void LLVMAddPruneEHPass(LLVMPassManagerRef PM) {
-  unwrap(PM)->add(createPruneEHPass());
 }
 
 void LLVMAddIPSCCPPass(LLVMPassManagerRef PM) {

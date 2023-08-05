@@ -29,6 +29,7 @@
 #ifndef _BOOTSTRAP_H_
 #define	_BOOTSTRAP_H_
 
+#include <stand.h>
 #include <sys/types.h>
 #include <sys/queue.h>
 #include <sys/linker_set.h>
@@ -51,6 +52,7 @@ extern char	command_errbuf[COMMAND_ERRBUFSZ];
 void	interact(void);
 void	interp_emit_prompt(void);
 int	interp_builtin_cmd(int argc, char *argv[]);
+bool	interp_has_builtin_cmd(const char *cmd);
 
 /* Called by interp.c for interp_*.c embedded interpreters */
 int	interp_include(const char *);	/* Execute commands from filename */
@@ -123,6 +125,14 @@ void cons_probe(void);
 bool		cons_update_mode(bool);
 void		autoload_font(bool);
 
+extern int module_verbose;
+enum {
+	MODULE_VERBOSE_SILENT,		/* say nothing */
+	MODULE_VERBOSE_SIZE,		/* print name and size */
+	MODULE_VERBOSE_TWIDDLE,		/* show progress */
+	MODULE_VERBOSE_FULL,		/* all we have */
+};
+
 /*
  * Plug-and-play enumerator/configurator interface.
  */
@@ -191,6 +201,7 @@ struct file_metadata
 {
 	size_t		md_size;
 	uint16_t	md_type;
+	vm_offset_t	md_addr;	/* Valid after copied to kernel space */
 	struct file_metadata *md_next;
 	char		md_data[1];	/* data are immediately appended */
 };
@@ -228,6 +239,12 @@ struct preloaded_file
 	size_t f_size;		/* file size */
 	struct kernel_module	*f_modules;	/* list of modules if any */
 	struct preloaded_file	*f_next;	/* next file */
+#ifdef __amd64__
+	bool			f_kernphys_relocatable;
+#endif
+#if defined(__i386__)
+	bool			f_tg_kernel_support;
+#endif
 };
 
 struct file_format
@@ -260,6 +277,9 @@ void file_addmetadata(struct preloaded_file *, int, size_t, void *);
 int file_addmodule(struct preloaded_file *, char *, int,
     struct kernel_module **);
 void file_removemetadata(struct preloaded_file *fp);
+int file_addbuf(const char *name, const char *type, size_t len, void *buf);
+int tslog_init(void);
+int tslog_publish(void);
 
 vm_offset_t build_font_module(vm_offset_t);
 
@@ -361,38 +381,10 @@ extern struct arch_switch archsw;
 /* This must be provided by the MD code, but should it be in the archsw? */
 void	delay(int delay);
 
-void	dev_cleanup(void);
-
-/*
- * nvstore API.
- */
-typedef int (nvstore_getter_cb_t)(void *, const char *, void **);
-typedef int (nvstore_setter_cb_t)(void *, int, const char *,
-    const void *, size_t);
-typedef int (nvstore_setter_str_cb_t)(void *, const char *, const char *,
-    const char *);
-typedef int (nvstore_unset_cb_t)(void *, const char *);
-typedef int (nvstore_print_cb_t)(void *, void *);
-typedef int (nvstore_iterate_cb_t)(void *, int (*)(void *, void *));
-
-typedef struct nvs_callbacks {
-	nvstore_getter_cb_t	*nvs_getter;
-	nvstore_setter_cb_t	*nvs_setter;
-	nvstore_setter_str_cb_t *nvs_setter_str;
-	nvstore_unset_cb_t	*nvs_unset;
-	nvstore_print_cb_t	*nvs_print;
-	nvstore_iterate_cb_t	*nvs_iterate;
-} nvs_callbacks_t;
-
-int nvstore_init(const char *, nvs_callbacks_t *, void *);
-int nvstore_fini(const char *);
-void *nvstore_get_store(const char *);
-int nvstore_print(void *);
-int nvstore_get_var(void *, const char *, void **);
-int nvstore_set_var(void *, int, const char *, void *, size_t);
-int nvstore_set_var_from_string(void *, const char *, const char *,
-    const char *);
-int nvstore_unset_var(void *, const char *);
+/* common code to set currdev variable. */
+int gen_setcurrdev(struct env_var *ev, int flags, const void *value);
+int mount_currdev(struct env_var *, int, const void *);
+void set_currdev(const char *devname);
 
 #ifndef CTASSERT
 #define	CTASSERT(x)	_Static_assert(x, "compile-time assertion failed")

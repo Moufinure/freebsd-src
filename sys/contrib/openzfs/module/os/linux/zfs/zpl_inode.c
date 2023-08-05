@@ -116,19 +116,27 @@ zpl_vap_init(vattr_t *vap, struct inode *dir, umode_t mode, cred_t *cr)
 {
 	vap->va_mask = ATTR_MODE;
 	vap->va_mode = mode;
-	vap->va_uid = crgetfsuid(cr);
+	vap->va_uid = crgetuid(cr);
 
 	if (dir && dir->i_mode & S_ISGID) {
 		vap->va_gid = KGID_TO_SGID(dir->i_gid);
 		if (S_ISDIR(mode))
 			vap->va_mode |= S_ISGID;
 	} else {
-		vap->va_gid = crgetfsgid(cr);
+		vap->va_gid = crgetgid(cr);
 	}
 }
 
 static int
+#ifdef HAVE_IOPS_CREATE_USERNS
+zpl_create(struct user_namespace *user_ns, struct inode *dir,
+    struct dentry *dentry, umode_t mode, bool flag)
+#elif defined(HAVE_IOPS_CREATE_IDMAP)
+zpl_create(struct mnt_idmap *user_ns, struct inode *dir,
+    struct dentry *dentry, umode_t mode, bool flag)
+#else
 zpl_create(struct inode *dir, struct dentry *dentry, umode_t mode, bool flag)
+#endif
 {
 	cred_t *cr = CRED();
 	znode_t *zp;
@@ -144,14 +152,17 @@ zpl_create(struct inode *dir, struct dentry *dentry, umode_t mode, bool flag)
 	error = -zfs_create(ITOZ(dir), dname(dentry), vap, 0,
 	    mode, &zp, cr, 0, NULL);
 	if (error == 0) {
-		d_instantiate(dentry, ZTOI(zp));
-
 		error = zpl_xattr_security_init(ZTOI(zp), dir, &dentry->d_name);
 		if (error == 0)
 			error = zpl_init_acl(ZTOI(zp), dir);
 
-		if (error)
+		if (error) {
 			(void) zfs_remove(ITOZ(dir), dname(dentry), cr, 0);
+			remove_inode_hash(ZTOI(zp));
+			iput(ZTOI(zp));
+		} else {
+			d_instantiate(dentry, ZTOI(zp));
+		}
 	}
 
 	spl_fstrans_unmark(cookie);
@@ -163,7 +174,15 @@ zpl_create(struct inode *dir, struct dentry *dentry, umode_t mode, bool flag)
 }
 
 static int
+#ifdef HAVE_IOPS_MKNOD_USERNS
+zpl_mknod(struct user_namespace *user_ns, struct inode *dir,
+    struct dentry *dentry, umode_t mode,
+#elif defined(HAVE_IOPS_MKNOD_IDMAP)
+zpl_mknod(struct mnt_idmap *user_ns, struct inode *dir,
+    struct dentry *dentry, umode_t mode,
+#else
 zpl_mknod(struct inode *dir, struct dentry *dentry, umode_t mode,
+#endif
     dev_t rdev)
 {
 	cred_t *cr = CRED();
@@ -188,14 +207,17 @@ zpl_mknod(struct inode *dir, struct dentry *dentry, umode_t mode,
 	error = -zfs_create(ITOZ(dir), dname(dentry), vap, 0,
 	    mode, &zp, cr, 0, NULL);
 	if (error == 0) {
-		d_instantiate(dentry, ZTOI(zp));
-
 		error = zpl_xattr_security_init(ZTOI(zp), dir, &dentry->d_name);
 		if (error == 0)
 			error = zpl_init_acl(ZTOI(zp), dir);
 
-		if (error)
+		if (error) {
 			(void) zfs_remove(ITOZ(dir), dname(dentry), cr, 0);
+			remove_inode_hash(ZTOI(zp));
+			iput(ZTOI(zp));
+		} else {
+			d_instantiate(dentry, ZTOI(zp));
+		}
 	}
 
 	spl_fstrans_unmark(cookie);
@@ -208,7 +230,20 @@ zpl_mknod(struct inode *dir, struct dentry *dentry, umode_t mode,
 
 #ifdef HAVE_TMPFILE
 static int
+#ifdef HAVE_TMPFILE_IDMAP
+zpl_tmpfile(struct mnt_idmap *userns, struct inode *dir,
+    struct file *file, umode_t mode)
+#elif !defined(HAVE_TMPFILE_DENTRY)
+zpl_tmpfile(struct user_namespace *userns, struct inode *dir,
+    struct file *file, umode_t mode)
+#else
+#ifdef HAVE_TMPFILE_USERNS
+zpl_tmpfile(struct user_namespace *userns, struct inode *dir,
+    struct dentry *dentry, umode_t mode)
+#else
 zpl_tmpfile(struct inode *dir, struct dentry *dentry, umode_t mode)
+#endif
+#endif
 {
 	cred_t *cr = CRED();
 	struct inode *ip;
@@ -231,11 +266,21 @@ zpl_tmpfile(struct inode *dir, struct dentry *dentry, umode_t mode)
 	if (error == 0) {
 		/* d_tmpfile will do drop_nlink, so we should set it first */
 		set_nlink(ip, 1);
+#ifndef HAVE_TMPFILE_DENTRY
+		d_tmpfile(file, ip);
+
+		error = zpl_xattr_security_init(ip, dir,
+		    &file->f_path.dentry->d_name);
+#else
 		d_tmpfile(dentry, ip);
 
 		error = zpl_xattr_security_init(ip, dir, &dentry->d_name);
+#endif
 		if (error == 0)
 			error = zpl_init_acl(ip, dir);
+#ifndef HAVE_TMPFILE_DENTRY
+		error = finish_open_simple(file, error);
+#endif
 		/*
 		 * don't need to handle error here, file is already in
 		 * unlinked set.
@@ -278,7 +323,15 @@ zpl_unlink(struct inode *dir, struct dentry *dentry)
 }
 
 static int
+#ifdef HAVE_IOPS_MKDIR_USERNS
+zpl_mkdir(struct user_namespace *user_ns, struct inode *dir,
+    struct dentry *dentry, umode_t mode)
+#elif defined(HAVE_IOPS_MKDIR_IDMAP)
+zpl_mkdir(struct mnt_idmap *user_ns, struct inode *dir,
+    struct dentry *dentry, umode_t mode)
+#else
 zpl_mkdir(struct inode *dir, struct dentry *dentry, umode_t mode)
+#endif
 {
 	cred_t *cr = CRED();
 	vattr_t *vap;
@@ -293,14 +346,17 @@ zpl_mkdir(struct inode *dir, struct dentry *dentry, umode_t mode)
 	cookie = spl_fstrans_mark();
 	error = -zfs_mkdir(ITOZ(dir), dname(dentry), vap, &zp, cr, 0, NULL);
 	if (error == 0) {
-		d_instantiate(dentry, ZTOI(zp));
-
 		error = zpl_xattr_security_init(ZTOI(zp), dir, &dentry->d_name);
 		if (error == 0)
 			error = zpl_init_acl(ZTOI(zp), dir);
 
-		if (error)
+		if (error) {
 			(void) zfs_rmdir(ITOZ(dir), dname(dentry), NULL, cr, 0);
+			remove_inode_hash(ZTOI(zp));
+			iput(ZTOI(zp));
+		} else {
+			d_instantiate(dentry, ZTOI(zp));
+		}
 	}
 
 	spl_fstrans_unmark(cookie);
@@ -338,19 +394,61 @@ zpl_rmdir(struct inode *dir, struct dentry *dentry)
 }
 
 static int
+#ifdef HAVE_USERNS_IOPS_GETATTR
+zpl_getattr_impl(struct user_namespace *user_ns,
+    const struct path *path, struct kstat *stat, u32 request_mask,
+    unsigned int query_flags)
+#elif defined(HAVE_IDMAP_IOPS_GETATTR)
+zpl_getattr_impl(struct mnt_idmap *user_ns,
+    const struct path *path, struct kstat *stat, u32 request_mask,
+    unsigned int query_flags)
+#else
 zpl_getattr_impl(const struct path *path, struct kstat *stat, u32 request_mask,
     unsigned int query_flags)
+#endif
 {
 	int error;
 	fstrans_cookie_t cookie;
+	struct inode *ip = path->dentry->d_inode;
+	znode_t *zp __maybe_unused = ITOZ(ip);
 
 	cookie = spl_fstrans_mark();
 
 	/*
-	 * XXX request_mask and query_flags currently ignored.
+	 * XXX query_flags currently ignored.
 	 */
 
-	error = -zfs_getattr_fast(path->dentry->d_inode, stat);
+#if (defined(HAVE_USERNS_IOPS_GETATTR) || defined(HAVE_IDMAP_IOPS_GETATTR))
+	error = -zfs_getattr_fast(user_ns, ip, stat);
+#else
+	error = -zfs_getattr_fast(kcred->user_ns, ip, stat);
+#endif
+
+#ifdef STATX_BTIME
+	if (request_mask & STATX_BTIME) {
+		stat->btime = zp->z_btime;
+		stat->result_mask |= STATX_BTIME;
+	}
+#endif
+
+#ifdef STATX_ATTR_IMMUTABLE
+	if (zp->z_pflags & ZFS_IMMUTABLE)
+		stat->attributes |= STATX_ATTR_IMMUTABLE;
+	stat->attributes_mask |= STATX_ATTR_IMMUTABLE;
+#endif
+
+#ifdef STATX_ATTR_APPEND
+	if (zp->z_pflags & ZFS_APPENDONLY)
+		stat->attributes |= STATX_ATTR_APPEND;
+	stat->attributes_mask |= STATX_ATTR_APPEND;
+#endif
+
+#ifdef STATX_ATTR_NODUMP
+	if (zp->z_pflags & ZFS_NODUMP)
+		stat->attributes |= STATX_ATTR_NODUMP;
+	stat->attributes_mask |= STATX_ATTR_NODUMP;
+#endif
+
 	spl_fstrans_unmark(cookie);
 	ASSERT3S(error, <=, 0);
 
@@ -359,7 +457,15 @@ zpl_getattr_impl(const struct path *path, struct kstat *stat, u32 request_mask,
 ZPL_GETATTR_WRAPPER(zpl_getattr);
 
 static int
+#ifdef HAVE_USERNS_IOPS_SETATTR
+zpl_setattr(struct user_namespace *user_ns, struct dentry *dentry,
+    struct iattr *ia)
+#elif defined(HAVE_IDMAP_IOPS_SETATTR)
+zpl_setattr(struct mnt_idmap *user_ns, struct dentry *dentry,
+    struct iattr *ia)
+#else
 zpl_setattr(struct dentry *dentry, struct iattr *ia)
+#endif
 {
 	struct inode *ip = dentry->d_inode;
 	cred_t *cr = CRED();
@@ -367,7 +473,13 @@ zpl_setattr(struct dentry *dentry, struct iattr *ia)
 	int error;
 	fstrans_cookie_t cookie;
 
-	error = setattr_prepare(dentry, ia);
+#ifdef HAVE_SETATTR_PREPARE_USERNS
+	error = zpl_setattr_prepare(user_ns, dentry, ia);
+#elif defined(HAVE_SETATTR_PREPARE_IDMAP)
+	error = zpl_setattr_prepare(user_ns, dentry, ia);
+#else
+	error = zpl_setattr_prepare(zfs_init_idmap, dentry, ia);
+#endif
 	if (error)
 		return (error);
 
@@ -399,15 +511,25 @@ zpl_setattr(struct dentry *dentry, struct iattr *ia)
 }
 
 static int
+#ifdef HAVE_IOPS_RENAME_USERNS
+zpl_rename2(struct user_namespace *user_ns, struct inode *sdip,
+    struct dentry *sdentry, struct inode *tdip, struct dentry *tdentry,
+    unsigned int rflags)
+#elif defined(HAVE_IOPS_RENAME_IDMAP)
+zpl_rename2(struct mnt_idmap *user_ns, struct inode *sdip,
+    struct dentry *sdentry, struct inode *tdip, struct dentry *tdentry,
+    unsigned int rflags)
+#else
 zpl_rename2(struct inode *sdip, struct dentry *sdentry,
-    struct inode *tdip, struct dentry *tdentry, unsigned int flags)
+    struct inode *tdip, struct dentry *tdentry, unsigned int rflags)
+#endif
 {
 	cred_t *cr = CRED();
 	int error;
 	fstrans_cookie_t cookie;
 
 	/* We don't have renameat2(2) support */
-	if (flags)
+	if (rflags)
 		return (-EINVAL);
 
 	crhold(cr);
@@ -421,7 +543,9 @@ zpl_rename2(struct inode *sdip, struct dentry *sdentry,
 	return (error);
 }
 
-#ifndef HAVE_RENAME_WANTS_FLAGS
+#if !defined(HAVE_IOPS_RENAME_USERNS) && \
+	!defined(HAVE_RENAME_WANTS_FLAGS) && \
+	!defined(HAVE_IOPS_RENAME_IDMAP)
 static int
 zpl_rename(struct inode *sdip, struct dentry *sdentry,
     struct inode *tdip, struct dentry *tdentry)
@@ -431,7 +555,15 @@ zpl_rename(struct inode *sdip, struct dentry *sdentry,
 #endif
 
 static int
+#ifdef HAVE_IOPS_SYMLINK_USERNS
+zpl_symlink(struct user_namespace *user_ns, struct inode *dir,
+    struct dentry *dentry, const char *name)
+#elif defined(HAVE_IOPS_SYMLINK_IDMAP)
+zpl_symlink(struct mnt_idmap *user_ns, struct inode *dir,
+    struct dentry *dentry, const char *name)
+#else
 zpl_symlink(struct inode *dir, struct dentry *dentry, const char *name)
+#endif
 {
 	cred_t *cr = CRED();
 	vattr_t *vap;
@@ -447,11 +579,14 @@ zpl_symlink(struct inode *dir, struct dentry *dentry, const char *name)
 	error = -zfs_symlink(ITOZ(dir), dname(dentry), vap,
 	    (char *)name, &zp, cr, 0);
 	if (error == 0) {
-		d_instantiate(dentry, ZTOI(zp));
-
 		error = zpl_xattr_security_init(ZTOI(zp), dir, &dentry->d_name);
-		if (error)
+		if (error) {
 			(void) zfs_remove(ITOZ(dir), dname(dentry), cr, 0);
+			remove_inode_hash(ZTOI(zp));
+			iput(ZTOI(zp));
+		} else {
+			d_instantiate(dentry, ZTOI(zp));
+		}
 	}
 
 	spl_fstrans_unmark(cookie);
@@ -593,7 +728,8 @@ zpl_link(struct dentry *old_dentry, struct inode *dir, struct dentry *dentry)
 
 	crhold(cr);
 	ip->i_ctime = current_time(ip);
-	igrab(ip); /* Use ihold() if available */
+	/* Must have an existing ref, so igrab() cannot return NULL */
+	VERIFY3P(igrab(ip), !=, NULL);
 
 	cookie = spl_fstrans_mark();
 	error = -zfs_link(ITOZ(dir), ITOZ(ip), dname(dentry), cr, 0);
@@ -611,46 +747,6 @@ out:
 	return (error);
 }
 
-static int
-#ifdef HAVE_D_REVALIDATE_NAMEIDATA
-zpl_revalidate(struct dentry *dentry, struct nameidata *nd)
-{
-	unsigned int flags = (nd ? nd->flags : 0);
-#else
-zpl_revalidate(struct dentry *dentry, unsigned int flags)
-{
-#endif /* HAVE_D_REVALIDATE_NAMEIDATA */
-	/* CSTYLED */
-	zfsvfs_t *zfsvfs = dentry->d_sb->s_fs_info;
-	int error;
-
-	if (flags & LOOKUP_RCU)
-		return (-ECHILD);
-
-	/*
-	 * After a rollback negative dentries created before the rollback
-	 * time must be invalidated.  Otherwise they can obscure files which
-	 * are only present in the rolled back dataset.
-	 */
-	if (dentry->d_inode == NULL) {
-		spin_lock(&dentry->d_lock);
-		error = time_before(dentry->d_time, zfsvfs->z_rollback_time);
-		spin_unlock(&dentry->d_lock);
-
-		if (error)
-			return (0);
-	}
-
-	/*
-	 * The dentry may reference a stale inode if a mounted file system
-	 * was rolled back to a point in time where the object didn't exist.
-	 */
-	if (dentry->d_inode && ITOZ(dentry->d_inode)->z_is_stale)
-		return (0);
-
-	return (1);
-}
-
 const struct inode_operations zpl_inode_operations = {
 	.setattr	= zpl_setattr,
 	.getattr	= zpl_getattr,
@@ -664,7 +760,11 @@ const struct inode_operations zpl_inode_operations = {
 #if defined(HAVE_SET_ACL)
 	.set_acl	= zpl_set_acl,
 #endif /* HAVE_SET_ACL */
+#if defined(HAVE_GET_INODE_ACL)
+	.get_inode_acl	= zpl_get_acl,
+#else
 	.get_acl	= zpl_get_acl,
+#endif /* HAVE_GET_INODE_ACL */
 #endif /* CONFIG_FS_POSIX_ACL */
 };
 
@@ -677,7 +777,9 @@ const struct inode_operations zpl_dir_inode_operations = {
 	.mkdir		= zpl_mkdir,
 	.rmdir		= zpl_rmdir,
 	.mknod		= zpl_mknod,
-#ifdef HAVE_RENAME_WANTS_FLAGS
+#if defined(HAVE_RENAME_WANTS_FLAGS) || defined(HAVE_IOPS_RENAME_USERNS)
+	.rename		= zpl_rename2,
+#elif defined(HAVE_IOPS_RENAME_IDMAP)
 	.rename		= zpl_rename2,
 #else
 	.rename		= zpl_rename,
@@ -697,7 +799,11 @@ const struct inode_operations zpl_dir_inode_operations = {
 #if defined(HAVE_SET_ACL)
 	.set_acl	= zpl_set_acl,
 #endif /* HAVE_SET_ACL */
+#if defined(HAVE_GET_INODE_ACL)
+	.get_inode_acl	= zpl_get_acl,
+#else
 	.get_acl	= zpl_get_acl,
+#endif /* HAVE_GET_INODE_ACL */
 #endif /* CONFIG_FS_POSIX_ACL */
 };
 
@@ -736,10 +842,10 @@ const struct inode_operations zpl_special_inode_operations = {
 #if defined(HAVE_SET_ACL)
 	.set_acl	= zpl_set_acl,
 #endif /* HAVE_SET_ACL */
+#if defined(HAVE_GET_INODE_ACL)
+	.get_inode_acl	= zpl_get_acl,
+#else
 	.get_acl	= zpl_get_acl,
+#endif /* HAVE_GET_INODE_ACL */
 #endif /* CONFIG_FS_POSIX_ACL */
-};
-
-dentry_operations_t zpl_dentry_operations = {
-	.d_revalidate	= zpl_revalidate,
 };

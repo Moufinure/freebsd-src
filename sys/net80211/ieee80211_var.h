@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2001 Atsushi Onoe
  * Copyright (c) 2002-2009 Sam Leffler, Errno Consulting
@@ -605,7 +605,13 @@ struct ieee80211vap {
 	struct ieee80211_rx_histogram	*rx_histogram;
 	struct ieee80211_tx_histogram	*tx_histogram;
 
-	uint64_t		iv_spare[6];
+	struct ieee80211_node *	(*iv_update_bss)(struct ieee80211vap *,
+				    struct ieee80211_node *);
+
+#ifdef __ILP32__
+	uint32_t		iv_spare0;
+#endif
+	uint64_t		iv_spare[5];
 };
 MALLOC_DECLARE(M_80211_VAP);
 
@@ -692,7 +698,8 @@ MALLOC_DECLARE(M_80211_VAP);
 	"\20\2INACT\3SCANWAIT\4BGSCAN\5WPS\6TSN\7SCANREQ\10RESUME" \
 	"\0114ADDR\12NONEPR_PR\13SWBMISS\14DFS\15DOTD\16STATEWAIT\17REINIT" \
 	"\20BPF\21WDSLEGACY\22PROBECHAN\23UNIQMAC\24SCAN_OFFLOAD\25SEQNO_OFFLOAD" \
-	"\26VHT\27QUIET_IE"
+	    "\26FRAG_OFFLOAD\27VHT" \
+	"\30QUIET_IE\31UAPSD"
 
 /* ic_flags_ht/iv_flags_ht */
 #define	IEEE80211_FHT_NONHT_PR	 0x00000001	/* STATUS: non-HT sta present */
@@ -930,10 +937,10 @@ static __inline int
 ieee80211_vhtchanflags(const struct ieee80211_channel *c)
 {
 
-	if (IEEE80211_IS_CHAN_VHT80P80(c))
-		return IEEE80211_FVHT_USEVHT80P80;
 	if (IEEE80211_IS_CHAN_VHT160(c))
 		return IEEE80211_FVHT_USEVHT160;
+	if (IEEE80211_IS_CHAN_VHT80P80(c))
+		return IEEE80211_FVHT_USEVHT80P80;
 	if (IEEE80211_IS_CHAN_VHT80(c))
 		return IEEE80211_FVHT_USEVHT80;
 	if (IEEE80211_IS_CHAN_VHT40(c))
@@ -1067,15 +1074,18 @@ void	ieee80211_note_frame(const struct ieee80211vap *,
  */
 #define	IEEE80211_DISCARD(_vap, _m, _wh, _type, _fmt, ...) do {		\
 	if ((_vap)->iv_debug & (_m))					\
-		ieee80211_discard_frame(_vap, _wh, _type, _fmt, __VA_ARGS__);\
+		ieee80211_discard_frame(_vap, _wh, _type,		\
+		   "%s:%d: " _fmt, __func__, __LINE__, __VA_ARGS__);	\
 } while (0)
 #define	IEEE80211_DISCARD_IE(_vap, _m, _wh, _type, _fmt, ...) do {	\
 	if ((_vap)->iv_debug & (_m))					\
-		ieee80211_discard_ie(_vap, _wh, _type, _fmt, __VA_ARGS__);\
+		ieee80211_discard_ie(_vap, _wh, _type,			\
+		    "%s:%d: " _fmt, __func__, __LINE__, __VA_ARGS__);	\
 } while (0)
 #define	IEEE80211_DISCARD_MAC(_vap, _m, _mac, _type, _fmt, ...) do {	\
 	if ((_vap)->iv_debug & (_m))					\
-		ieee80211_discard_mac(_vap, _mac, _type, _fmt, __VA_ARGS__);\
+		ieee80211_discard_mac(_vap, _mac, _type,		\
+		    "%s:%d: " _fmt, __func__, __LINE__, __VA_ARGS__);	\
 } while (0)
 
 void ieee80211_discard_frame(const struct ieee80211vap *,

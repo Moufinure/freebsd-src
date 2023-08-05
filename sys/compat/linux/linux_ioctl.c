@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 1994-1995 Søren Schmidt
  * All rights reserved.
@@ -26,27 +26,16 @@
  * SUCH DAMAGE.
  */
 
-#include "opt_compat.h"
-
 #include <sys/cdefs.h>
 __FBSDID("$FreeBSD$");
 
 #include <sys/param.h>
-#include <sys/systm.h>
-#include <sys/sysproto.h>
-#ifdef COMPAT_LINUX32
-#include <sys/abi_compat.h>
-#endif
 #include <sys/capsicum.h>
 #include <sys/cdio.h>
-#include <sys/dvdio.h>
-#include <sys/conf.h>
-#include <sys/disk.h>
 #include <sys/consio.h>
-#include <sys/ctype.h>
+#include <sys/disk.h>
+#include <sys/dvdio.h>
 #include <sys/fcntl.h>
-#include <sys/file.h>
-#include <sys/filedesc.h>
 #include <sys/filio.h>
 #include <sys/jail.h>
 #include <sys/kbio.h>
@@ -55,19 +44,15 @@ __FBSDID("$FreeBSD$");
 #include <sys/linker_set.h>
 #include <sys/lock.h>
 #include <sys/malloc.h>
+#include <sys/mman.h>
 #include <sys/proc.h>
 #include <sys/sbuf.h>
-#include <sys/socket.h>
 #include <sys/sockio.h>
 #include <sys/soundcard.h>
-#include <sys/stdint.h>
-#include <sys/sx.h>
 #include <sys/sysctl.h>
+#include <sys/sysproto.h>
+#include <sys/sx.h>
 #include <sys/tty.h>
-#include <sys/uio.h>
-#include <sys/types.h>
-#include <sys/mman.h>
-#include <sys/resourcevar.h>
 
 #include <net/if.h>
 #include <net/if_var.h>
@@ -89,7 +74,7 @@ __FBSDID("$FreeBSD$");
 #include <compat/linux/linux_ioctl.h>
 #include <compat/linux/linux_mib.h>
 #include <compat/linux/linux_socket.h>
-#include <compat/linux/linux_timer.h>
+#include <compat/linux/linux_time.h>
 #include <compat/linux/linux_util.h>
 
 #include <contrib/v4l/videodev.h>
@@ -755,7 +740,15 @@ linux_ioctl_termio(struct thread *td, struct linux_ioctl_args *args)
 		    td));
 		break;
 
-	/* LINUX_TCSBRK */
+	case LINUX_TCSBRK:
+		if (args->arg != 0) {
+			error = (fo_ioctl(fp, TIOCDRAIN, (caddr_t)&bios, td->td_ucred,
+			    td));
+		} else {
+			linux_msg(td, "ioctl TCSBRK arg 0 not implemented");
+			error = ENOIOCTL;
+		}
+		break;
 
 	case LINUX_TCXONC: {
 		switch (args->arg) {
@@ -1012,9 +1005,17 @@ linux_ioctl_termio(struct thread *td, struct linux_ioctl_args *args)
 			    sizeof(int));
 		break;
 	}
+	case LINUX_TIOCGPTPEER:
+		linux_msg(td, "unsupported ioctl TIOCGPTPEER");
+		error = ENOIOCTL;
+		break;
 	case LINUX_TIOCSPTLCK:
-		/* Our unlockpt() does nothing. */
-		error = 0;
+		/*
+		 * Our unlockpt() does nothing. Check that fd refers
+		 * to a pseudo-terminal master device.
+		 */
+		args->cmd = TIOCPTMASTER;
+		error = (sys_ioctl(td, (struct ioctl_args *)args));
 		break;
 	default:
 		error = ENOIOCTL;
@@ -2095,39 +2096,17 @@ static int
 linux_ioctl_ifname(struct thread *td, struct l_ifreq *uifr)
 {
 	struct l_ifreq ifr;
-	struct ifnet *ifp;
-	int error, ethno, index;
+	int error, ret;
 
 	error = copyin(uifr, &ifr, sizeof(ifr));
 	if (error != 0)
 		return (error);
-
-	CURVNET_SET(TD_TO_VNET(curthread));
-	IFNET_RLOCK();
-	index = 1;	/* ifr.ifr_ifindex starts from 1 */
-	ethno = 0;
-	error = ENODEV;
-	CK_STAILQ_FOREACH(ifp, &V_ifnet, if_link) {
-		if (ifr.ifr_ifindex == index) {
-			if (IFP_IS_ETH(ifp))
-				snprintf(ifr.ifr_name, LINUX_IFNAMSIZ,
-				    "eth%d", ethno);
-			else
-				strlcpy(ifr.ifr_name, ifp->if_xname,
-				    LINUX_IFNAMSIZ);
-			error = 0;
-			break;
-		}
-		if (IFP_IS_ETH(ifp))
-			ethno++;
-		index++;
-	}
-	IFNET_RUNLOCK();
-	if (error == 0)
-		error = copyout(&ifr, uifr, sizeof(ifr));
-	CURVNET_RESTORE();
-
-	return (error);
+	ret = ifname_bsd_to_linux_idx(ifr.ifr_ifindex, ifr.ifr_name,
+	    LINUX_IFNAMSIZ);
+	if (ret > 0)
+		return (copyout(&ifr, uifr, sizeof(ifr)));
+	else
+		return (ENODEV);
 }
 
 /*
@@ -2137,6 +2116,7 @@ linux_ioctl_ifname(struct thread *td, struct l_ifreq *uifr)
 static int
 linux_ifconf(struct thread *td, struct ifconf *uifc)
 {
+	struct epoch_tracker et;
 #ifdef COMPAT_LINUX32
 	struct l_ifconf ifc;
 #else
@@ -2146,7 +2126,7 @@ linux_ifconf(struct thread *td, struct ifconf *uifc)
 	struct ifnet *ifp;
 	struct ifaddr *ifa;
 	struct sbuf *sb;
-	int error, ethno, full = 0, valid_len, max_len;
+	int error, full = 0, valid_len, max_len;
 
 	error = copyin(uifc, &ifc, sizeof(ifc));
 	if (error != 0)
@@ -2158,7 +2138,7 @@ linux_ifconf(struct thread *td, struct ifconf *uifc)
 	/* handle the 'request buffer size' case */
 	if ((l_uintptr_t)ifc.ifc_buf == PTROUT(NULL)) {
 		ifc.ifc_len = 0;
-		IFNET_RLOCK();
+		NET_EPOCH_ENTER(et);
 		CK_STAILQ_FOREACH(ifp, &V_ifnet, if_link) {
 			CK_STAILQ_FOREACH(ifa, &ifp->if_addrhead, ifa_link) {
 				struct sockaddr *sa = ifa->ifa_addr;
@@ -2166,7 +2146,7 @@ linux_ifconf(struct thread *td, struct ifconf *uifc)
 					ifc.ifc_len += sizeof(ifr);
 			}
 		}
-		IFNET_RUNLOCK();
+		NET_EPOCH_EXIT(et);
 		error = copyout(&ifc, uifc, sizeof(ifc));
 		CURVNET_RESTORE();
 		return (error);
@@ -2178,8 +2158,6 @@ linux_ifconf(struct thread *td, struct ifconf *uifc)
 	}
 
 again:
-	/* Keep track of eth interfaces */
-	ethno = 0;
 	if (ifc.ifc_len <= max_len) {
 		max_len = ifc.ifc_len;
 		full = 1;
@@ -2189,16 +2167,13 @@ again:
 	valid_len = 0;
 
 	/* Return all AF_INET addresses of all interfaces */
-	IFNET_RLOCK();
+	NET_EPOCH_ENTER(et);
 	CK_STAILQ_FOREACH(ifp, &V_ifnet, if_link) {
 		int addrs = 0;
 
 		bzero(&ifr, sizeof(ifr));
-		if (IFP_IS_ETH(ifp))
-			snprintf(ifr.ifr_name, LINUX_IFNAMSIZ, "eth%d",
-			    ethno++);
-		else
-			strlcpy(ifr.ifr_name, ifp->if_xname, LINUX_IFNAMSIZ);
+		ifname_bsd_to_linux_ifp(ifp, ifr.ifr_name,
+		    sizeof(ifr.ifr_name));
 
 		/* Walk the address list */
 		CK_STAILQ_FOREACH(ifa, &ifp->if_addrhead, ifa_link) {
@@ -2225,7 +2200,7 @@ again:
 				valid_len = sbuf_len(sb);
 		}
 	}
-	IFNET_RUNLOCK();
+	NET_EPOCH_EXIT(et);
 
 	if (valid_len != max_len && !full) {
 		sbuf_delete(sb);

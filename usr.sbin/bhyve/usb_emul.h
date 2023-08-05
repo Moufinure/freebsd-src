@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2014 Leon Dang <ldang@nahannisys.com>
  * All rights reserved.
@@ -31,6 +31,7 @@
 #ifndef _USB_EMUL_H_
 #define _USB_EMUL_H_
 
+#include <sys/nv.h>
 #include <stdlib.h>
 #include <sys/linker_set.h>
 #include <pthread.h>
@@ -48,12 +49,12 @@ struct vm_snapshot_meta;
 
 /* Device emulation handlers */
 struct usb_devemu {
-	char	*ue_emu;	/* name of device emulation */
+	const char *ue_emu;	/* name of device emulation */
 	int	ue_usbver;	/* usb version: 2 or 3 */
 	int	ue_usbspeed;	/* usb device speed */
 
 	/* instance creation */
-	void	*(*ue_init)(struct usb_hci *hci, char *opt);
+	void	*(*ue_init)(struct usb_hci *hci, nvlist_t *nvl);
 
 	/* handlers */
 	int	(*ue_request)(void *sc, struct usb_data_xfer *xfer);
@@ -149,7 +150,7 @@ enum USB_ERRCODE {
 			pthread_mutex_unlock(&((x)->mtx));		\
 		} while (0)
 
-struct usb_devemu *usb_emu_finddev(char *name);
+struct usb_devemu *usb_emu_finddev(const char *name);
 
 struct usb_data_xfer_block *usb_data_xfer_append(struct usb_data_xfer *xfer,
                           void *buf, int blen, void *hci_data, int ccs);

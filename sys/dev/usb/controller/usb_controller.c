@@ -1,6 +1,6 @@
 /* $FreeBSD$ */
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2008 Hans Petter Selasky. All rights reserved.
  *
@@ -416,6 +416,9 @@ usb_bus_explore(struct usb_proc_msg *pm)
 #if USB_HAVE_ROOT_MOUNT_HOLD
 	usb_root_mount_rel(bus);
 #endif
+
+	/* Nice the enumeration a bit, to avoid looping too fast. */
+	usb_pause_mtx(&bus->bus_mtx, USB_MS_TO_TICKS(usb_enum_nice_time));
 }
 
 /*------------------------------------------------------------------------*
@@ -438,9 +441,9 @@ usb_bus_detach(struct usb_proc_msg *pm)
 	USB_BUS_UNLOCK(bus);
 
 	/* detach children first */
-	mtx_lock(&Giant);
+	bus_topo_lock();
 	bus_generic_detach(dev);
-	mtx_unlock(&Giant);
+	bus_topo_unlock();
 
 	/*
 	 * Free USB device and all subdevices, if any.
@@ -803,10 +806,10 @@ usb_bus_attach(struct usb_proc_msg *pm)
 static void
 usb_attach_sub(device_t dev, struct usb_bus *bus)
 {
-	mtx_lock(&Giant);
+	bus_topo_lock();
 	if (usb_devclass_ptr == NULL)
 		usb_devclass_ptr = devclass_find("usbus");
-	mtx_unlock(&Giant);
+	bus_topo_unlock();
 
 #if USB_HAVE_PF
 	usbpf_attach(bus);

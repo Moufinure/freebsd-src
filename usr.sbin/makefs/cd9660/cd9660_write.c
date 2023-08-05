@@ -1,7 +1,7 @@
 /*	$NetBSD: cd9660_write.c,v 1.14 2011/01/04 09:48:21 wiz Exp $	*/
 
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-NetBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2005 Daniel Watt, Walter Deignan, Ryan Gabrys, Alan
  * Perez-Rathke and Ram Vedam.  All rights reserved.
@@ -97,7 +97,7 @@ cd9660_write_image(iso9660_disk *diskStructure, const char* image)
 
 	/*
 	 * Write the path tables: there are actually four, but right
-	 * now we are only concearned with two.
+	 * now we are only concerned with two.
 	 */
 	status = cd9660_write_path_tables(diskStructure, fd);
 	if (status == 0) {
@@ -273,7 +273,7 @@ cd9660_write_file(iso9660_disk *diskStructure, FILE *fd, cd9660node *writenode)
 
 	/* Todo : clean up variables */
 
-	temp_file_name = ecalloc(CD9660MAXPATH + 1, 1);
+	temp_file_name = ecalloc(PATH_MAX, 1);
 	buf = emalloc(diskStructure->sectorSize);
 	if ((writenode->level != 0) &&
 	    !(writenode->node->type & S_IFDIR)) {
@@ -316,7 +316,7 @@ cd9660_write_file(iso9660_disk *diskStructure, FILE *fd, cd9660node *writenode)
 		/*
 		 * Now loop over children, writing out their directory
 		 * records - beware of sector boundaries
-	 	 */
+		 */
 		TAILQ_FOREACH(temp, &writenode->cn_children, cn_next_child) {
 			/*
 			 * Copy the temporary record and adjust its size
@@ -429,7 +429,6 @@ cd9660_copy_file(iso9660_disk *diskStructure, FILE *fd, off_t start_sector,
 {
 	FILE *rf;
 	int bytes_read;
-	off_t sector = start_sector;
 	int buf_size = diskStructure->sectorSize;
 	char *buf;
 
@@ -462,7 +461,6 @@ cd9660_copy_file(iso9660_disk *diskStructure, FILE *fd, off_t start_sector,
 			(void)fclose(rf);
 			return 0;
 		}
-		sector++;
 	}
 
 	fclose(rf);

@@ -561,38 +561,7 @@ vm_map_entry_set_vnode_text(vm_map_entry_t entry, bool add)
 	 * referenced by the entry we are processing, so it cannot go
 	 * away.
 	 */
-	vp = NULL;
-	vp_held = false;
-	if (object->type == OBJT_DEAD) {
-		/*
-		 * For OBJT_DEAD objects, v_writecount was handled in
-		 * vnode_pager_dealloc().
-		 */
-	} else if (object->type == OBJT_VNODE) {
-		vp = object->handle;
-	} else if (object->type == OBJT_SWAP) {
-		KASSERT((object->flags & OBJ_TMPFS_NODE) != 0,
-		    ("vm_map_entry_set_vnode_text: swap and !TMPFS "
-		    "entry %p, object %p, add %d", entry, object, add));
-		/*
-		 * Tmpfs VREG node, which was reclaimed, has
-		 * OBJ_TMPFS_NODE flag set, but not OBJ_TMPFS.  In
-		 * this case there is no v_writecount to adjust.
-		 */
-		VM_OBJECT_RLOCK(object);
-		if ((object->flags & OBJ_TMPFS) != 0) {
-			vp = object->un_pager.swp.swp_tmpfs;
-			if (vp != NULL) {
-				vhold(vp);
-				vp_held = true;
-			}
-		}
-		VM_OBJECT_RUNLOCK(object);
-	} else {
-		KASSERT(0,
-		    ("vm_map_entry_set_vnode_text: wrong object type, "
-		    "entry %p, object %p, add %d", entry, object, add));
-	}
+	vm_pager_getvp(object, &vp, &vp_held);
 	if (vp != NULL) {
 		if (add) {
 			VOP_SET_TEXT_CHECKED(vp);
@@ -2062,10 +2031,8 @@ vm_map_alignspace(vm_map_t map, vm_object_t object, vm_ooffset_t offset,
 		 */
 		if (alignment == 0)
 			pmap_align_superpage(object, offset, addr, length);
-		else if ((*addr & (alignment - 1)) != 0) {
-			*addr &= ~(alignment - 1);
-			*addr += alignment;
-		}
+		else
+			*addr = roundup2(*addr, alignment);
 		aligned_addr = *addr;
 		if (aligned_addr == free_addr) {
 			/*
@@ -2857,10 +2824,9 @@ again:
 			continue;
 		}
 
-		if (obj->type != OBJT_DEFAULT && obj->type != OBJT_SWAP)
-			continue;
 		VM_OBJECT_WLOCK(obj);
-		if (obj->type != OBJT_DEFAULT && obj->type != OBJT_SWAP) {
+		if (obj->type != OBJT_DEFAULT &&
+		    (obj->flags & OBJ_SWAP) == 0) {
 			VM_OBJECT_WUNLOCK(obj);
 			continue;
 		}
@@ -3999,7 +3965,7 @@ vm_map_delete(vm_map_t map, vm_offset_t start, vm_offset_t end)
 		 */
 		if ((entry->eflags & MAP_ENTRY_IS_SUB_MAP) != 0 ||
 		    entry->object.vm_object != NULL)
-			pmap_remove(map->pmap, entry->start, entry->end);
+			pmap_map_delete(map->pmap, entry->start, entry->end);
 
 		if (entry->end == map->anon_loc)
 			map->anon_loc = entry->start;
@@ -4170,8 +4136,14 @@ vm_map_copy_entry(
 		 */
 		size = src_entry->end - src_entry->start;
 		if ((src_object = src_entry->object.vm_object) != NULL) {
+			/*
+			 * Swap-backed objects need special handling.  Note that
+			 * this is an unlocked check, so it is possible to race
+			 * with an OBJT_DEFAULT -> OBJT_SWAP conversion.
+			 */
 			if (src_object->type == OBJT_DEFAULT ||
-			    src_object->type == OBJT_SWAP) {
+			    src_object->type == OBJT_SWAP ||
+			    (src_object->flags & OBJ_SWAP) != 0) {
 				vm_map_copy_swap_object(src_entry, dst_entry,
 				    size, fork_charge);
 				/* May have split/collapsed, reload obj. */
@@ -4294,6 +4266,7 @@ vmspace_fork(struct vmspace *vm1, vm_ooffset_t *fork_charge)
 	vm2->vm_taddr = vm1->vm_taddr;
 	vm2->vm_daddr = vm1->vm_daddr;
 	vm2->vm_maxsaddr = vm1->vm_maxsaddr;
+	vm2->vm_stacktop = vm1->vm_stacktop;
 	vm_map_lock(old_map);
 	if (old_map->busy)
 		vm_map_wait_busy(old_map);
@@ -4312,7 +4285,7 @@ vmspace_fork(struct vmspace *vm1, vm_ooffset_t *fork_charge)
 
 	new_map->anon_loc = old_map->anon_loc;
 	new_map->flags |= old_map->flags & (MAP_ASLR | MAP_ASLR_IGNSTART |
-	    MAP_WXORX);
+	    MAP_ASLR_STACK | MAP_WXORX);
 
 	VM_MAP_ENTRY_FOREACH(old_entry, old_map) {
 		if ((old_entry->eflags & MAP_ENTRY_IS_SUB_MAP) != 0)
@@ -4694,7 +4667,7 @@ retry:
 	 * limit.
 	 */
 	is_procstack = addr >= (vm_offset_t)vm->vm_maxsaddr &&
-	    addr < (vm_offset_t)p->p_sysent->sv_usrstack;
+	    addr < (vm_offset_t)vm->vm_stacktop;
 	if (is_procstack && (ctob(vm->vm_ssize) + grow_amount > stacklim))
 		return (KERN_NO_SPACE);
 
@@ -4896,6 +4869,10 @@ vmspace_unshare(struct proc *p)
 	struct vmspace *newvmspace;
 	vm_ooffset_t fork_charge;
 
+	/*
+	 * The caller is responsible for ensuring that the reference count
+	 * cannot concurrently transition 1 -> 2.
+	 */
 	if (refcount_load(&oldvmspace->vm_refcnt) == 1)
 		return (0);
 	fork_charge = 0;
@@ -5085,7 +5062,7 @@ RetryLookupLocked:
 		if (vm_map_lock_upgrade(map))
 			goto RetryLookup;
 		entry->object.vm_object = vm_object_allocate_anon(atop(size),
-		    NULL, entry->cred, entry->cred != NULL ? size : 0);
+		    NULL, entry->cred, size);
 		entry->offset = 0;
 		entry->cred = NULL;
 		vm_map_lock_downgrade(map);

@@ -88,7 +88,7 @@ AC_DEFUN([ZFS_AC_CONFIG_ALWAYS_CC_NO_FORMAT_TRUNCATION], [
 ])
 
 dnl #
-dnl # Check if gcc supports -Wno-format-truncation option.
+dnl # Check if gcc supports -Wno-format-zero-length option.
 dnl #
 AC_DEFUN([ZFS_AC_CONFIG_ALWAYS_CC_NO_FORMAT_ZERO_LENGTH], [
 	AC_MSG_CHECKING([whether $CC supports -Wno-format-zero-length])
@@ -108,57 +108,76 @@ AC_DEFUN([ZFS_AC_CONFIG_ALWAYS_CC_NO_FORMAT_ZERO_LENGTH], [
 	AC_SUBST([NO_FORMAT_ZERO_LENGTH])
 ])
 
-
 dnl #
-dnl # Check if gcc supports -Wno-bool-compare option.
+dnl # Check if gcc supports -Wno-clobbered option.
 dnl #
-dnl # We actually invoke gcc with the -Wbool-compare option
+dnl # We actually invoke gcc with the -Wclobbered option
 dnl # and infer the 'no-' version does or doesn't exist based upon
 dnl # the results.  This is required because when checking any of
 dnl # no- prefixed options gcc always returns success.
 dnl #
-AC_DEFUN([ZFS_AC_CONFIG_ALWAYS_CC_NO_BOOL_COMPARE], [
-	AC_MSG_CHECKING([whether $CC supports -Wno-bool-compare])
+AC_DEFUN([ZFS_AC_CONFIG_ALWAYS_CC_NO_CLOBBERED], [
+	AC_MSG_CHECKING([whether $CC supports -Wno-clobbered])
 
 	saved_flags="$CFLAGS"
-	CFLAGS="$CFLAGS -Werror -Wbool-compare"
+	CFLAGS="$CFLAGS -Werror -Wclobbered"
 
 	AC_COMPILE_IFELSE([AC_LANG_PROGRAM([], [])], [
-		NO_BOOL_COMPARE=-Wno-bool-compare
+		NO_CLOBBERED=-Wno-clobbered
 		AC_MSG_RESULT([yes])
 	], [
-		NO_BOOL_COMPARE=
+		NO_CLOBBERED=
 		AC_MSG_RESULT([no])
 	])
 
 	CFLAGS="$saved_flags"
-	AC_SUBST([NO_BOOL_COMPARE])
+	AC_SUBST([NO_CLOBBERED])
 ])
 
 dnl #
-dnl # Check if gcc supports -Wno-unused-but-set-variable option.
+dnl # Check if gcc supports -Wimplicit-fallthrough option.
 dnl #
-dnl # We actually invoke gcc with the -Wunused-but-set-variable option
-dnl # and infer the 'no-' version does or doesn't exist based upon
-dnl # the results.  This is required because when checking any of
-dnl # no- prefixed options gcc always returns success.
-dnl #
-AC_DEFUN([ZFS_AC_CONFIG_ALWAYS_CC_NO_UNUSED_BUT_SET_VARIABLE], [
-	AC_MSG_CHECKING([whether $CC supports -Wno-unused-but-set-variable])
+AC_DEFUN([ZFS_AC_CONFIG_ALWAYS_CC_IMPLICIT_FALLTHROUGH], [
+	AC_MSG_CHECKING([whether $CC supports -Wimplicit-fallthrough])
 
 	saved_flags="$CFLAGS"
-	CFLAGS="$CFLAGS -Werror -Wunused-but-set-variable"
+	CFLAGS="$CFLAGS -Werror -Wimplicit-fallthrough"
 
 	AC_COMPILE_IFELSE([AC_LANG_PROGRAM([], [])], [
-		NO_UNUSED_BUT_SET_VARIABLE=-Wno-unused-but-set-variable
+		IMPLICIT_FALLTHROUGH=-Wimplicit-fallthrough
+		AC_DEFINE([HAVE_IMPLICIT_FALLTHROUGH], 1,
+			[Define if compiler supports -Wimplicit-fallthrough])
 		AC_MSG_RESULT([yes])
 	], [
-		NO_UNUSED_BUT_SET_VARIABLE=
+		IMPLICIT_FALLTHROUGH=
 		AC_MSG_RESULT([no])
 	])
 
 	CFLAGS="$saved_flags"
-	AC_SUBST([NO_UNUSED_BUT_SET_VARIABLE])
+	AC_SUBST([IMPLICIT_FALLTHROUGH])
+])
+
+dnl #
+dnl # Check if cc supports -Winfinite-recursion option.
+dnl #
+AC_DEFUN([ZFS_AC_CONFIG_ALWAYS_CC_INFINITE_RECURSION], [
+	AC_MSG_CHECKING([whether $CC supports -Winfinite-recursion])
+
+	saved_flags="$CFLAGS"
+	CFLAGS="$CFLAGS -Werror -Winfinite-recursion"
+
+	AC_COMPILE_IFELSE([AC_LANG_PROGRAM([], [])], [
+		INFINITE_RECURSION=-Winfinite-recursion
+		AC_DEFINE([HAVE_INFINITE_RECURSION], 1,
+			[Define if compiler supports -Winfinite-recursion])
+		AC_MSG_RESULT([yes])
+	], [
+		INFINITE_RECURSION=
+		AC_MSG_RESULT([no])
+	])
+
+	CFLAGS="$saved_flags"
+	AC_SUBST([INFINITE_RECURSION])
 ])
 
 dnl #
@@ -201,4 +220,35 @@ AC_DEFUN([ZFS_AC_CONFIG_ALWAYS_CC_NO_IPA_SRA], [
 
 	CFLAGS="$saved_flags"
 	AC_SUBST([NO_IPA_SRA])
+])
+
+dnl #
+dnl # Check if kernel cc supports -fno-ipa-sra option.
+dnl #
+AC_DEFUN([ZFS_AC_CONFIG_ALWAYS_KERNEL_CC_NO_IPA_SRA], [
+	AC_MSG_CHECKING([whether $KERNEL_CC supports -fno-ipa-sra])
+
+	saved_cc="$CC"
+	saved_flags="$CFLAGS"
+	CC="gcc"
+	CFLAGS="$CFLAGS -Werror -fno-ipa-sra"
+
+	AS_IF([ test -n "$KERNEL_CC" ], [
+		CC="$KERNEL_CC"
+	])
+	AS_IF([ test -n "$KERNEL_LLVM" ], [
+		CC="clang"
+	])
+
+	AC_COMPILE_IFELSE([AC_LANG_PROGRAM([], [])], [
+		KERNEL_NO_IPA_SRA=-fno-ipa-sra
+		AC_MSG_RESULT([yes])
+	], [
+		KERNEL_NO_IPA_SRA=
+		AC_MSG_RESULT([no])
+	])
+
+	CC="$saved_cc"
+	CFLAGS="$saved_flags"
+	AC_SUBST([KERNEL_NO_IPA_SRA])
 ])

@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2003-2009 Silicon Graphics International Corp.
  * Copyright (c) 2012 The FreeBSD Foundation
@@ -75,7 +75,7 @@ struct ctl_fe_ioctl_params {
 
 struct cfi_port {
 	TAILQ_ENTRY(cfi_port)	link;
-	uint32_t		cur_tag_num;
+	u_int			cur_tag_num;
 	struct cdev *		dev;
 	struct ctl_port		port;
 };
@@ -524,7 +524,7 @@ cfi_submit_wait(union ctl_io *io)
 	CTL_DEBUG_PRINT(("cfi_submit_wait\n"));
 
 	/* This shouldn't happen */
-	if ((retval = ctl_queue(io)) != CTL_RETVAL_COMPLETE)
+	if ((retval = ctl_run(io)) != CTL_RETVAL_COMPLETE)
 		return (retval);
 
 	done = 0;
@@ -566,7 +566,7 @@ cfi_submit_wait(union ctl_io *io)
 			 * will immediately call back and wake us up,
 			 * probably using our own context.
 			 */
-			io->scsiio.be_move_done(io);
+			ctl_datamove_done(io, false);
 			break;
 		case CTL_IOCTL_DONE:
 			mtx_unlock(&params.ioctl_mtx);
@@ -634,7 +634,7 @@ ctl_ioctl_io(struct cdev *dev, u_long cmd, caddr_t addr, int flag,
 	io->io_hdr.flags |= CTL_FLAG_USER_REQ;
 	if ((io->io_hdr.io_type == CTL_IO_SCSI) &&
 	    (io->scsiio.tag_type != CTL_TAG_UNTAGGED))
-		io->scsiio.tag_num = cfi->cur_tag_num++;
+		io->scsiio.tag_num = atomic_fetchadd_int(&cfi->cur_tag_num, 1);
 
 	retval = cfi_submit_wait(io);
 	if (retval == 0)

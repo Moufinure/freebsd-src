@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2019 The FreeBSD Foundation
  *
@@ -47,6 +47,6 @@
  */
 _Static_assert(PAGE_SIZE % sizeof(struct pcpu) == 0, "fix pcpu size");
 
-extern struct pcpu __pcpu[];
+extern struct pcpu pcpu0;
 
 #endif	/* _MACHINE_PCPU_AUX_H_ */

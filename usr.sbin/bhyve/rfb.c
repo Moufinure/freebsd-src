@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2015 Tycho Nightingale <tycho.nightingale@pluribusnetworks.com>
  * Copyright (c) 2015 Leon Dang
@@ -98,6 +98,7 @@ static int rfb_debug = 0;
 #define CS_KEY_EVENT		4
 #define CS_POINTER_EVENT	5
 #define CS_CUT_TEXT		6
+#define CS_MSG_CLIENT_QEMU	255
 
 #define SECURITY_TYPE_NONE	1
 #define SECURITY_TYPE_VNC_AUTH	2
@@ -113,11 +114,14 @@ struct rfb_softc {
 
 	int		width, height;
 
-	char		*password;
+	const char	*password;
 
 	bool		enc_raw_ok;
 	bool		enc_zlib_ok;
 	bool		enc_resize_ok;
+	bool		enc_extkeyevent_ok;
+
+	bool		enc_extkeyevent_send;
 
 	z_stream	zstream;
 	uint8_t		*zbuf;
@@ -170,6 +174,9 @@ struct rfb_pixfmt_msg {
 #define	RFB_ENCODING_RAW		0
 #define	RFB_ENCODING_ZLIB		6
 #define	RFB_ENCODING_RESIZE		-223
+#define	RFB_ENCODING_EXT_KEYEVENT	-258
+
+#define	RFB_CLIENTMSG_EXT_KEYEVENT	0
 
 #define	RFB_MAX_WIDTH			2000
 #define	RFB_MAX_HEIGHT			1200
@@ -197,6 +204,19 @@ struct rfb_key_msg {
 	uint8_t		type;
 	uint8_t		down;
 	uint16_t	pad;
+	uint32_t	sym;
+};
+
+struct rfb_client_msg {
+	uint8_t		type;
+	uint8_t		subtype;
+};
+
+struct rfb_extended_key_msg {
+	uint8_t		type;
+	uint8_t		subtype;
+	uint16_t	down;
+	uint32_t	sym;
 	uint32_t	code;
 };
 
@@ -277,13 +297,34 @@ rfb_send_resize_update_msg(struct rfb_softc *rc, int cfd)
 }
 
 static void
-rfb_recv_set_pixfmt_msg(struct rfb_softc *rc, int cfd)
+rfb_send_extended_keyevent_update_msg(struct rfb_softc *rc, int cfd)
+{
+	struct rfb_srvr_updt_msg supdt_msg;
+	struct rfb_srvr_rect_hdr srect_hdr;
+
+	/* Number of rectangles: 1 */
+	supdt_msg.type = 0;
+	supdt_msg.pad = 0;
+	supdt_msg.numrects = htons(1);
+	stream_write(cfd, &supdt_msg, sizeof(struct rfb_srvr_updt_msg));
+
+	/* Rectangle header */
+	srect_hdr.x = htons(0);
+	srect_hdr.y = htons(0);
+	srect_hdr.width = htons(rc->width);
+	srect_hdr.height = htons(rc->height);
+	srect_hdr.encoding = htonl(RFB_ENCODING_EXT_KEYEVENT);
+	stream_write(cfd, &srect_hdr, sizeof(struct rfb_srvr_rect_hdr));
+}
+
+static void
+rfb_recv_set_pixfmt_msg(struct rfb_softc *rc __unused, int cfd)
 {
 	struct rfb_pixfmt_msg pixfmt_msg;
 
-	(void)stream_read(cfd, ((void *)&pixfmt_msg)+1, sizeof(pixfmt_msg)-1);
+	(void)stream_read(cfd, (uint8_t *)&pixfmt_msg + 1,
+	    sizeof(pixfmt_msg) - 1);
 }
-
 
 static void
 rfb_recv_set_encodings_msg(struct rfb_softc *rc, int cfd)
@@ -292,7 +333,7 @@ rfb_recv_set_encodings_msg(struct rfb_softc *rc, int cfd)
 	int i;
 	uint32_t encoding;
 
-	(void)stream_read(cfd, ((void *)&enc_msg)+1, sizeof(enc_msg)-1);
+	(void)stream_read(cfd, (uint8_t *)&enc_msg + 1, sizeof(enc_msg) - 1);
 
 	for (i = 0; i < htons(enc_msg.numencs); i++) {
 		(void)stream_read(cfd, &encoding, sizeof(encoding));
@@ -308,6 +349,9 @@ rfb_recv_set_encodings_msg(struct rfb_softc *rc, int cfd)
 			break;
 		case RFB_ENCODING_RESIZE:
 			rc->enc_resize_ok = true;
+			break;
+		case RFB_ENCODING_EXT_KEYEVENT:
+			rc->enc_extkeyevent_ok = true;
 			break;
 		}
 	}
@@ -335,7 +379,7 @@ fast_crc32(void *buf, int len, uint32_t crcval)
 }
 
 static int
-rfb_send_update_header(struct rfb_softc *rc, int cfd, int numrects)
+rfb_send_update_header(struct rfb_softc *rc __unused, int cfd, int numrects)
 {
 	struct rfb_srvr_updt_msg supdt_msg;
 
@@ -684,7 +728,12 @@ rfb_recv_update_msg(struct rfb_softc *rc, int cfd)
 {
 	struct rfb_updt_msg updt_msg;
 
-	(void)stream_read(cfd, ((void *)&updt_msg) + 1 , sizeof(updt_msg) - 1);
+	(void)stream_read(cfd, (uint8_t *)&updt_msg + 1 , sizeof(updt_msg) - 1);
+
+	if (rc->enc_extkeyevent_ok && (!rc->enc_extkeyevent_send)) {
+		rfb_send_extended_keyevent_update_msg(rc, cfd);
+		rc->enc_extkeyevent_send = true;
+	}
 
 	rc->pending = true;
 	if (!updt_msg.incremental)
@@ -696,10 +745,27 @@ rfb_recv_key_msg(struct rfb_softc *rc, int cfd)
 {
 	struct rfb_key_msg key_msg;
 
-	(void)stream_read(cfd, ((void *)&key_msg) + 1, sizeof(key_msg) - 1);
+	(void)stream_read(cfd, (uint8_t *)&key_msg + 1, sizeof(key_msg) - 1);
 
-	console_key_event(key_msg.down, htonl(key_msg.code));
+	console_key_event(key_msg.down, htonl(key_msg.sym), htonl(0));
 	rc->input_detected = true;
+}
+
+static void
+rfb_recv_client_msg(struct rfb_softc *rc, int cfd)
+{
+	struct rfb_client_msg client_msg;
+	struct rfb_extended_key_msg extkey_msg;
+
+	(void)stream_read(cfd, (uint8_t *)&client_msg + 1,
+	    sizeof(client_msg) - 1);
+
+	if (client_msg.subtype == RFB_CLIENTMSG_EXT_KEYEVENT) {
+		(void)stream_read(cfd, (uint8_t *)&extkey_msg + 2,
+		    sizeof(extkey_msg) - 2);
+		console_key_event((int)extkey_msg.down, htonl(extkey_msg.sym), htonl(extkey_msg.code));
+		rc->input_detected = true;
+	}
 }
 
 static void
@@ -707,20 +773,20 @@ rfb_recv_ptr_msg(struct rfb_softc *rc, int cfd)
 {
 	struct rfb_ptr_msg ptr_msg;
 
-	(void)stream_read(cfd, ((void *)&ptr_msg) + 1, sizeof(ptr_msg) - 1);
+	(void)stream_read(cfd, (uint8_t *)&ptr_msg + 1, sizeof(ptr_msg) - 1);
 
 	console_ptr_event(ptr_msg.button, htons(ptr_msg.x), htons(ptr_msg.y));
 	rc->input_detected = true;
 }
 
 static void
-rfb_recv_cuttext_msg(struct rfb_softc *rc, int cfd)
+rfb_recv_cuttext_msg(struct rfb_softc *rc __unused, int cfd)
 {
 	struct rfb_cuttext_msg ct_msg;
 	unsigned char buf[32];
 	int len;
 
-	len = stream_read(cfd, ((void *)&ct_msg) + 1, sizeof(ct_msg) - 1);
+	len = stream_read(cfd, (uint8_t *)&ct_msg + 1, sizeof(ct_msg) - 1);
 	ct_msg.length = htonl(ct_msg.length);
 	while (ct_msg.length > 0) {
 		len = stream_read(cfd, buf, ct_msg.length > sizeof(buf) ?
@@ -790,12 +856,12 @@ rfb_wr_thr(void *arg)
 	return (NULL);
 }
 
-void
+static void
 rfb_handle(struct rfb_softc *rc, int cfd)
 {
 	const char *vbuf = "RFB 003.008\n";
 	unsigned char buf[80];
-	unsigned char *message = NULL;
+	unsigned const char *message;
 
 #ifndef NO_OPENSSL
 	unsigned char challenge[AUTH_LENGTH];
@@ -819,9 +885,12 @@ rfb_handle(struct rfb_softc *rc, int cfd)
 
 	/* 1b. Read client version */
 	len = stream_read(cfd, buf, VERSION_LENGTH);
-	if (len == VERSION_LENGTH && !strncmp(vbuf, buf, VERSION_LENGTH - 2)) {
-		client_ver = buf[VERSION_LENGTH - 2];
+	if (len != VERSION_LENGTH ||
+	    strncmp(vbuf, buf, VERSION_LENGTH - 2) != 0) {
+		goto done;
 	}
+
+	client_ver = buf[VERSION_LENGTH - 2];
 	if (client_ver != CVERS_3_8 && client_ver != CVERS_3_7) {
 		/* only recognize 3.3, 3.7 & 3.8. Others dflt to 3.3 */
 		client_ver = CVERS_3_3;
@@ -997,6 +1066,9 @@ report_and_done:
 		case CS_CUT_TEXT:
 			rfb_recv_cuttext_msg(rc, cfd);
 			break;
+		case CS_MSG_CLIENT_QEMU:
+			rfb_recv_client_msg(rc, cfd);
+			break;
 		default:
 			WPRINTF(("rfb unknown cli-code %d!", buf[0] & 0xff));
 			goto done;
@@ -1031,6 +1103,9 @@ rfb_thr(void *arg)
 		rc->enc_raw_ok = false;
 		rc->enc_zlib_ok = false;
 		rc->enc_resize_ok = false;
+		rc->enc_extkeyevent_ok = false;
+
+		rc->enc_extkeyevent_send = false;
 
 		cfd = accept(rc->sfd, NULL, NULL);
 		if (rc->conn_wait) {
@@ -1060,7 +1135,7 @@ sse42_supported(void)
 }
 
 int
-rfb_init(char *hostname, int port, int wait, char *password)
+rfb_init(const char *hostname, int port, int wait, const char *password)
 {
 	int e;
 	char servname[6];

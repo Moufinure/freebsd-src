@@ -84,6 +84,7 @@ static int psci_v0_1_init(device_t dev, int default_version);
 static int psci_v0_2_init(device_t dev, int default_version);
 
 struct psci_softc *psci_softc = NULL;
+bool psci_present;
 
 #ifdef __arm__
 #define	USE_ACPI	0
@@ -145,6 +146,7 @@ psci_init(void *dummy)
 	}
 
 	psci_callfn = new_callfn;
+	psci_present = true;
 }
 /* This needs to be before cpu_mp at SI_SUB_CPU, SI_ORDER_THIRD */
 SYSINIT(psci_start, SI_SUB_CPU, SI_ORDER_FIRST, psci_init, NULL);
@@ -345,6 +347,10 @@ psci_attach(device_t dev, psci_initfn_t psci_init, int default_version)
 	KASSERT(psci_init != NULL, ("PSCI init function cannot be NULL"));
 	if (psci_init(dev, default_version))
 		return (ENXIO);
+
+#ifdef __aarch64__
+	smccc_init();
+#endif
 
 	psci_softc = sc;
 

@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2014 Neel Natu (neel@freebsd.org)
  * All rights reserved.
@@ -39,8 +39,7 @@ struct vm_snapshot_meta;
 struct vpmtmr *vpmtmr_init(struct vm *vm);
 void vpmtmr_cleanup(struct vpmtmr *pmtmr);
 
-int vpmtmr_handler(struct vm *vm, int vcpuid, bool in, int port, int bytes,
-    uint32_t *val);
+int vpmtmr_handler(struct vm *vm, bool in, int port, int bytes, uint32_t *val);
 
 #ifdef BHYVE_SNAPSHOT
 int vpmtmr_snapshot(struct vpmtmr *vpmtmr, struct vm_snapshot_meta *meta);

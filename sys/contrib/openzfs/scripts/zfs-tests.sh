@@ -21,6 +21,10 @@
 # CDDL HEADER END
 #
 
+#
+# Copyright 2020 OmniOS Community Edition (OmniOSce) Association.
+#
+
 BASE_DIR=$(dirname "$0")
 SCRIPT_COMMON=common.sh
 if [ -f "${BASE_DIR}/${SCRIPT_COMMON}" ]; then
@@ -34,6 +38,7 @@ VERBOSE="no"
 QUIET=""
 CLEANUP="yes"
 CLEANUPALL="no"
+KMSG=""
 LOOPBACK="yes"
 STACK_TRACER="no"
 FILESIZE="4G"
@@ -48,6 +53,8 @@ ITERATIONS=1
 ZFS_DBGMSG="$STF_SUITE/callbacks/zfs_dbgmsg.ksh"
 ZFS_DMESG="$STF_SUITE/callbacks/zfs_dmesg.ksh"
 UNAME=$(uname -s)
+RERUN=""
+KMEMLEAK=""
 
 # Override some defaults if on FreeBSD
 if [ "$UNAME" = "FreeBSD" ] ; then
@@ -90,7 +97,7 @@ cleanup_freebsd_loopback() {
 
 cleanup_linux_loopback() {
 	for TEST_LOOPBACK in ${LOOPBACKS}; do
-		LOOP_DEV=$(basename "$TEST_LOOPBACK")
+		LOOP_DEV="${TEST_LOOPBACK##*/}"
 		DM_DEV=$(sudo "${DMSETUP}" ls 2>/dev/null | \
 		    grep "${LOOP_DEV}" | cut -f1)
 
@@ -319,9 +326,12 @@ OPTIONS:
 	-q          Quiet test-runner output
 	-x          Remove all testpools, dm, lo, and files (unsafe)
 	-k          Disable cleanup after test failure
+	-K          Log test names to /dev/kmsg
 	-f          Use files only, disables block device tests
 	-S          Enable stack tracer (negative performance impact)
 	-c          Only create and populate constrained path
+	-R          Automatically rerun failing tests
+	-m          Enable kmemleak reporting (Linux only)
 	-n NFSFILE  Use the nfsfile to determine the NFS configuration
 	-I NUM      Number of iterations
 	-d DIR      Use DIR for files and loopback devices
@@ -348,14 +358,13 @@ $0 -x
 EOF
 }
 
-while getopts 'hvqxkfScn:d:s:r:?t:T:u:I:' OPTION; do
+while getopts 'hvqxkKfScRmn:d:s:r:?t:T:u:I:' OPTION; do
 	case $OPTION in
 	h)
 		usage
 		exit 1
 		;;
 	v)
-		# shellcheck disable=SC2034
 		VERBOSE="yes"
 		;;
 	q)
@@ -367,6 +376,9 @@ while getopts 'hvqxkfScn:d:s:r:?t:T:u:I:' OPTION; do
 	k)
 		CLEANUP="no"
 		;;
+	K)
+		KMSG="yes"
+		;;
 	f)
 		LOOPBACK="no"
 		;;
@@ -376,6 +388,12 @@ while getopts 'hvqxkfScn:d:s:r:?t:T:u:I:' OPTION; do
 	c)
 		constrain_path
 		exit
+		;;
+	R)
+		RERUN="yes"
+		;;
+	m)
+		KMEMLEAK="yes"
 		;;
 	n)
 		nfsfile=$OPTARG
@@ -568,18 +586,17 @@ fi
 
 . "$STF_SUITE/include/default.cfg"
 
-msg
-msg "--- Configuration ---"
-msg "Runfiles:        $RUNFILES"
-msg "STF_TOOLS:       $STF_TOOLS"
-msg "STF_SUITE:       $STF_SUITE"
-msg "STF_PATH:        $STF_PATH"
-
 #
 # No DISKS have been provided so a basic file or loopback based devices
 # must be created for the test suite to use.
 #
 if [ -z "${DISKS}" ]; then
+	#
+	# If this is a performance run, prevent accidental use of
+	# loopback devices.
+	#
+	[ "$TAGS" = "perf" ] && fail "Running perf tests without disks."
+
 	#
 	# Create sparse files for the test suite.  These may be used
 	# directory or have loopback devices layered on them.
@@ -608,7 +625,7 @@ if [ -z "${DISKS}" ]; then
 				TEST_LOOPBACK=$(sudo "${LOSETUP}" -f)
 				sudo "${LOSETUP}" "${TEST_LOOPBACK}" "${TEST_FILE}" ||
 				    fail "Failed: ${TEST_FILE} -> ${TEST_LOOPBACK}"
-				BASELOOPBACK=$(basename "$TEST_LOOPBACK")
+				BASELOOPBACK="${TEST_LOOPBACK##*/}"
 				DISKS="$DISKS $BASELOOPBACK"
 				LOOPBACKS="$LOOPBACKS $TEST_LOOPBACK"
 			fi
@@ -620,8 +637,14 @@ if [ -z "${DISKS}" ]; then
 	fi
 fi
 
+#
+# It may be desirable to test with fewer disks than the default when running
+# the performance tests, but the functional tests require at least three.
+#
 NUM_DISKS=$(echo "${DISKS}" | awk '{print NF}')
-[ "$NUM_DISKS" -lt 3 ] && fail "Not enough disks ($NUM_DISKS/3 minimum)"
+if [ "$TAGS" != "perf" ]; then
+	[ "$NUM_DISKS" -lt 3 ] && fail "Not enough disks ($NUM_DISKS/3 minimum)"
+fi
 
 #
 # Disable SELinux until the ZFS Test Suite has been updated accordingly.
@@ -638,6 +661,12 @@ if [ -e /sys/module/zfs/parameters/zfs_dbgmsg_enable ]; then
 	sudo /bin/sh -c "echo 0 >/proc/spl/kstat/zfs/dbgmsg"
 fi
 
+msg
+msg "--- Configuration ---"
+msg "Runfiles:        $RUNFILES"
+msg "STF_TOOLS:       $STF_TOOLS"
+msg "STF_SUITE:       $STF_SUITE"
+msg "STF_PATH:        $STF_PATH"
 msg "FILEDIR:         $FILEDIR"
 msg "FILES:           $FILES"
 msg "LOOPBACKS:       $LOOPBACKS"
@@ -661,35 +690,64 @@ export __ZFS_POOL_EXCLUDE
 export TESTFAIL_CALLBACKS
 export PATH=$STF_PATH
 
-if [ "$UNAME" = "FreeBSD" ] ; then
-	mkdir -p "$FILEDIR" || true
-	RESULTS_FILE=$(mktemp -u "${FILEDIR}/zts-results.XXXXXX")
-	REPORT_FILE=$(mktemp -u "${FILEDIR}/zts-report.XXXXXX")
-else
-	RESULTS_FILE=$(mktemp -u -t zts-results.XXXXXX -p "$FILEDIR")
-	REPORT_FILE=$(mktemp -u -t zts-report.XXXXXX -p "$FILEDIR")
-fi
+mktemp_file() {
+	if [ "$UNAME" = "FreeBSD" ]; then
+		mktemp -u "${FILEDIR}/$1.XXXXXX"
+	else
+		mktemp -ut "$1.XXXXXX" -p "$FILEDIR"
+	fi
+}
+mkdir -p "$FILEDIR" || :
+RESULTS_FILE=$(mktemp_file zts-results)
+REPORT_FILE=$(mktemp_file zts-report)
 
 #
 # Run all the tests as specified.
 #
-msg "${TEST_RUNNER} ${QUIET:+-q}" \
+msg "${TEST_RUNNER}" \
+    "${QUIET:+-q}" \
+    "${KMEMLEAK:+-m}" \
+    "${KMSG:+-K}" \
     "-c \"${RUNFILES}\"" \
     "-T \"${TAGS}\"" \
     "-i \"${STF_SUITE}\"" \
     "-I \"${ITERATIONS}\""
-${TEST_RUNNER} ${QUIET:+-q} \
+${TEST_RUNNER} ${QUIET:+-q} ${KMEMLEAK:+-m} \
+    ${KMSG:+-K} \
     -c "${RUNFILES}" \
     -T "${TAGS}" \
     -i "${STF_SUITE}" \
     -I "${ITERATIONS}" \
     2>&1 | tee "$RESULTS_FILE"
-
 #
 # Analyze the results.
 #
-${ZTS_REPORT} "$RESULTS_FILE" >"$REPORT_FILE"
+${ZTS_REPORT} ${RERUN:+--no-maybes} "$RESULTS_FILE" >"$REPORT_FILE"
 RESULT=$?
+
+if [ "$RESULT" -eq "2" ] && [ -n "$RERUN" ]; then
+	MAYBES="$($ZTS_REPORT --list-maybes)"
+	TEMP_RESULTS_FILE=$(mktemp_file zts-results-tmp)
+	TEST_LIST=$(mktemp_file test-list)
+	grep "^Test:.*\[FAIL\]" "$RESULTS_FILE" >"$TEMP_RESULTS_FILE"
+	for test_name in $MAYBES; do
+		grep "$test_name " "$TEMP_RESULTS_FILE" >>"$TEST_LIST"
+	done
+	${TEST_RUNNER} ${QUIET:+-q} ${KMEMLEAK:+-m} \
+	    -c "${RUNFILES}" \
+	    -T "${TAGS}" \
+	    -i "${STF_SUITE}" \
+	    -I "${ITERATIONS}" \
+	    -l "${TEST_LIST}" \
+	    2>&1 | tee "$RESULTS_FILE"
+	#
+	# Analyze the results.
+	#
+	${ZTS_REPORT} --no-maybes "$RESULTS_FILE" >"$REPORT_FILE"
+	RESULT=$?
+fi
+
+
 cat "$REPORT_FILE"
 
 RESULTS_DIR=$(awk '/^Log directory/ { print $3 }' "$RESULTS_FILE")

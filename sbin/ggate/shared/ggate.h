@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2004 Pawel Jakub Dawidek <pjd@FreeBSD.org>
  * All rights reserved.
@@ -57,6 +57,7 @@
 
 #define	GGATE_CMD_READ		0
 #define	GGATE_CMD_WRITE		1
+#define	GGATE_CMD_FLUSH		3
 
 extern int g_gate_devfd;
 extern int g_gate_verbose;

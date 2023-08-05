@@ -53,6 +53,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/param.h>
 #include <sys/bus.h>
 #include <sys/capsicum.h>
+#include <sys/event.h>
 #include <sys/kernel.h>
 #include <sys/lock.h>
 #include <sys/mutex.h>
@@ -141,6 +142,16 @@ userret(struct thread *td, struct trapframe *frame)
 	if (PMC_THREAD_HAS_SAMPLES(td))
 		PMC_CALL_HOOK(td, PMC_FN_THR_USERRET, NULL);
 #endif
+#ifdef TCPHPTS
+	/*
+	 * @gallatin is adament that this needs to go here, I
+	 * am not so sure. Running hpts is a lot like
+	 * a lro_flush() that happens while a user process
+	 * is running. But he may know best so I will go
+	 * with his view of accounting. :-)
+	 */
+	tcp_run_hpts();
+#endif
 	/*
 	 * Let the scheduler adjust our priority etc.
 	 */
@@ -177,7 +188,7 @@ userret(struct thread *td, struct trapframe *frame)
 		KASSERT(0, ("userret: Returning with sleep disabled"));
 	}
 	KASSERT(td->td_pinned == 0 || (td->td_pflags & TDP_CALLCHAIN) != 0,
-	    ("userret: Returning with with pinned thread"));
+	    ("userret: Returning with pinned thread"));
 	KASSERT(td->td_vp_reserved == NULL,
 	    ("userret: Returning with preallocated vnode"));
 	KASSERT((td->td_flags & (TDF_SBDRY | TDF_SEINTR | TDF_SERESTART)) == 0,
@@ -203,7 +214,7 @@ ast(struct trapframe *framep)
 {
 	struct thread *td;
 	struct proc *p;
-	int flags, sig;
+	int flags, old_boundary, sig;
 	bool resched_sigs;
 
 	td = curthread;
@@ -228,7 +239,8 @@ ast(struct trapframe *framep)
 	thread_lock(td);
 	flags = td->td_flags;
 	td->td_flags &= ~(TDF_ASTPENDING | TDF_NEEDSIGCHK | TDF_NEEDSUSPCHK |
-	    TDF_NEEDRESCHED | TDF_ALRMPEND | TDF_PROFPEND | TDF_MACPEND);
+	    TDF_NEEDRESCHED | TDF_ALRMPEND | TDF_PROFPEND | TDF_MACPEND |
+	    TDF_KQTICKLED);
 	thread_unlock(td);
 	VM_CNT_INC(v_trap);
 
@@ -318,17 +330,23 @@ ast(struct trapframe *framep)
 	    !SIGISEMPTY(p->p_siglist)) {
 		sigfastblock_fetch(td);
 		PROC_LOCK(p);
+		old_boundary = ~TDB_BOUNDARY | (td->td_dbgflags & TDB_BOUNDARY);
+		td->td_dbgflags |= TDB_BOUNDARY;
 		mtx_lock(&p->p_sigacts->ps_mtx);
 		while ((sig = cursig(td)) != 0) {
 			KASSERT(sig >= 0, ("sig %d", sig));
 			postsig(sig);
 		}
 		mtx_unlock(&p->p_sigacts->ps_mtx);
+		td->td_dbgflags &= old_boundary;
 		PROC_UNLOCK(p);
 		resched_sigs = true;
 	} else {
 		resched_sigs = false;
 	}
+
+	if ((flags & TDF_KQTICKLED) != 0)
+		kqueue_drain_schedtask();
 
 	/*
 	 * Handle deferred update of the fast sigblock value, after

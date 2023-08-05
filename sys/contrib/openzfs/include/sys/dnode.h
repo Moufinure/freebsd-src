@@ -36,6 +36,7 @@
 #include <sys/dmu_zfetch.h>
 #include <sys/zrlock.h>
 #include <sys/multilist.h>
+#include <sys/wmsum.h>
 
 #ifdef	__cplusplus
 extern "C" {
@@ -119,7 +120,11 @@ extern "C" {
 #define	DN_MAX_LEVELS	(DIV_ROUND_UP(DN_MAX_OFFSET_SHIFT - SPA_MINBLOCKSHIFT, \
 	DN_MIN_INDBLKSHIFT - SPA_BLKPTRSHIFT) + 1)
 
-#define	DN_BONUS(dnp)	((void*)((dnp)->dn_bonus + \
+/*
+ * Use the flexible array instead of the fixed length one dn_bonus
+ * to address memcpy/memmove fortify error
+ */
+#define	DN_BONUS(dnp)	((void*)((dnp)->dn_bonus_flexible + \
 	(((dnp)->dn_nblkptr - 1) * sizeof (blkptr_t))))
 #define	DN_MAX_BONUS_LEN(dnp) \
 	((dnp->dn_flags & DNODE_FLAG_SPILL_BLKPTR) ? \
@@ -171,7 +176,7 @@ enum dnode_dirtycontext {
  * example, reading 32 dnodes from a 16k dnode block and all of the spill
  * blocks could issue 33 separate reads. Now suppose those dnodes have size
  * 1024 and therefore don't need spill blocks. Then the worst case number
- * of blocks read is reduced to from 33 to two--one per dnode block.
+ * of blocks read is reduced from 33 to two--one per dnode block.
  *
  * ZFS-on-Linux systems that make heavy use of extended attributes benefit
  * from this feature. In particular, ZFS-on-Linux supports the xattr=sa
@@ -232,8 +237,8 @@ typedef struct dnode_phys {
 	 * Both dn_pad2 and dn_pad3 are protected by the block's MAC. This
 	 * allows us to protect any fields that might be added here in the
 	 * future. In either case, developers will want to check
-	 * zio_crypt_init_uios_dnode() to ensure the new field is being
-	 * protected properly.
+	 * zio_crypt_init_uios_dnode() and zio_crypt_do_dnode_hmac_updates()
+	 * to ensure the new field is being protected and updated properly.
 	 */
 	uint64_t dn_pad3[4];
 
@@ -264,6 +269,10 @@ typedef struct dnode_phys {
 			uint8_t __dn_ignore3[DN_OLD_MAX_BONUSLEN -
 			    sizeof (blkptr_t)];
 			blkptr_t dn_spill;
+		};
+		struct {
+			blkptr_t __dn_ignore4;
+			uint8_t dn_bonus_flexible[];
 		};
 	};
 } dnode_phys_t;
@@ -425,6 +434,7 @@ boolean_t dnode_add_ref(dnode_t *dn, void *ref);
 void dnode_rele(dnode_t *dn, void *ref);
 void dnode_rele_and_unlock(dnode_t *dn, void *tag, boolean_t evicting);
 int dnode_try_claim(objset_t *os, uint64_t object, int slots);
+boolean_t dnode_is_dirty(dnode_t *dn);
 void dnode_setdirty(dnode_t *dn, dmu_tx_t *tx);
 void dnode_set_dirtyctx(dnode_t *dn, dmu_tx_t *tx, void *tag);
 void dnode_sync(dnode_t *dn, dmu_tx_t *tx);
@@ -586,10 +596,42 @@ typedef struct dnode_stats {
 	kstat_named_t dnode_move_active;
 } dnode_stats_t;
 
+typedef struct dnode_sums {
+	wmsum_t dnode_hold_dbuf_hold;
+	wmsum_t dnode_hold_dbuf_read;
+	wmsum_t dnode_hold_alloc_hits;
+	wmsum_t dnode_hold_alloc_misses;
+	wmsum_t dnode_hold_alloc_interior;
+	wmsum_t dnode_hold_alloc_lock_retry;
+	wmsum_t dnode_hold_alloc_lock_misses;
+	wmsum_t dnode_hold_alloc_type_none;
+	wmsum_t dnode_hold_free_hits;
+	wmsum_t dnode_hold_free_misses;
+	wmsum_t dnode_hold_free_lock_misses;
+	wmsum_t dnode_hold_free_lock_retry;
+	wmsum_t dnode_hold_free_refcount;
+	wmsum_t dnode_hold_free_overflow;
+	wmsum_t dnode_free_interior_lock_retry;
+	wmsum_t dnode_allocate;
+	wmsum_t dnode_reallocate;
+	wmsum_t dnode_buf_evict;
+	wmsum_t dnode_alloc_next_chunk;
+	wmsum_t dnode_alloc_race;
+	wmsum_t dnode_alloc_next_block;
+	wmsum_t dnode_move_invalid;
+	wmsum_t dnode_move_recheck1;
+	wmsum_t dnode_move_recheck2;
+	wmsum_t dnode_move_special;
+	wmsum_t dnode_move_handle;
+	wmsum_t dnode_move_rwlock;
+	wmsum_t dnode_move_active;
+} dnode_sums_t;
+
 extern dnode_stats_t dnode_stats;
+extern dnode_sums_t dnode_sums;
 
 #define	DNODE_STAT_INCR(stat, val) \
-    atomic_add_64(&dnode_stats.stat.value.ui64, (val));
+    wmsum_add(&dnode_sums.stat, (val))
 #define	DNODE_STAT_BUMP(stat) \
     DNODE_STAT_INCR(stat, 1);
 
@@ -600,7 +642,7 @@ extern dnode_stats_t dnode_stats;
 	char __db_buf[32]; \
 	uint64_t __db_obj = (dn)->dn_object; \
 	if (__db_obj == DMU_META_DNODE_OBJECT) \
-		(void) strcpy(__db_buf, "mdn"); \
+		(void) strlcpy(__db_buf, "mdn", sizeof (__db_buf));	\
 	else \
 		(void) snprintf(__db_buf, sizeof (__db_buf), "%lld", \
 		    (u_longlong_t)__db_obj);\
@@ -615,7 +657,7 @@ _NOTE(CONSTCOND) } while (0)
 #else
 
 #define	dprintf_dnode(db, fmt, ...)
-#define	DNODE_VERIFY(dn)
+#define	DNODE_VERIFY(dn)		((void) sizeof ((uintptr_t)(dn)))
 #define	FREE_VERIFY(db, start, end, tx)
 
 #endif

@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2009 Alan L. Cox <alc@cs.rice.edu>
  * All rights reserved.
@@ -38,6 +38,7 @@
 #define	VM_MEMATTR_UNCACHEABLE		((vm_memattr_t)MIPS_CCA_UNCACHED)
 #define	VM_MEMATTR_WRITE_BACK		((vm_memattr_t)MIPS_CCA_CACHED)
 #define	VM_MEMATTR_DEFAULT		VM_MEMATTR_WRITE_BACK
+#define	VM_MEMATTR_DEVICE		VM_MEMATTR_UNCACHEABLE
 #ifdef MIPS_CCA_WC
 #define	VM_MEMATTR_WRITE_COMBINING	((vm_memattr_t)MIPS_CCA_WC)
 #endif

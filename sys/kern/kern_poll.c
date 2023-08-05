@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2001-2002 Luigi Rizzo
  *
@@ -371,7 +371,7 @@ ether_poll(int count)
 static struct timeval poll_start_t;
 
 void
-netisr_pollmore()
+netisr_pollmore(void)
 {
 	struct timeval t;
 	int kern_load;

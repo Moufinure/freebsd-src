@@ -6,7 +6,6 @@ KERNEL_H = \
 	callo.h \
 	cmn_err.h \
 	condvar.h \
-	console.h \
 	cred.h \
 	ctype.h \
 	debug.h \
@@ -21,6 +20,7 @@ KERNEL_H = \
 	kmem.h \
 	kstat.h \
 	list.h \
+	misc.h \
 	mod_os.h \
 	mutex.h \
 	param.h \
@@ -55,6 +55,7 @@ KERNEL_H = \
 	vmsystm.h \
 	vnode.h \
 	wait.h \
+	wmsum.h \
 	zmod.h \
 	zone.h
 

@@ -794,7 +794,11 @@ pf_reassemble(struct mbuf **m0, struct ip *ip, int dir, u_short *reason)
 	}
 
 	ip = mtod(m, struct ip *);
+	ip->ip_sum = pf_cksum_fixup(ip->ip_sum, ip->ip_len,
+	    htons(hdrlen + total), 0);
 	ip->ip_len = htons(hdrlen + total);
+	ip->ip_sum = pf_cksum_fixup(ip->ip_sum, ip->ip_off,
+	    ip->ip_off & ~(IP_MF|IP_OFFMASK), 0);
 	ip->ip_off &= ~(IP_MF|IP_OFFMASK);
 
 	if (hdrlen + total > IP_MAXPACKET) {
@@ -998,7 +1002,7 @@ pf_refragment6(struct ifnet *ifp, struct mbuf **m0, struct m_tag *mtag)
 		DPFPRINTF(("refragment error %d\n", error));
 		action = PF_DROP;
 	}
-	for (t = m; m; m = t) {
+	for (; m; m = t) {
 		t = m->m_nextpkt;
 		m->m_nextpkt = NULL;
 		m->m_flags |= M_SKIP_FIREWALL;
@@ -1027,7 +1031,6 @@ pf_normalize_ip(struct mbuf **m0, int dir, struct pfi_kkif *kif, u_short *reason
 	u_int16_t		 fragoff = (ntohs(h->ip_off) & IP_OFFMASK) << 3;
 	u_int16_t		 max;
 	int			 ip_len;
-	int			 ip_off;
 	int			 tag = -1;
 	int			 verdict;
 
@@ -1035,7 +1038,7 @@ pf_normalize_ip(struct mbuf **m0, int dir, struct pfi_kkif *kif, u_short *reason
 
 	r = TAILQ_FIRST(pf_main_ruleset.rules[PF_RULESET_SCRUB].active.ptr);
 	while (r != NULL) {
-		counter_u64_add(r->evaluations, 1);
+		pf_counter_u64_add(&r->evaluations, 1);
 		if (pfi_kkif_match(r->kif, kif) == r->ifnot)
 			r = r->skip[PF_SKIP_IFP].ptr;
 		else if (r->direction && r->direction != dir)
@@ -1061,10 +1064,11 @@ pf_normalize_ip(struct mbuf **m0, int dir, struct pfi_kkif *kif, u_short *reason
 
 	if (r == NULL || r->action == PF_NOSCRUB)
 		return (PF_PASS);
-	else {
-		counter_u64_add(r->packets[dir == PF_OUT], 1);
-		counter_u64_add(r->bytes[dir == PF_OUT], pd->tot_len);
-	}
+
+	pf_counter_u64_critical_enter();
+	pf_counter_u64_add_protected(&r->packets[dir == PF_OUT], 1);
+	pf_counter_u64_add_protected(&r->bytes[dir == PF_OUT], pd->tot_len);
+	pf_counter_u64_critical_exit();
 
 	/* Check for illegal packets */
 	if (hlen < (int)sizeof(struct ip)) {
@@ -1099,7 +1103,6 @@ pf_normalize_ip(struct mbuf **m0, int dir, struct pfi_kkif *kif, u_short *reason
 	}
 
 	ip_len = ntohs(h->ip_len) - hlen;
-	ip_off = (ntohs(h->ip_off) & IP_OFFMASK) << 3;
 
 	/* All fragments are 8 byte aligned */
 	if (mff && (ip_len & 0x7)) {
@@ -1178,7 +1181,7 @@ pf_normalize_ip6(struct mbuf **m0, int dir, struct pfi_kkif *kif,
 
 	r = TAILQ_FIRST(pf_main_ruleset.rules[PF_RULESET_SCRUB].active.ptr);
 	while (r != NULL) {
-		counter_u64_add(r->evaluations, 1);
+		pf_counter_u64_add(&r->evaluations, 1);
 		if (pfi_kkif_match(r->kif, kif) == r->ifnot)
 			r = r->skip[PF_SKIP_IFP].ptr;
 		else if (r->direction && r->direction != dir)
@@ -1203,15 +1206,18 @@ pf_normalize_ip6(struct mbuf **m0, int dir, struct pfi_kkif *kif,
 
 	if (r == NULL || r->action == PF_NOSCRUB)
 		return (PF_PASS);
-	else {
-		counter_u64_add(r->packets[dir == PF_OUT], 1);
-		counter_u64_add(r->bytes[dir == PF_OUT], pd->tot_len);
-	}
+
+	pf_counter_u64_critical_enter();
+	pf_counter_u64_add_protected(&r->packets[dir == PF_OUT], 1);
+	pf_counter_u64_add_protected(&r->bytes[dir == PF_OUT], pd->tot_len);
+	pf_counter_u64_critical_exit();
 
 	/* Check for illegal packets */
 	if (sizeof(struct ip6_hdr) + IPV6_MAXPACKET < m->m_pkthdr.len)
 		goto drop;
 
+again:
+	h = mtod(m, struct ip6_hdr *);
 	plen = ntohs(h->ip6_plen);
 	/* jumbo payload option not supported */
 	if (plen == 0)
@@ -1282,6 +1288,8 @@ pf_normalize_ip6(struct mbuf **m0, int dir, struct pfi_kkif *kif,
 	return (PF_PASS);
 
  fragment:
+	if (pd->flags & PFDESC_IP_REAS)
+		return (PF_DROP);
 	if (sizeof(struct ip6_hdr) + plen > m->m_pkthdr.len)
 		goto shortpkt;
 
@@ -1299,7 +1307,7 @@ pf_normalize_ip6(struct mbuf **m0, int dir, struct pfi_kkif *kif,
 		return (PF_DROP);
 
 	pd->flags |= PFDESC_IP_REAS;
-	return (PF_PASS);
+	goto again;
 
  shortpkt:
 	REASON_SET(reason, PFRES_SHORT);
@@ -1322,7 +1330,7 @@ pf_normalize_tcp(int dir, struct pfi_kkif *kif, struct mbuf *m, int ipoff,
     int off, void *h, struct pf_pdesc *pd)
 {
 	struct pf_krule	*r, *rm = NULL;
-	struct tcphdr	*th = pd->hdr.tcp;
+	struct tcphdr	*th = &pd->hdr.tcp;
 	int		 rewrite = 0;
 	u_short		 reason;
 	u_int8_t	 flags;
@@ -1332,7 +1340,7 @@ pf_normalize_tcp(int dir, struct pfi_kkif *kif, struct mbuf *m, int ipoff,
 
 	r = TAILQ_FIRST(pf_main_ruleset.rules[PF_RULESET_SCRUB].active.ptr);
 	while (r != NULL) {
-		counter_u64_add(r->evaluations, 1);
+		pf_counter_u64_add(&r->evaluations, 1);
 		if (pfi_kkif_match(r->kif, kif) == r->ifnot)
 			r = r->skip[PF_SKIP_IFP].ptr;
 		else if (r->direction && r->direction != dir)
@@ -1365,10 +1373,11 @@ pf_normalize_tcp(int dir, struct pfi_kkif *kif, struct mbuf *m, int ipoff,
 
 	if (rm == NULL || rm->action == PF_NOSCRUB)
 		return (PF_PASS);
-	else {
-		counter_u64_add(r->packets[dir == PF_OUT], 1);
-		counter_u64_add(r->bytes[dir == PF_OUT], pd->tot_len);
-	}
+
+	pf_counter_u64_critical_enter();
+	pf_counter_u64_add_protected(&r->packets[dir == PF_OUT], 1);
+	pf_counter_u64_add_protected(&r->bytes[dir == PF_OUT], pd->tot_len);
+	pf_counter_u64_critical_exit();
 
 	if (rm->rule_flag & PFRULE_REASSEMBLE_TCP)
 		pd->flags |= PFDESC_TCP_NORM;
@@ -1518,7 +1527,7 @@ pf_normalize_tcp_init(struct mbuf *m, int off, struct pf_pdesc *pd,
 }
 
 void
-pf_normalize_tcp_cleanup(struct pf_state *state)
+pf_normalize_tcp_cleanup(struct pf_kstate *state)
 {
 	if (state->src.scrub)
 		uma_zfree(V_pf_state_scrub_z, state->src.scrub);
@@ -1530,7 +1539,7 @@ pf_normalize_tcp_cleanup(struct pf_state *state)
 
 int
 pf_normalize_tcp_stateful(struct mbuf *m, int off, struct pf_pdesc *pd,
-    u_short *reason, struct tcphdr *th, struct pf_state *state,
+    u_short *reason, struct tcphdr *th, struct pf_kstate *state,
     struct pf_state_peer *src, struct pf_state_peer *dst, int *writeback)
 {
 	struct timeval uptime;

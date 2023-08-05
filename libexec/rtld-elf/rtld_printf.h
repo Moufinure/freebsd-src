@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright 2011 Konstantin Belousov <kib@FreeBSD.org>.
  * All rights reserved.
@@ -39,6 +39,7 @@ int rtld_snprintf(char *buf, size_t bufsize, const char *fmt, ...)
 int rtld_vsnprintf(char *buf, size_t bufsize, const char *fmt, va_list ap);
 int rtld_vfdprintf(int fd, const char *fmt, va_list ap);
 int rtld_fdprintf(int fd, const char *fmt, ...) __printflike(2, 3);
+int rtld_fdprintfx(int fd, const char *fmt, ...);
 void rtld_fdputstr(int fd, const char *str);
 void rtld_fdputchar(int fd, int c);
 

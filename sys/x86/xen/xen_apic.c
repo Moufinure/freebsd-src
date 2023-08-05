@@ -107,6 +107,14 @@ static struct xen_ipi_handler xen_ipis[] =
 };
 #endif
 
+/*
+ * Save previous (native) handler as a fallback. Xen < 4.7 doesn't support
+ * VCPUOP_send_nmi for HVM guests, and thus we need a fallback in that case:
+ *
+ * https://lists.freebsd.org/archives/freebsd-xen/2022-January/000032.html
+ */
+void (*native_ipi_vectored)(u_int, int);
+
 /*------------------------------- Per-CPU Data -------------------------------*/
 #ifdef SMP
 DPCPU_DEFINE(xen_intr_handle_t, ipi_handle[nitems(xen_ipis)]);
@@ -224,6 +232,12 @@ xen_pv_apic_free_vector(u_int apic_id, u_int vector, u_int irq)
 }
 
 static void
+xen_pv_lapic_calibrate_timer(void)
+{
+
+}
+
+static void
 xen_pv_lapic_set_logical_id(u_int apic_id, u_int cluster, u_int cluster_id)
 {
 
@@ -267,10 +281,11 @@ xen_pv_lapic_ipi_raw(register_t icrlo, u_int dest)
 }
 
 #define PCPU_ID_GET(id, field) (pcpu_find(id)->pc_##field)
-static void
+static int
 send_nmi(int dest)
 {
 	unsigned int cpu;
+	int rc = 0;
 
 	/*
 	 * NMIs are not routed over event channels, and instead delivered as on
@@ -280,24 +295,33 @@ send_nmi(int dest)
 	 */
 	switch(dest) {
 	case APIC_IPI_DEST_SELF:
-		HYPERVISOR_vcpu_op(VCPUOP_send_nmi, PCPU_GET(vcpu_id), NULL);
+		rc = HYPERVISOR_vcpu_op(VCPUOP_send_nmi, PCPU_GET(vcpu_id), NULL);
 		break;
 	case APIC_IPI_DEST_ALL:
-		CPU_FOREACH(cpu)
-			HYPERVISOR_vcpu_op(VCPUOP_send_nmi,
+		CPU_FOREACH(cpu) {
+			rc = HYPERVISOR_vcpu_op(VCPUOP_send_nmi,
 			    PCPU_ID_GET(cpu, vcpu_id), NULL);
+			if (rc != 0)
+				break;
+		}
 		break;
 	case APIC_IPI_DEST_OTHERS:
-		CPU_FOREACH(cpu)
-			if (cpu != PCPU_GET(cpuid))
-				HYPERVISOR_vcpu_op(VCPUOP_send_nmi,
+		CPU_FOREACH(cpu) {
+			if (cpu != PCPU_GET(cpuid)) {
+				rc = HYPERVISOR_vcpu_op(VCPUOP_send_nmi,
 				    PCPU_ID_GET(cpu, vcpu_id), NULL);
+				if (rc != 0)
+					break;
+			}
+		}
 		break;
 	default:
-		HYPERVISOR_vcpu_op(VCPUOP_send_nmi,
+		rc = HYPERVISOR_vcpu_op(VCPUOP_send_nmi,
 		    PCPU_ID_GET(apic_cpuid(dest), vcpu_id), NULL);
 		break;
 	}
+
+	return rc;
 }
 #undef PCPU_ID_GET
 
@@ -306,9 +330,21 @@ xen_pv_lapic_ipi_vectored(u_int vector, int dest)
 {
 	xen_intr_handle_t *ipi_handle;
 	int ipi_idx, to_cpu, self;
+	static bool pvnmi = true;
 
 	if (vector >= IPI_NMI_FIRST) {
-		send_nmi(dest);
+		if (pvnmi) {
+			int rc = send_nmi(dest);
+
+			if (rc != 0) {
+				printf(
+    "Sending NMI using hypercall failed (%d) switching to APIC\n", rc);
+				pvnmi = false;
+				native_ipi_vectored(vector, dest);
+			}
+		} else
+			native_ipi_vectored(vector, dest);
+
 		return;
 	}
 
@@ -420,6 +456,7 @@ struct apic_ops xen_apic_ops = {
 	.enable_vector		= xen_pv_apic_enable_vector,
 	.disable_vector		= xen_pv_apic_disable_vector,
 	.free_vector		= xen_pv_apic_free_vector,
+	.calibrate_timer	= xen_pv_lapic_calibrate_timer,
 	.enable_pmc		= xen_pv_lapic_enable_pmc,
 	.disable_pmc		= xen_pv_lapic_disable_pmc,
 	.reenable_pmc		= xen_pv_lapic_reenable_pmc,
@@ -573,8 +610,8 @@ xen_setup_cpus(void)
 		xen_cpu_ipi_init(i);
 
 	/* Set the xen pv ipi ops to replace the native ones */
-	if (xen_hvm_domain())
-		apic_ops.ipi_vectored = xen_pv_lapic_ipi_vectored;
+	native_ipi_vectored = apic_ops.ipi_vectored;
+	apic_ops.ipi_vectored = xen_pv_lapic_ipi_vectored;
 }
 
 /* Switch to using PV IPIs as soon as the vcpu_id is set. */

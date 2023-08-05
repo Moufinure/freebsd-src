@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2014 Nahanni Systems Inc.
  * All rights reserved.
@@ -43,7 +43,7 @@ __FBSDID("$FreeBSD$");
 SET_DECLARE(usb_emu_set, struct usb_devemu);
 
 struct usb_devemu *
-usb_emu_finddev(char *name)
+usb_emu_finddev(const char *name)
 {
 	struct usb_devemu **udpp, *udp;
 

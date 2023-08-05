@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * ------+---------+---------+---------+---------+---------+---------+---------*
  * Copyright (c) 2001,2011  - Garance Alistair Drosehn <gad@FreeBSD.org>.
@@ -44,7 +44,7 @@ __FBSDID("$FreeBSD$");
  */
 
 /*
- * Some define's useful for debuging.
+ * Some define's useful for debugging.
  * TRIGGERTEST_FNAME and DEBUGREADCF_FNAME, allow us to do testing on
  * a per-spool-directory basis.
  */

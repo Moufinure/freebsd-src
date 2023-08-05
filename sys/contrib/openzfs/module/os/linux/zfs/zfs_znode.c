@@ -134,6 +134,9 @@ zfs_znode_cache_constructor(void *buf, void *arg, int kmflags)
 	zp->z_acl_cached = NULL;
 	zp->z_xattr_cached = NULL;
 	zp->z_xattr_parent = 0;
+	zp->z_sync_writes_cnt = 0;
+	zp->z_async_writes_cnt = 0;
+
 	return (0);
 }
 
@@ -151,9 +154,12 @@ zfs_znode_cache_destructor(void *buf, void *arg)
 	rw_destroy(&zp->z_xattr_lock);
 	zfs_rangelock_fini(&zp->z_rangelock);
 
-	ASSERT(zp->z_dirlocks == NULL);
-	ASSERT(zp->z_acl_cached == NULL);
-	ASSERT(zp->z_xattr_cached == NULL);
+	ASSERT3P(zp->z_dirlocks, ==, NULL);
+	ASSERT3P(zp->z_acl_cached, ==, NULL);
+	ASSERT3P(zp->z_xattr_cached, ==, NULL);
+
+	ASSERT0(atomic_load_32(&zp->z_sync_writes_cnt));
+	ASSERT0(atomic_load_32(&zp->z_async_writes_cnt));
 }
 
 static int
@@ -162,8 +168,7 @@ zfs_znode_hold_cache_constructor(void *buf, void *arg, int kmflags)
 	znode_hold_t *zh = buf;
 
 	mutex_init(&zh->zh_lock, NULL, MUTEX_DEFAULT, NULL);
-	zfs_refcount_create(&zh->zh_refcount);
-	zh->zh_obj = ZFS_NO_OBJECT;
+	zh->zh_refcount = 0;
 
 	return (0);
 }
@@ -174,7 +179,6 @@ zfs_znode_hold_cache_destructor(void *buf, void *arg)
 	znode_hold_t *zh = buf;
 
 	mutex_destroy(&zh->zh_lock);
-	zfs_refcount_destroy(&zh->zh_refcount);
 }
 
 void
@@ -217,7 +221,7 @@ zfs_znode_fini(void)
  * created or destroyed.  This kind of locking would normally reside in the
  * znode itself but in this case that's impossible because the znode and SA
  * buffer may not yet exist.  Therefore the locking is handled externally
- * with an array of mutexs and AVLs trees which contain per-object locks.
+ * with an array of mutexes and AVLs trees which contain per-object locks.
  *
  * In zfs_znode_hold_enter() a per-object lock is created as needed, inserted
  * in to the correct AVL tree and finally the per-object lock is held.  In
@@ -273,26 +277,26 @@ zfs_znode_hold_enter(zfsvfs_t *zfsvfs, uint64_t obj)
 	boolean_t found = B_FALSE;
 
 	zh_new = kmem_cache_alloc(znode_hold_cache, KM_SLEEP);
-	zh_new->zh_obj = obj;
 	search.zh_obj = obj;
 
 	mutex_enter(&zfsvfs->z_hold_locks[i]);
 	zh = avl_find(&zfsvfs->z_hold_trees[i], &search, NULL);
 	if (likely(zh == NULL)) {
 		zh = zh_new;
+		zh->zh_obj = obj;
 		avl_add(&zfsvfs->z_hold_trees[i], zh);
 	} else {
 		ASSERT3U(zh->zh_obj, ==, obj);
 		found = B_TRUE;
 	}
-	zfs_refcount_add(&zh->zh_refcount, NULL);
+	zh->zh_refcount++;
+	ASSERT3S(zh->zh_refcount, >, 0);
 	mutex_exit(&zfsvfs->z_hold_locks[i]);
 
 	if (found == B_TRUE)
 		kmem_cache_free(znode_hold_cache, zh_new);
 
 	ASSERT(MUTEX_NOT_HELD(&zh->zh_lock));
-	ASSERT3S(zfs_refcount_count(&zh->zh_refcount), >, 0);
 	mutex_enter(&zh->zh_lock);
 
 	return (zh);
@@ -305,11 +309,11 @@ zfs_znode_hold_exit(zfsvfs_t *zfsvfs, znode_hold_t *zh)
 	boolean_t remove = B_FALSE;
 
 	ASSERT(zfs_znode_held(zfsvfs, zh->zh_obj));
-	ASSERT3S(zfs_refcount_count(&zh->zh_refcount), >, 0);
 	mutex_exit(&zh->zh_lock);
 
 	mutex_enter(&zfsvfs->z_hold_locks[i]);
-	if (zfs_refcount_remove(&zh->zh_refcount, NULL) == 0) {
+	ASSERT3S(zh->zh_refcount, >, 0);
+	if (--zh->zh_refcount == 0) {
 		avl_remove(&zfsvfs->z_hold_trees[i], zh);
 		remove = B_TRUE;
 	}
@@ -430,7 +434,7 @@ zfs_inode_set_ops(zfsvfs_t *zfsvfs, struct inode *ip)
 	case S_IFBLK:
 		(void) sa_lookup(ITOZ(ip)->z_sa_hdl, SA_ZPL_RDEV(zfsvfs), &rdev,
 		    sizeof (rdev));
-		/*FALLTHROUGH*/
+		fallthrough;
 	case S_IFIFO:
 	case S_IFSOCK:
 		init_special_inode(ip, ip->i_mode, rdev);
@@ -525,9 +529,9 @@ zfs_znode_alloc(zfsvfs_t *zfsvfs, dmu_buf_t *db, int blksz,
 	uint64_t tmp_gen;
 	uint64_t links;
 	uint64_t z_uid, z_gid;
-	uint64_t atime[2], mtime[2], ctime[2];
+	uint64_t atime[2], mtime[2], ctime[2], btime[2];
 	uint64_t projid = ZFS_DEFAULT_PROJID;
-	sa_bulk_attr_t bulk[11];
+	sa_bulk_attr_t bulk[12];
 	int count = 0;
 
 	ASSERT(zfsvfs != NULL);
@@ -542,9 +546,10 @@ zfs_znode_alloc(zfsvfs_t *zfsvfs, dmu_buf_t *db, int blksz,
 	ASSERT3P(zp->z_xattr_cached, ==, NULL);
 	zp->z_unlinked = B_FALSE;
 	zp->z_atime_dirty = B_FALSE;
+#if !defined(HAVE_FILEMAP_RANGE_HAS_PAGE)
 	zp->z_is_mapped = B_FALSE;
+#endif
 	zp->z_is_ctldir = B_FALSE;
-	zp->z_is_stale = B_FALSE;
 	zp->z_suspended = B_FALSE;
 	zp->z_sa_hdl = NULL;
 	zp->z_mapcnt = 0;
@@ -552,6 +557,8 @@ zfs_znode_alloc(zfsvfs_t *zfsvfs, dmu_buf_t *db, int blksz,
 	zp->z_blksz = blksz;
 	zp->z_seq = 0x7A4653;
 	zp->z_sync_cnt = 0;
+	zp->z_sync_writes_cnt = 0;
+	zp->z_async_writes_cnt = 0;
 
 	zfs_znode_sa_init(zfsvfs, zp, db, obj_type, hdl);
 
@@ -569,6 +576,7 @@ zfs_znode_alloc(zfsvfs_t *zfsvfs, dmu_buf_t *db, int blksz,
 	SA_ADD_BULK_ATTR(bulk, count, SA_ZPL_ATIME(zfsvfs), NULL, &atime, 16);
 	SA_ADD_BULK_ATTR(bulk, count, SA_ZPL_MTIME(zfsvfs), NULL, &mtime, 16);
 	SA_ADD_BULK_ATTR(bulk, count, SA_ZPL_CTIME(zfsvfs), NULL, &ctime, 16);
+	SA_ADD_BULK_ATTR(bulk, count, SA_ZPL_CRTIME(zfsvfs), NULL, &btime, 16);
 
 	if (sa_bulk_lookup(zp->z_sa_hdl, bulk, count) != 0 || tmp_gen == 0 ||
 	    (dmu_objset_projectquota_enabled(zfsvfs->z_os) &&
@@ -596,6 +604,7 @@ zfs_znode_alloc(zfsvfs_t *zfsvfs, dmu_buf_t *db, int blksz,
 	ZFS_TIME_DECODE(&ip->i_atime, atime);
 	ZFS_TIME_DECODE(&ip->i_mtime, mtime);
 	ZFS_TIME_DECODE(&ip->i_ctime, ctime);
+	ZFS_TIME_DECODE(&zp->z_btime, btime);
 
 	ip->i_ino = zp->z_id;
 	zfs_znode_update_vfs(zp);
@@ -606,17 +615,24 @@ zfs_znode_alloc(zfsvfs_t *zfsvfs, dmu_buf_t *db, int blksz,
 	 * number is already hashed for this super block.  This can never
 	 * happen because the inode numbers map 1:1 with the object numbers.
 	 *
-	 * The one exception is rolling back a mounted file system, but in
-	 * this case all the active inode are unhashed during the rollback.
+	 * Exceptions include rolling back a mounted file system, either
+	 * from the zfs rollback or zfs recv command.
+	 *
+	 * Active inodes are unhashed during the rollback, but since zrele
+	 * can happen asynchronously, we can't guarantee they've been
+	 * unhashed.  This can cause hash collisions in unlinked drain
+	 * processing so do not hash unlinked znodes.
 	 */
-	VERIFY3S(insert_inode_locked(ip), ==, 0);
+	if (links > 0)
+		VERIFY3S(insert_inode_locked(ip), ==, 0);
 
 	mutex_enter(&zfsvfs->z_znodes_lock);
 	list_insert_tail(&zfsvfs->z_all_znodes, zp);
 	zfsvfs->z_nr_znodes++;
 	mutex_exit(&zfsvfs->z_znodes_lock);
 
-	unlock_new_inode(ip);
+	if (links > 0)
+		unlock_new_inode(ip);
 	return (zp);
 
 error:
@@ -1162,12 +1178,12 @@ zfs_rezget(znode_t *zp)
 	uint64_t obj_num = zp->z_id;
 	uint64_t mode;
 	uint64_t links;
-	sa_bulk_attr_t bulk[10];
+	sa_bulk_attr_t bulk[11];
 	int err;
 	int count = 0;
 	uint64_t gen;
 	uint64_t z_uid, z_gid;
-	uint64_t atime[2], mtime[2], ctime[2];
+	uint64_t atime[2], mtime[2], ctime[2], btime[2];
 	uint64_t projid = ZFS_DEFAULT_PROJID;
 	znode_hold_t *zh;
 
@@ -1237,6 +1253,7 @@ zfs_rezget(znode_t *zp)
 	    &mtime, 16);
 	SA_ADD_BULK_ATTR(bulk, count, SA_ZPL_CTIME(zfsvfs), NULL,
 	    &ctime, 16);
+	SA_ADD_BULK_ATTR(bulk, count, SA_ZPL_CRTIME(zfsvfs), NULL, &btime, 16);
 
 	if (sa_bulk_lookup(zp->z_sa_hdl, bulk, count)) {
 		zfs_znode_dmu_fini(zp);
@@ -1262,6 +1279,7 @@ zfs_rezget(znode_t *zp)
 	ZFS_TIME_DECODE(&ZTOI(zp)->i_atime, atime);
 	ZFS_TIME_DECODE(&ZTOI(zp)->i_mtime, mtime);
 	ZFS_TIME_DECODE(&ZTOI(zp)->i_ctime, ctime);
+	ZFS_TIME_DECODE(&zp->z_btime, btime);
 
 	if ((uint32_t)gen != ZTOI(zp)->i_generation) {
 		zfs_znode_dmu_fini(zp);
@@ -1620,7 +1638,7 @@ zfs_free_range(znode_t *zp, uint64_t off, uint64_t len)
 	 * Zero partial page cache entries.  This must be done under a
 	 * range lock in order to keep the ARC and page cache in sync.
 	 */
-	if (zp->z_is_mapped) {
+	if (zn_has_cached_data(zp, off, off + len - 1)) {
 		loff_t first_page, last_page, page_len;
 		loff_t first_page_offset, last_page_offset;
 

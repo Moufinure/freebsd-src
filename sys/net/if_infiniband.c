@@ -253,7 +253,9 @@ infiniband_resolve_addr(struct ifnet *ifp, struct mbuf *m,
 #ifdef INET6
 	case AF_INET6:
 		if ((m->m_flags & M_MCAST) == 0) {
-			error = nd6_resolve(ifp, 0, m, dst, phdr, &lleflags, plle);
+			int af = RO_GET_FAMILY(ro, dst);
+			error = nd6_resolve(ifp, LLE_SF(af, 0), m, dst, phdr,
+			    &lleflags, plle);
 		} else {
 			infiniband_ipv6_multicast_map(
 			    &((const struct sockaddr_in6 *)dst)->sin6_addr,
@@ -329,7 +331,7 @@ infiniband_output(struct ifnet *ifp, struct mbuf *m,
 					 * the entry was used
 					 * by datapath.
 					 */
-					llentry_mark_used(lle);
+					llentry_provide_feedback(lle);
 			}
 			if (lle != NULL) {
 				phdr = lle->r_linkdata;
@@ -370,7 +372,7 @@ infiniband_output(struct ifnet *ifp, struct mbuf *m,
 
 	if ((pflags & RT_L2_ME) != 0) {
 		update_mbuf_csumflags(m, m);
-		return (if_simloop(ifp, m, dst->sa_family, 0));
+		return (if_simloop(ifp, m, RO_GET_FAMILY(ro, dst), 0));
 	}
 
 	/*
@@ -407,8 +409,13 @@ infiniband_input(struct ifnet *ifp, struct mbuf *m)
 	struct infiniband_header *ibh;
 	struct epoch_tracker et;
 	int isr;
+	bool needs_epoch;
+
+	needs_epoch = (ifp->if_flags & IFF_KNOWSEPOCH) == 0;
 
 	CURVNET_SET_QUIET(ifp->if_vnet);
+	if (__predict_false(needs_epoch))
+		NET_EPOCH_ENTER(et);
 
 	if ((ifp->if_flags & IFF_UP) == 0) {
 		if_inc_counter(ifp, IFCOUNTER_IERRORS, 1);
@@ -496,10 +503,10 @@ infiniband_input(struct ifnet *ifp, struct mbuf *m)
 	mac_ifnet_create_mbuf(ifp, m);
 #endif
 	/* Allow monitor mode to claim this frame, after stats are updated. */
-	NET_EPOCH_ENTER(et);
 	netisr_dispatch(isr, m);
-	NET_EPOCH_EXIT(et);
 done:
+	if (__predict_false(needs_epoch))
+		NET_EPOCH_EXIT(et);
 	CURVNET_RESTORE();
 }
 

@@ -58,11 +58,14 @@ __FBSDID("$FreeBSD$");
 #include <sys/loginclass.h>
 #include <sys/malloc.h>
 #include <sys/mutex.h>
+#include <sys/ptrace.h>
 #include <sys/refcount.h>
 #include <sys/sx.h>
 #include <sys/priv.h>
 #include <sys/proc.h>
+#ifdef COMPAT_43
 #include <sys/sysent.h>
+#endif
 #include <sys/sysproto.h>
 #include <sys/jail.h>
 #include <sys/racct.h>
@@ -288,7 +291,7 @@ sys_getegid(struct thread *td, struct getegid_args *uap)
 
 #ifndef _SYS_SYSPROTO_H_
 struct getgroups_args {
-	u_int	gidsetsize;
+	int	gidsetsize;
 	gid_t	*gidset;
 };
 #endif
@@ -296,8 +299,7 @@ int
 sys_getgroups(struct thread *td, struct getgroups_args *uap)
 {
 	struct ucred *cred;
-	u_int ngrp;
-	int error;
+	int ngrp, error;
 
 	cred = td->td_ucred;
 	ngrp = cred->cr_ngroups;
@@ -452,7 +454,7 @@ sys_setpgid(struct thread *td, struct setpgid_args *uap)
 	}
 done:
 	sx_xunlock(&proctree_lock);
-	KASSERT((error == 0) || (newpgrp != NULL),
+	KASSERT(error == 0 || newpgrp != NULL,
 	    ("setpgid failed and newpgrp is NULL"));
 	uma_zfree(pgrp_zone, newpgrp);
 	return (error);
@@ -791,7 +793,7 @@ fail:
 
 #ifndef _SYS_SYSPROTO_H_
 struct setgroups_args {
-	u_int	gidsetsize;
+	int	gidsetsize;
 	gid_t	*gidset;
 };
 #endif
@@ -801,11 +803,10 @@ sys_setgroups(struct thread *td, struct setgroups_args *uap)
 {
 	gid_t smallgroups[XU_NGROUPS];
 	gid_t *groups;
-	u_int gidsetsize;
-	int error;
+	int gidsetsize, error;
 
 	gidsetsize = uap->gidsetsize;
-	if (gidsetsize > ngroups_max + 1)
+	if (gidsetsize > ngroups_max + 1 || gidsetsize < 0)
 		return (EINVAL);
 
 	if (gidsetsize > XU_NGROUPS)
@@ -1462,10 +1463,12 @@ cr_cansee(struct ucred *u1, struct ucred *u2)
 int
 p_cansee(struct thread *td, struct proc *p)
 {
-
 	/* Wrap cr_cansee() for all functionality. */
 	KASSERT(td == curthread, ("%s: td not curthread", __func__));
 	PROC_LOCK_ASSERT(p, MA_OWNED);
+
+	if (td->td_proc == p)
+		return (0);
 	return (cr_cansee(td->td_ucred, p->p_ucred));
 }
 
@@ -1683,10 +1686,10 @@ p_candebug(struct thread *td, struct proc *p)
 
 	KASSERT(td == curthread, ("%s: td not curthread", __func__));
 	PROC_LOCK_ASSERT(p, MA_OWNED);
-	if ((error = priv_check(td, PRIV_DEBUG_UNPRIV)))
-		return (error);
 	if (td->td_proc == p)
 		return (0);
+	if ((error = priv_check(td, PRIV_DEBUG_UNPRIV)))
+		return (error);
 	if ((error = prison_check(td->td_ucred, p->p_ucred)))
 		return (error);
 #ifdef MAC
@@ -1760,7 +1763,7 @@ p_candebug(struct thread *td, struct proc *p)
 	if ((p->p_flag & P_INEXEC) != 0)
 		return (EBUSY);
 
-	/* Denied explicitely */
+	/* Denied explicitly */
 	if ((p->p_flag2 & P2_NOTRACE) != 0) {
 		error = priv_check(td, PRIV_DEBUG_DENIED);
 		if (error != 0)
@@ -2485,3 +2488,8 @@ change_svgid(struct ucred *newcred, gid_t svgid)
 
 	newcred->cr_svgid = svgid;
 }
+
+bool allow_ptrace = true;
+SYSCTL_BOOL(_security_bsd, OID_AUTO, allow_ptrace, CTLFLAG_RWTUN,
+    &allow_ptrace, 0,
+    "Deny ptrace(2) use by returning ENOSYS");

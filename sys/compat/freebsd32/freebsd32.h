@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2001 Doug Rabson
  * All rights reserved.
@@ -427,6 +427,24 @@ struct timex32 {
 	int32_t	calcnt;
 	int32_t	errcnt;
 	int32_t	stbcnt;
+};
+
+struct ptrace_sc_ret32 {
+	uint32_t	sr_retval[2];
+	int		sr_error;
+};
+
+struct ptrace_coredump32 {
+	int		pc_fd;
+	uint32_t	pc_flags;
+	uint32_t	pc_limit1, pc_limit2;
+};
+
+struct ptrace_sc_remote32 {
+	struct ptrace_sc_ret32 pscr_ret;
+	u_int		pscr_syscall;
+	u_int		pscr_nargs;
+	uint32_t	pscr_args;
 };
 
 #endif /* !_COMPAT_FREEBSD32_FREEBSD32_H_ */

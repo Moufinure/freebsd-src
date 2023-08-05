@@ -135,7 +135,6 @@ static vop_listextattr_t	ext2_listextattr;
 static vop_setextattr_t	ext2_setextattr;
 static vop_vptofh_t	ext2_vptofh;
 static vop_close_t	ext2fifo_close;
-static vop_kqfilter_t	ext2fifo_kqfilter;
 
 /* Global vfs data structures for ext2. */
 struct vop_vector ext2_vnodeops = {
@@ -191,7 +190,6 @@ struct vop_vector ext2_fifoops = {
 	.vop_fsync =		ext2_fsync,
 	.vop_getattr =		ext2_getattr,
 	.vop_inactive =		ext2_inactive,
-	.vop_kqfilter =		ext2fifo_kqfilter,
 	.vop_pathconf =		ext2_pathconf,
 	.vop_print =		ext2_print,
 	.vop_read =		VOP_PANIC,
@@ -344,7 +342,7 @@ ext2_access(struct vop_access_args *ap)
 	}
 
 	/* If immutable bit set, nobody gets to write it. */
-	if ((accmode & VWRITE) && (ip->i_flags & (SF_IMMUTABLE | SF_SNAPSHOT)))
+	if ((accmode & VWRITE) && (ip->i_flags & SF_IMMUTABLE))
 		return (EPERM);
 
 	error = vaccess(vp->v_type, ip->i_mode, ip->i_uid, ip->i_gid,
@@ -1521,7 +1519,7 @@ ext2_symlink(struct vop_symlink_args *ap)
 		return (error);
 	vp = *vpp;
 	len = strlen(ap->a_target);
-	if (len < vp->v_mount->mnt_maxsymlinklen) {
+	if (len < VFSTOEXT2(vp->v_mount)->um_e2fs->e2fs_maxsymlinklen) {
 		ip = VTOI(vp);
 		bcopy(ap->a_target, (char *)ip->i_shortlink, len);
 		ip->i_size = len;
@@ -1546,7 +1544,7 @@ ext2_readlink(struct vop_readlink_args *ap)
 	int isize;
 
 	isize = ip->i_size;
-	if (isize < vp->v_mount->mnt_maxsymlinklen) {
+	if (isize < VFSTOEXT2(vp->v_mount)->um_e2fs->e2fs_maxsymlinklen) {
 		uiomove((char *)ip->i_shortlink, isize, ap->a_uio);
 		return (0);
 	}
@@ -1628,22 +1626,6 @@ ext2fifo_close(struct vop_close_args *ap)
 		ext2_itimes_locked(vp);
 	VI_UNLOCK(vp);
 	return (fifo_specops.vop_close(ap));
-}
-
-/*
- * Kqfilter wrapper for fifos.
- *
- * Fall through to ext2 kqfilter routines if needed
- */
-static int
-ext2fifo_kqfilter(struct vop_kqfilter_args *ap)
-{
-	int error;
-
-	error = fifo_specops.vop_kqfilter(ap);
-	if (error)
-		error = vfs_kqfilter(ap);
-	return (error);
 }
 
 /*
@@ -2063,7 +2045,8 @@ ext2_read(struct vop_read_args *ap)
 		panic("%s: mode", "ext2_read");
 
 	if (vp->v_type == VLNK) {
-		if ((int)ip->i_size < vp->v_mount->mnt_maxsymlinklen)
+		if ((int)ip->i_size <
+		    VFSTOEXT2(vp->v_mount)->um_e2fs->e2fs_maxsymlinklen)
 			panic("%s: short symlink", "ext2_read");
 	} else if (vp->v_type != VREG && vp->v_type != VDIR)
 		panic("%s: type %d", "ext2_read", vp->v_type);
@@ -2229,8 +2212,9 @@ ext2_write(struct vop_write_args *ap)
 	 * Maybe this should be above the vnode op call, but so long as
 	 * file servers have no limits, I don't think it matters.
 	 */
-	if (vn_rlimit_fsize(vp, uio, uio->uio_td))
-		return (EFBIG);
+	error = vn_rlimit_fsize(vp, uio, uio->uio_td);
+	if (error != 0)
+		return (error);
 
 	resid = uio->uio_resid;
 	osize = ip->i_size;

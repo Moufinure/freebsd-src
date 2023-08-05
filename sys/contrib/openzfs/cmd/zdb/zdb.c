@@ -110,8 +110,9 @@ extern int zfs_recover;
 extern unsigned long zfs_arc_meta_min, zfs_arc_meta_limit;
 extern int zfs_vdev_async_read_max_active;
 extern boolean_t spa_load_verify_dryrun;
+extern boolean_t spa_mode_readable_spacemaps;
 extern int zfs_reconstruct_indirect_combinations_max;
-extern int zfs_btree_verify_intensity;
+extern uint_t zfs_btree_verify_intensity;
 
 static const char cmdname[] = "zdb";
 uint8_t dump_opt[256];
@@ -162,12 +163,6 @@ static int dump_bpobj_cb(void *arg, const blkptr_t *bp, boolean_t free,
     dmu_tx_t *tx);
 
 typedef struct sublivelist_verify {
-	/* all ALLOC'd blkptr_t in one sub-livelist */
-	zfs_btree_t sv_all_allocs;
-
-	/* all FREE'd blkptr_t in one sub-livelist */
-	zfs_btree_t sv_all_frees;
-
 	/* FREE's that haven't yet matched to an ALLOC, in one sub-livelist */
 	zfs_btree_t sv_pair;
 
@@ -226,29 +221,68 @@ typedef struct sublivelist_verify_block {
 
 static void zdb_print_blkptr(const blkptr_t *bp, int flags);
 
+typedef struct sublivelist_verify_block_refcnt {
+	/* block pointer entry in livelist being verified */
+	blkptr_t svbr_blk;
+
+	/*
+	 * Refcount gets incremented to 1 when we encounter the first
+	 * FREE entry for the svfbr block pointer and a node for it
+	 * is created in our ZDB verification/tracking metadata.
+	 *
+	 * As we encounter more FREE entries we increment this counter
+	 * and similarly decrement it whenever we find the respective
+	 * ALLOC entries for this block.
+	 *
+	 * When the refcount gets to 0 it means that all the FREE and
+	 * ALLOC entries of this block have paired up and we no longer
+	 * need to track it in our verification logic (e.g. the node
+	 * containing this struct in our verification data structure
+	 * should be freed).
+	 *
+	 * [refer to sublivelist_verify_blkptr() for the actual code]
+	 */
+	uint32_t svbr_refcnt;
+} sublivelist_verify_block_refcnt_t;
+
+static int
+sublivelist_block_refcnt_compare(const void *larg, const void *rarg)
+{
+	const sublivelist_verify_block_refcnt_t *l = larg;
+	const sublivelist_verify_block_refcnt_t *r = rarg;
+	return (livelist_compare(&l->svbr_blk, &r->svbr_blk));
+}
+
 static int
 sublivelist_verify_blkptr(void *arg, const blkptr_t *bp, boolean_t free,
     dmu_tx_t *tx)
 {
 	ASSERT3P(tx, ==, NULL);
 	struct sublivelist_verify *sv = arg;
-	char blkbuf[BP_SPRINTF_LEN];
+	sublivelist_verify_block_refcnt_t current = {
+			.svbr_blk = *bp,
+
+			/*
+			 * Start with 1 in case this is the first free entry.
+			 * This field is not used for our B-Tree comparisons
+			 * anyway.
+			 */
+			.svbr_refcnt = 1,
+	};
+
 	zfs_btree_index_t where;
+	sublivelist_verify_block_refcnt_t *pair =
+	    zfs_btree_find(&sv->sv_pair, &current, &where);
 	if (free) {
-		zfs_btree_add(&sv->sv_pair, bp);
-		/* Check if the FREE is a duplicate */
-		if (zfs_btree_find(&sv->sv_all_frees, bp, &where) != NULL) {
-			snprintf_blkptr_compact(blkbuf, sizeof (blkbuf), bp,
-			    free);
-			(void) printf("\tERROR: Duplicate FREE: %s\n", blkbuf);
+		if (pair == NULL) {
+			/* first free entry for this block pointer */
+			zfs_btree_add(&sv->sv_pair, &current);
 		} else {
-			zfs_btree_add_idx(&sv->sv_all_frees, bp, &where);
+			pair->svbr_refcnt++;
 		}
 	} else {
-		/* Check if the ALLOC has been freed */
-		if (zfs_btree_find(&sv->sv_pair, bp, &where) != NULL) {
-			zfs_btree_remove_idx(&sv->sv_pair, &where);
-		} else {
+		if (pair == NULL) {
+			/* block that is currently marked as allocated */
 			for (int i = 0; i < SPA_DVAS_PER_BP; i++) {
 				if (DVA_IS_EMPTY(&bp->blk_dva[i]))
 					break;
@@ -263,16 +297,16 @@ sublivelist_verify_blkptr(void *arg, const blkptr_t *bp, boolean_t free,
 					    &svb, &where);
 				}
 			}
-		}
-		/* Check if the ALLOC is a duplicate */
-		if (zfs_btree_find(&sv->sv_all_allocs, bp, &where) != NULL) {
-			snprintf_blkptr_compact(blkbuf, sizeof (blkbuf), bp,
-			    free);
-			(void) printf("\tERROR: Duplicate ALLOC: %s\n", blkbuf);
 		} else {
-			zfs_btree_add_idx(&sv->sv_all_allocs, bp, &where);
+			/* alloc matches a free entry */
+			pair->svbr_refcnt--;
+			if (pair->svbr_refcnt == 0) {
+				/* all allocs and frees have been matched */
+				zfs_btree_remove_idx(&sv->sv_pair, &where);
+			}
 		}
 	}
+
 	return (0);
 }
 
@@ -280,32 +314,22 @@ static int
 sublivelist_verify_func(void *args, dsl_deadlist_entry_t *dle)
 {
 	int err;
-	char blkbuf[BP_SPRINTF_LEN];
 	struct sublivelist_verify *sv = args;
 
-	zfs_btree_create(&sv->sv_all_allocs, livelist_compare,
-	    sizeof (blkptr_t));
-
-	zfs_btree_create(&sv->sv_all_frees, livelist_compare,
-	    sizeof (blkptr_t));
-
-	zfs_btree_create(&sv->sv_pair, livelist_compare,
-	    sizeof (blkptr_t));
+	zfs_btree_create(&sv->sv_pair, sublivelist_block_refcnt_compare,
+	    sizeof (sublivelist_verify_block_refcnt_t));
 
 	err = bpobj_iterate_nofree(&dle->dle_bpobj, sublivelist_verify_blkptr,
 	    sv, NULL);
 
-	zfs_btree_clear(&sv->sv_all_allocs);
-	zfs_btree_destroy(&sv->sv_all_allocs);
-
-	zfs_btree_clear(&sv->sv_all_frees);
-	zfs_btree_destroy(&sv->sv_all_frees);
-
-	blkptr_t *e;
+	sublivelist_verify_block_refcnt_t *e;
 	zfs_btree_index_t *cookie = NULL;
 	while ((e = zfs_btree_destroy_nodes(&sv->sv_pair, &cookie)) != NULL) {
-		snprintf_blkptr_compact(blkbuf, sizeof (blkbuf), e, B_TRUE);
-		(void) printf("\tERROR: Unmatched FREE: %s\n", blkbuf);
+		char blkbuf[BP_SPRINTF_LEN];
+		snprintf_blkptr_compact(blkbuf, sizeof (blkbuf),
+		    &e->svbr_blk, B_TRUE);
+		(void) printf("\tERROR: %d unmatched FREE(s): %s\n",
+		    e->svbr_refcnt, blkbuf);
 	}
 	zfs_btree_destroy(&sv->sv_pair);
 
@@ -614,9 +638,13 @@ mv_populate_livelist_allocs(metaslab_verify_t *mv, sublivelist_verify_t *sv)
 /*
  * [Livelist Check]
  * Iterate through all the sublivelists and:
- * - report leftover frees
- * - report double ALLOCs/FREEs
+ * - report leftover frees (**)
  * - record leftover ALLOCs together with their TXG [see Cross Check]
+ *
+ * (**) Note: Double ALLOCs are valid in datasets that have dedup
+ *      enabled. Similarly double FREEs are allowed as well but
+ *      only if they pair up with a corresponding ALLOC entry once
+ *      we our done with our sublivelist iteration.
  *
  * [Spacemap Check]
  * for each metaslab:
@@ -2191,7 +2219,8 @@ snprintf_zstd_header(spa_t *spa, char *blkbuf, size_t buflen,
 		(void) snprintf(blkbuf + strlen(blkbuf),
 		    buflen - strlen(blkbuf),
 		    " ZSTD:size=%u:version=%u:level=%u:EMBEDDED",
-		    zstd_hdr.c_len, zstd_hdr.version, zstd_hdr.level);
+		    zstd_hdr.c_len, zfs_get_hdrversion(&zstd_hdr),
+		    zfs_get_hdrlevel(&zstd_hdr));
 		return;
 	}
 
@@ -2215,7 +2244,8 @@ snprintf_zstd_header(spa_t *spa, char *blkbuf, size_t buflen,
 	(void) snprintf(blkbuf + strlen(blkbuf),
 	    buflen - strlen(blkbuf),
 	    " ZSTD:size=%u:version=%u:level=%u:NORMAL",
-	    zstd_hdr.c_len, zstd_hdr.version, zstd_hdr.level);
+	    zstd_hdr.c_len, zfs_get_hdrversion(&zstd_hdr),
+	    zfs_get_hdrlevel(&zstd_hdr));
 
 	abd_return_buf_copy(pabd, buf, BP_GET_LSIZE(bp));
 }
@@ -2965,7 +2995,7 @@ open_objset(const char *path, void *tag, objset_t **osp)
 	}
 	sa_os = *osp;
 
-	return (0);
+	return (err);
 }
 
 static void
@@ -3072,13 +3102,22 @@ dump_znode_sa_xattr(sa_handle_t *hdl)
 	(void) printf("\tSA xattrs: %d bytes, %d entries\n\n",
 	    sa_xattr_size, sa_xattr_entries);
 	while ((elem = nvlist_next_nvpair(sa_xattr, elem)) != NULL) {
+		boolean_t can_print = !dump_opt['P'];
 		uchar_t *value;
 		uint_t cnt, idx;
 
 		(void) printf("\t\t%s = ", nvpair_name(elem));
 		nvpair_value_byte_array(elem, &value, &cnt);
+
 		for (idx = 0; idx < cnt; ++idx) {
-			if (isprint(value[idx]))
+			if (!isprint(value[idx])) {
+				can_print = B_FALSE;
+				break;
+			}
+		}
+
+		for (idx = 0; idx < cnt; ++idx) {
+			if (can_print)
 				(void) putchar(value[idx]);
 			else
 				(void) printf("\\%3.3o", value[idx]);
@@ -3095,13 +3134,18 @@ dump_znode_symlink(sa_handle_t *hdl)
 {
 	int sa_symlink_size = 0;
 	char linktarget[MAXPATHLEN];
-	linktarget[0] = '\0';
 	int error;
 
 	error = sa_size(hdl, sa_attr_table[ZPL_SYMLINK], &sa_symlink_size);
 	if (error || sa_symlink_size == 0) {
 		return;
 	}
+	if (sa_symlink_size >= sizeof (linktarget)) {
+		(void) printf("symlink size %d is too large\n",
+		    sa_symlink_size);
+		return;
+	}
+	linktarget[sa_symlink_size] = '\0';
 	if (sa_lookup(hdl, sa_attr_table[ZPL_SYMLINK],
 	    &linktarget, sa_symlink_size) == 0)
 		(void) printf("\ttarget	%s\n", linktarget);
@@ -4067,7 +4111,7 @@ cksum_record_compare(const void *x1, const void *x2)
 	const cksum_record_t *l = (cksum_record_t *)x1;
 	const cksum_record_t *r = (cksum_record_t *)x2;
 	int arraysize = ARRAY_SIZE(l->cksum.zc_word);
-	int difference;
+	int difference = 0;
 
 	for (int i = 0; i < arraysize; i++) {
 		difference = TREE_CMP(l->cksum.zc_word[i], r->cksum.zc_word[i]);
@@ -4544,7 +4588,7 @@ dump_path_impl(objset_t *os, uint64_t obj, char *name, uint64_t *retobj)
 	case DMU_OT_DIRECTORY_CONTENTS:
 		if (s != NULL && *(s + 1) != '\0')
 			return (dump_path_impl(os, child_obj, s + 1, retobj));
-		/*FALLTHROUGH*/
+		fallthrough;
 	case DMU_OT_PLAIN_FILE_CONTENTS:
 		if (retobj != NULL) {
 			*retobj = child_obj;
@@ -5932,7 +5976,8 @@ zdb_leak_init_prepare_indirect_vdevs(spa_t *spa, zdb_cb_t *zcb)
 		vdev_metaslab_group_create(vd);
 		VERIFY0(vdev_metaslab_init(vd, 0));
 
-		vdev_indirect_mapping_t *vim = vd->vdev_indirect_mapping;
+		vdev_indirect_mapping_t *vim __maybe_unused =
+		    vd->vdev_indirect_mapping;
 		uint64_t vim_idx = 0;
 		for (uint64_t m = 0; m < vd->vdev_ms_count; m++) {
 
@@ -7041,7 +7086,7 @@ verify_checkpoint_vdev_spacemaps(spa_t *checkpoint, spa_t *current)
 		for (uint64_t c = ckpoint_rvd->vdev_children;
 		    c < current_rvd->vdev_children; c++) {
 			vdev_t *current_vd = current_rvd->vdev_child[c];
-			ASSERT3P(current_vd->vdev_checkpoint_sm, ==, NULL);
+			VERIFY3P(current_vd->vdev_checkpoint_sm, ==, NULL);
 		}
 	}
 
@@ -8236,6 +8281,23 @@ zdb_embedded_block(char *thing)
 	free(buf);
 }
 
+/* check for valid hex or decimal numeric string */
+static boolean_t
+zdb_numeric(char *str)
+{
+	int i = 0;
+
+	if (strlen(str) == 0)
+		return (B_FALSE);
+	if (strncmp(str, "0x", 2) == 0 || strncmp(str, "0X", 2) == 0)
+		i = 2;
+	for (; i < strlen(str); i++) {
+		if (!isxdigit(str[i]))
+			return (B_FALSE);
+	}
+	return (B_TRUE);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -8281,7 +8343,7 @@ main(int argc, char **argv)
 	zfs_btree_verify_intensity = 3;
 
 	while ((c = getopt(argc, argv,
-	    "AbcCdDeEFGhiI:klLmMo:Op:PqrRsSt:uU:vVx:XYyZ")) != -1) {
+	    "AbcCdDeEFGhiI:klLmMNo:Op:PqrRsSt:uU:vVx:XYyZ")) != -1) {
 		switch (c) {
 		case 'b':
 		case 'c':
@@ -8295,6 +8357,7 @@ main(int argc, char **argv)
 		case 'l':
 		case 'm':
 		case 'M':
+		case 'N':
 		case 'O':
 		case 'r':
 		case 'R':
@@ -8386,31 +8449,6 @@ main(int argc, char **argv)
 		(void) fprintf(stderr, "-p option requires use of -e\n");
 		usage();
 	}
-	if (dump_opt['d'] || dump_opt['r']) {
-		/* <pool>[/<dataset | objset id> is accepted */
-		if (argv[2] && (objset_str = strchr(argv[2], '/')) != NULL &&
-		    objset_str++ != NULL) {
-			char *endptr;
-			errno = 0;
-			objset_id = strtoull(objset_str, &endptr, 0);
-			/* dataset 0 is the same as opening the pool */
-			if (errno == 0 && endptr != objset_str &&
-			    objset_id != 0) {
-				target_is_spa = B_FALSE;
-				dataset_lookup = B_TRUE;
-			} else if (objset_id != 0) {
-				printf("failed to open objset %s "
-				    "%llu %s", objset_str,
-				    (u_longlong_t)objset_id,
-				    strerror(errno));
-				exit(1);
-			}
-			/* normal dataset name not an objset ID */
-			if (endptr == objset_str) {
-				objset_id = -1;
-			}
-		}
-	}
 
 #if defined(_LP64)
 	/*
@@ -8439,13 +8477,18 @@ main(int argc, char **argv)
 	 */
 	spa_load_verify_dryrun = B_TRUE;
 
+	/*
+	 * ZDB should have ability to read spacemaps.
+	 */
+	spa_mode_readable_spacemaps = B_TRUE;
+
 	kernel_init(SPA_MODE_READ);
 
 	if (dump_all)
 		verbose = MAX(verbose, 1);
 
 	for (c = 0; c < 256; c++) {
-		if (dump_all && strchr("AeEFklLOPrRSXy", c) == NULL)
+		if (dump_all && strchr("AeEFklLNOPrRSXy", c) == NULL)
 			dump_opt[c] = 1;
 		if (dump_opt[c])
 			dump_opt[c] += verbose;
@@ -8484,6 +8527,7 @@ main(int argc, char **argv)
 		return (dump_path(argv[0], argv[1], NULL));
 	}
 	if (dump_opt['r']) {
+		target_is_spa = B_FALSE;
 		if (argc != 3)
 			usage();
 		dump_opt['v'] = verbose;
@@ -8493,6 +8537,10 @@ main(int argc, char **argv)
 	if (dump_opt['X'] || dump_opt['F'])
 		rewind = ZPOOL_DO_REWIND |
 		    (dump_opt['X'] ? ZPOOL_EXTREME_REWIND : 0);
+
+	/* -N implies -d */
+	if (dump_opt['N'] && dump_opt['d'] == 0)
+		dump_opt['d'] = dump_opt['N'];
 
 	if (nvlist_alloc(&policy, NV_UNIQUE_NAME_TYPE, 0) != 0 ||
 	    nvlist_add_uint64(policy, ZPOOL_LOAD_REQUEST_TXG, max_txg) != 0 ||
@@ -8512,6 +8560,34 @@ main(int argc, char **argv)
 		targetlen = strlen(target);
 		if (targetlen && target[targetlen - 1] == '/')
 			target[targetlen - 1] = '\0';
+		/*
+		 * See if an objset ID was supplied (-d <pool>/<objset ID>).
+		 * To disambiguate tank/100, consider the 100 as objsetID
+		 * if -N was given, otherwise 100 is an objsetID iff
+		 * tank/100 as a named dataset fails on lookup.
+		 */
+		objset_str = strchr(target, '/');
+		if (objset_str && strlen(objset_str) > 1 &&
+		    zdb_numeric(objset_str + 1)) {
+			char *endptr;
+			errno = 0;
+			objset_str++;
+			objset_id = strtoull(objset_str, &endptr, 0);
+			/* dataset 0 is the same as opening the pool */
+			if (errno == 0 && endptr != objset_str &&
+			    objset_id != 0) {
+				if (dump_opt['N'])
+					dataset_lookup = B_TRUE;
+			}
+			/* normal dataset name not an objset ID */
+			if (endptr == objset_str) {
+				objset_id = -1;
+			}
+		} else if (objset_str && !zdb_numeric(objset_str + 1) &&
+		    dump_opt['N']) {
+			printf("Supply a numeric objset ID with -N\n");
+			exit(1);
+		}
 	} else {
 		target_pool = target;
 	}
@@ -8629,13 +8705,27 @@ main(int argc, char **argv)
 			}
 			return (error);
 		} else {
+			target_pool = strdup(target);
+			if (strpbrk(target, "/@") != NULL)
+				*strpbrk(target_pool, "/@") = '\0';
+
 			zdb_set_skip_mmp(target);
+			/*
+			 * If -N was supplied, the user has indicated that
+			 * zdb -d <pool>/<objsetID> is in effect.  Otherwise
+			 * we first assume that the dataset string is the
+			 * dataset name.  If dmu_objset_hold fails with the
+			 * dataset string, and we have an objset_id, retry the
+			 * lookup with the objsetID.
+			 */
+			boolean_t retry = B_TRUE;
+retry_lookup:
 			if (dataset_lookup == B_TRUE) {
 				/*
 				 * Use the supplied id to get the name
 				 * for open_objset.
 				 */
-				error = spa_open(target, &spa, FTAG);
+				error = spa_open(target_pool, &spa, FTAG);
 				if (error == 0) {
 					error = name_from_objset_id(spa,
 					    objset_id, dsname);
@@ -8644,10 +8734,23 @@ main(int argc, char **argv)
 						target = dsname;
 				}
 			}
-			if (error == 0)
+			if (error == 0) {
+				if (objset_id > 0 && retry) {
+					int err = dmu_objset_hold(target, FTAG,
+					    &os);
+					if (err) {
+						dataset_lookup = B_TRUE;
+						retry = B_FALSE;
+						goto retry_lookup;
+					} else {
+						dmu_objset_rele(os, FTAG);
+					}
+				}
 				error = open_objset(target, FTAG, &os);
+			}
 			if (error == 0)
 				spa = dmu_objset_spa(os);
+			free(target_pool);
 		}
 	}
 	nvlist_free(policy);

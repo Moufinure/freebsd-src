@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright 1997, Stefan Esser <se@freebsd.org>
  *
@@ -677,6 +677,7 @@ int	pci_msix_device_blacklisted(device_t dev);
 void	pci_ht_map_msi(device_t dev, uint64_t addr);
 
 device_t pci_find_pcie_root_port(device_t dev);
+int	pci_get_relaxed_ordering_enabled(device_t dev);
 int	pci_get_max_payload(device_t dev);
 int	pci_get_max_read_req(device_t dev);
 void	pci_restore_state(device_t dev);
@@ -711,6 +712,8 @@ extern struct devlist	pci_devq;
 extern uint32_t	pci_generation;
 
 struct pci_map *pci_find_bar(device_t dev, int reg);
+struct pci_map *pci_first_bar(device_t dev);
+struct pci_map *pci_next_bar(struct pci_map *pm);
 int	pci_bar_enabled(device_t dev, struct pci_map *pm);
 struct pcicfg_vpd *pci_fetch_vpd_list(device_t dev);
 

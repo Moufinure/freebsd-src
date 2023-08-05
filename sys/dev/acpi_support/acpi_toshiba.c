@@ -254,7 +254,7 @@ acpi_toshiba_attach(device_t dev)
 		    SYSCTL_CHILDREN(sc->sysctl_tree), OID_AUTO,
 		    sysctl_table[i].name,
 		    CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_ANYBODY |
-		    CTLFLAG_NEEDGIANT, sc, i, acpi_toshiba_sysctl, "I", "");
+		    CTLFLAG_MPSAFE, sc, i, acpi_toshiba_sysctl, "I", "");
 	}
 
 	if (enable_fn_keys != 0) {
@@ -562,9 +562,7 @@ acpi_toshiba_video_attach(device_t dev)
 {
 	struct		acpi_toshiba_softc *sc;
 
-	sc = devclass_get_softc(acpi_toshiba_devclass, 0);
-	if (sc == NULL)
-		return (ENXIO);
+	sc = device_get_softc(dev);
 	sc->video_handle = acpi_get_handle(dev);
 	return (0);
 }

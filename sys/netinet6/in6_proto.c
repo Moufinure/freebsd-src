@@ -294,6 +294,15 @@ struct protosw inet6sw[] = {
 {
 	.pr_type =		SOCK_RAW,
 	.pr_domain =		&inet6domain,
+	.pr_protocol =		IPPROTO_ETHERIP,
+	.pr_flags =		PR_ATOMIC|PR_ADDR|PR_LASTHDR,
+	.pr_input =		encap6_input,
+	.pr_ctloutput =		rip6_ctloutput,
+	.pr_usrreqs =		&rip6_usrreqs
+},
+{
+	.pr_type =		SOCK_RAW,
+	.pr_domain =		&inet6domain,
 	.pr_protocol =		IPPROTO_GRE,
 	.pr_flags =		PR_ATOMIC|PR_ADDR|PR_LASTHDR,
 	.pr_input =		encap6_input,
@@ -404,8 +413,7 @@ VNET_DEFINE(int, icmp6_rediraccept) = 1;/* accept and process redirects */
 VNET_DEFINE(int, icmp6_redirtimeout) = 10 * 60;	/* 10 minutes */
 VNET_DEFINE(int, icmp6errppslim) = 100;		/* 100pps */
 /* control how to respond to NI queries */
-VNET_DEFINE(int, icmp6_nodeinfo) =
-    (ICMP6_NODEINFO_FQDNOK|ICMP6_NODEINFO_NODEADDROK);
+VNET_DEFINE(int, icmp6_nodeinfo) = 0;
 VNET_DEFINE(int, icmp6_nodeinfo_oldmcprefix) = 1;
 
 /*

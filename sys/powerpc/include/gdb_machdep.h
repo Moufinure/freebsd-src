@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2006 Marcel Moolenaar
  * All rights reserved.
@@ -124,6 +124,12 @@ gdb_begin_write(void)
 
 static __inline void
 gdb_end_write(void *arg __unused)
+{
+
+}
+
+static __inline void
+gdb_cpu_stop_reason(int type __unused, int code __unused)
 {
 
 }

@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2003-2012 Broadcom Corporation
  * All Rights Reserved
@@ -69,7 +69,6 @@ __FBSDID("$FreeBSD$");
 #include <vm/pmap.h>
 #include <vm/uma.h>
 
-#include <machine/reg.h>
 #include <machine/cpu.h>
 #include <machine/mips_opcode.h>
 #include <machine/asm.h>

@@ -204,6 +204,10 @@ sfs_vgetx(struct mount *mp, int flags, uint64_t parent_id, uint64_t id,
 		return (error);
 	}
 
+#if __FreeBSD_version >= 1400077
+	vn_set_state(vp, VSTATE_CONSTRUCTED);
+#endif
+
 	*vpp = vp;
 	return (0);
 }
@@ -352,7 +356,7 @@ zfsctl_create(zfsvfs_t *zfsvfs)
 	vnode_t *rvp;
 	uint64_t crtime[2];
 
-	ASSERT(zfsvfs->z_ctldir == NULL);
+	ASSERT3P(zfsvfs->z_ctldir, ==, NULL);
 
 	snapdir = sfs_alloc_node(sizeof (*snapdir), "snapshot", ZFSCTL_INO_ROOT,
 	    ZFSCTL_INO_SNAPDIR);
@@ -360,8 +364,8 @@ zfsctl_create(zfsvfs_t *zfsvfs)
 	    ZFSCTL_INO_ROOT);
 	dot_zfs->snapdir = snapdir;
 
-	VERIFY(VFS_ROOT(zfsvfs->z_vfs, LK_EXCLUSIVE, &rvp) == 0);
-	VERIFY(0 == sa_lookup(VTOZ(rvp)->z_sa_hdl, SA_ZPL_CRTIME(zfsvfs),
+	VERIFY0(VFS_ROOT(zfsvfs->z_vfs, LK_EXCLUSIVE, &rvp));
+	VERIFY0(sa_lookup(VTOZ(rvp)->z_sa_hdl, SA_ZPL_CRTIME(zfsvfs),
 	    &crtime, sizeof (crtime)));
 	ZFS_TIME_DECODE(&dot_zfs->cmtime, crtime);
 	vput(rvp);
@@ -496,7 +500,7 @@ zfsctl_common_getattr(vnode_t *vp, vattr_t *vap)
 	 */
 	vap->va_blksize = 0;
 	vap->va_nblocks = 0;
-	vap->va_seq = 0;
+	vap->va_gen = 0;
 	vn_fsid(vp, vap);
 	vap->va_mode = zfsctl_ctldir_mode;
 	vap->va_type = VDIR;
@@ -637,7 +641,7 @@ zfsctl_root_lookup(struct vop_lookup_args *ap)
 	int nameiop = ap->a_cnp->cn_nameiop;
 	int err;
 
-	ASSERT(dvp->v_type == VDIR);
+	ASSERT3S(dvp->v_type, ==, VDIR);
 
 	if ((flags & ISLASTCN) != 0 && nameiop != LOOKUP)
 		return (SET_ERROR(ENOTSUP));
@@ -673,7 +677,18 @@ zfsctl_root_readdir(struct vop_readdir_args *ap)
 
 	zfs_uio_init(&uio, ap->a_uio);
 
-	ASSERT(vp->v_type == VDIR);
+	ASSERT3S(vp->v_type, ==, VDIR);
+
+	/*
+	 * FIXME: this routine only ever emits 3 entries and does not tolerate
+	 * being called with a buffer too small to handle all of them.
+	 *
+	 * The check below facilitates the idiom of repeating calls until the
+	 * count to return is 0.
+	 */
+	if (zfs_uio_offset(&uio) == 3 * sizeof (entry)) {
+		return (0);
+	}
 
 	error = sfs_readdir_common(zfsvfs->z_root, ZFSCTL_INO_ROOT, ap, &uio,
 	    &dots_offset);
@@ -801,6 +816,9 @@ static struct vop_vector zfsctl_ops_root = {
 #if __FreeBSD_version >= 1300121
 	.vop_fplookup_vexec = VOP_EAGAIN,
 #endif
+#if __FreeBSD_version >= 1300139
+	.vop_fplookup_symlink = VOP_EAGAIN,
+#endif
 	.vop_open =	zfsctl_common_open,
 	.vop_close =	zfsctl_common_close,
 	.vop_ioctl =	VOP_EINVAL,
@@ -815,6 +833,9 @@ static struct vop_vector zfsctl_ops_root = {
 	.vop_vptocnp =	zfsctl_root_vptocnp,
 	.vop_pathconf =	zfsctl_common_pathconf,
 	.vop_getacl =	zfsctl_common_getacl,
+#if __FreeBSD_version >= 1400043
+	.vop_add_writecount =	vop_stdadd_writecount_nomsync,
+#endif
 };
 VFS_VOP_VECTOR_REGISTER(zfsctl_ops_root);
 
@@ -918,7 +939,7 @@ zfsctl_snapdir_lookup(struct vop_lookup_args *ap)
 	int flags = cnp->cn_flags;
 	int err;
 
-	ASSERT(dvp->v_type == VDIR);
+	ASSERT3S(dvp->v_type, ==, VDIR);
 
 	if ((flags & ISLASTCN) != 0 && nameiop != LOOKUP)
 		return (SET_ERROR(ENOTSUP));
@@ -973,12 +994,13 @@ zfsctl_snapdir_lookup(struct vop_lookup_args *ap)
 		 */
 		VI_LOCK(*vpp);
 		if (((*vpp)->v_iflag & VI_MOUNT) == 0) {
+			VI_UNLOCK(*vpp);
 			/*
 			 * Upgrade to exclusive lock in order to:
 			 * - avoid race conditions
 			 * - satisfy the contract of mount_snapshot()
 			 */
-			err = VOP_LOCK(*vpp, LK_TRYUPGRADE | LK_INTERLOCK);
+			err = VOP_LOCK(*vpp, LK_TRYUPGRADE);
 			if (err == 0)
 				break;
 		} else {
@@ -1013,7 +1035,7 @@ zfsctl_snapdir_lookup(struct vop_lookup_args *ap)
 		 * make .zfs/snapshot/<snapname> accessible over NFS
 		 * without requiring manual mounts of <snapname>.
 		 */
-		ASSERT(VTOZ(*vpp)->z_zfsvfs != zfsvfs);
+		ASSERT3P(VTOZ(*vpp)->z_zfsvfs, !=, zfsvfs);
 		VTOZ(*vpp)->z_zfsvfs->z_parent = zfsvfs;
 
 		/* Clear the root flag (set via VFS_ROOT) as well. */
@@ -1039,7 +1061,7 @@ zfsctl_snapdir_readdir(struct vop_readdir_args *ap)
 
 	zfs_uio_init(&uio, ap->a_uio);
 
-	ASSERT(vp->v_type == VDIR);
+	ASSERT3S(vp->v_type, ==, VDIR);
 
 	error = sfs_readdir_common(ZFSCTL_INO_ROOT, ZFSCTL_INO_SNAPDIR, ap,
 	    &uio, &dots_offset);
@@ -1123,6 +1145,9 @@ static struct vop_vector zfsctl_ops_snapdir = {
 #if __FreeBSD_version >= 1300121
 	.vop_fplookup_vexec = VOP_EAGAIN,
 #endif
+#if __FreeBSD_version >= 1300139
+	.vop_fplookup_symlink = VOP_EAGAIN,
+#endif
 	.vop_open =	zfsctl_common_open,
 	.vop_close =	zfsctl_common_close,
 	.vop_getattr =	zfsctl_snapdir_getattr,
@@ -1134,6 +1159,9 @@ static struct vop_vector zfsctl_ops_snapdir = {
 	.vop_print =	zfsctl_common_print,
 	.vop_pathconf =	zfsctl_common_pathconf,
 	.vop_getacl =	zfsctl_common_getacl,
+#if __FreeBSD_version >= 1400043
+	.vop_add_writecount =	vop_stdadd_writecount_nomsync,
+#endif
 };
 VFS_VOP_VECTOR_REGISTER(zfsctl_ops_snapdir);
 
@@ -1143,7 +1171,7 @@ zfsctl_snapshot_inactive(struct vop_inactive_args *ap)
 {
 	vnode_t *vp = ap->a_vp;
 
-	VERIFY(vrecycle(vp) == 1);
+	vrecycle(vp);
 	return (0);
 }
 
@@ -1223,9 +1251,15 @@ zfsctl_snapshot_vptocnp(struct vop_vptocnp_args *ap)
  * be covered.
  */
 static struct vop_vector zfsctl_ops_snapshot = {
+	.vop_default =		NULL, /* ensure very restricted access */
 #if __FreeBSD_version >= 1300121
 	.vop_fplookup_vexec =	VOP_EAGAIN,
 #endif
+#if __FreeBSD_version >= 1300139
+	.vop_fplookup_symlink = VOP_EAGAIN,
+#endif
+	.vop_open =		zfsctl_common_open,
+	.vop_close =		zfsctl_common_close,
 	.vop_inactive =		zfsctl_snapshot_inactive,
 #if __FreeBSD_version >= 1300045
 	.vop_need_inactive = vop_stdneed_inactive,
@@ -1237,6 +1271,9 @@ static struct vop_vector zfsctl_ops_snapshot = {
 	.vop_islocked =		vop_stdislocked,
 	.vop_advlockpurge =	vop_stdadvlockpurge, /* called by vgone */
 	.vop_print =		zfsctl_common_print,
+#if __FreeBSD_version >= 1400043
+	.vop_add_writecount =	vop_stdadd_writecount_nomsync,
+#endif
 };
 VFS_VOP_VECTOR_REGISTER(zfsctl_ops_snapshot);
 
@@ -1247,7 +1284,7 @@ zfsctl_lookup_objset(vfs_t *vfsp, uint64_t objsetid, zfsvfs_t **zfsvfsp)
 	vnode_t *vp;
 	int error;
 
-	ASSERT(zfsvfs->z_ctldir != NULL);
+	ASSERT3P(zfsvfs->z_ctldir, !=, NULL);
 	*zfsvfsp = NULL;
 	error = sfs_vnode_get(vfsp, LK_EXCLUSIVE,
 	    ZFSCTL_INO_SNAPDIR, objsetid, &vp);
@@ -1279,7 +1316,7 @@ zfsctl_umount_snapshots(vfs_t *vfsp, int fflags, cred_t *cr)
 	uint64_t cookie;
 	int error;
 
-	ASSERT(zfsvfs->z_ctldir != NULL);
+	ASSERT3P(zfsvfs->z_ctldir, !=, NULL);
 
 	cookie = 0;
 	for (;;) {

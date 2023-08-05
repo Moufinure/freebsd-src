@@ -160,7 +160,7 @@ static void replaceFI(MachineFunction &MF, MachineBasicBlock::iterator II,
 }
 
 
-void
+bool
 SparcRegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator II,
                                        int SPAdj, unsigned FIOperandNum,
                                        RegScavenger *RS) const {
@@ -175,7 +175,7 @@ SparcRegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator II,
 
   Register FrameReg;
   int Offset;
-  Offset = TFI->getFrameIndexReference(MF, FrameIndex, FrameReg);
+  Offset = TFI->getFrameIndexReference(MF, FrameIndex, FrameReg).getFixed();
 
   Offset += MI.getOperand(FIOperandNum + 1).getImm();
 
@@ -209,7 +209,8 @@ SparcRegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator II,
   }
 
   replaceFI(MF, II, MI, dl, FIOperandNum, Offset, FrameReg);
-
+  // replaceFI never removes II
+  return false;
 }
 
 Register SparcRegisterInfo::getFrameRegister(const MachineFunction &MF) const {

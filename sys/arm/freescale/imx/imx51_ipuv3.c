@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2012 Oleksandr Tymoshenko <gonzo@freebsd.org>
  * Copyright (c) 2012, 2013 The FreeBSD Foundation
@@ -742,8 +742,6 @@ ipu3fb_ioctl(video_adapter_t *adp, u_long cmd, caddr_t data)
 			fb->fb_cmsize = 1 << sc->depth;
 		fb->fb_size = sc->fb_size;
 		break;
-	case FBIOSCURSOR:
-		return (ENODEV);
 	default:
 		return (fb_commonioctl(adp, cmd, data));
 	}

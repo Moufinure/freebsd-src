@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 1999 Seigo Tanimura
  * Copyright (c) 1999 Ville-Pertti Keinonen
@@ -308,6 +308,7 @@ gusc_attach(device_t dev)
 	sc_p scp;
 	void *ih;
 
+	gone_in_dev(dev, 14, "ISA sound driver");
 	scp = device_get_softc(dev);
 
 	bzero(scp, sizeof(*scp));

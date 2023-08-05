@@ -20,9 +20,10 @@
 #include <sys/cdefs.h>
 __FBSDID("$FreeBSD$");
 
-#include <sys/types.h>
+#include <sys/param.h>
 #include <sys/time.h>
 #include <sys/resource.h>
+
 #include <err.h>
 #include <fcntl.h>
 #include <md5.h>
@@ -34,6 +35,7 @@ __FBSDID("$FreeBSD$");
 #include <sha512.h>
 #include <sha512t.h>
 #include <skein.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -52,6 +54,8 @@ __FBSDID("$FreeBSD$");
 #define TEST_BLOCK_COUNT 100000
 #define MDTESTCOUNT 8
 
+static int bflag;
+static int cflag;
 static int pflag;
 static int qflag;
 static int rflag;
@@ -71,6 +75,7 @@ extern const char *SHA224_TestOutput[MDTESTCOUNT];
 extern const char *SHA256_TestOutput[MDTESTCOUNT];
 extern const char *SHA384_TestOutput[MDTESTCOUNT];
 extern const char *SHA512_TestOutput[MDTESTCOUNT];
+extern const char *SHA512t224_TestOutput[MDTESTCOUNT];
 extern const char *SHA512t256_TestOutput[MDTESTCOUNT];
 extern const char *RIPEMD160_TestOutput[MDTESTCOUNT];
 extern const char *SKEIN256_TestOutput[MDTESTCOUNT];
@@ -134,6 +139,9 @@ static const struct Algorithm_t Algorithm[] = {
 	{ "sha512", "SHA512", &SHA512_TestOutput, (DIGEST_Init*)&SHA512_Init,
 		(DIGEST_Update*)&SHA512_Update, (DIGEST_End*)&SHA512_End,
 		&SHA512_Data, &SHA512_Fd },
+	{ "sha512t224", "SHA512t224", &SHA512t224_TestOutput, (DIGEST_Init*)&SHA512_224_Init,
+		(DIGEST_Update*)&SHA512_224_Update, (DIGEST_End*)&SHA512_224_End,
+		&SHA512_224_Data, &SHA512_224_Fd },
 	{ "sha512t256", "SHA512t256", &SHA512t256_TestOutput, (DIGEST_Init*)&SHA512_256_Init,
 		(DIGEST_Update*)&SHA512_256_Update, (DIGEST_End*)&SHA512_256_End,
 		&SHA512_256_Data, &SHA512_256_Fd },
@@ -151,10 +159,91 @@ static const struct Algorithm_t Algorithm[] = {
 		(DIGEST_End*)&SKEIN1024_End, &SKEIN1024_Data, &SKEIN1024_Fd }
 };
 
+static unsigned	digest;
+static unsigned	malformed;
+static bool	gnu_emu = false;
+
 static void
 MD5_Update(MD5_CTX *c, const unsigned char *data, size_t len)
 {
 	MD5Update(c, data, len);
+}
+
+struct chksumrec {
+	char	*filename;
+	char	*chksum;
+	struct	chksumrec	*next;
+};
+
+static struct chksumrec *head = NULL;
+static struct chksumrec **next = &head;
+
+#define PADDING	7	/* extra padding for "SHA512t256 (...) = ...\n" style */
+#define CHKFILELINELEN	(HEX_DIGEST_LENGTH + MAXPATHLEN + PADDING)
+
+static int gnu_check(const char *checksumsfile)
+{
+	FILE	*inp;
+	char	linebuf[CHKFILELINELEN];
+	int	linelen;
+	int	lineno;
+	char	*filename;
+	char	*hashstr;
+	struct chksumrec	*rec;
+	const char	*digestname;
+	int	digestnamelen;
+	int	hashstrlen;
+
+	if ((inp = fopen(checksumsfile, "r")) == NULL)
+		err(1, "%s", checksumsfile);
+	digestname = Algorithm[digest].name;
+	digestnamelen = strlen(digestname);
+	hashstrlen = strlen(*(Algorithm[digest].TestOutput[0]));
+	lineno = 1;
+	while (fgets(linebuf, sizeof(linebuf), inp) != NULL) {
+		linelen = strlen(linebuf) - 1;
+		if (linelen <= 0)
+			break;
+		if (linebuf[linelen] != '\n')
+			errx(1, "malformed input line %d (len=%d)", lineno, linelen);
+		linebuf[linelen] = '\0';
+		filename = linebuf + digestnamelen + 2;
+		hashstr = linebuf + linelen - hashstrlen;
+		/*
+		 * supported formats:
+		 * BSD: <DigestName> (<Filename>): <Digest>
+		 * GNU: <Digest> [ *]<Filename>
+		 */
+		if (linelen >= digestnamelen + hashstrlen + 6 &&
+		    strncmp(linebuf, digestname, digestnamelen) == 0 &&
+		    strncmp(filename - 2, " (", 2) == 0 &&
+		    strncmp(hashstr - 4, ") = ", 4) == 0) {
+			*(hashstr - 4) = '\0';
+		} else if (linelen >= hashstrlen + 3 &&
+		    linebuf[hashstrlen] == ' ') {
+			linebuf[hashstrlen] = '\0';
+			hashstr = linebuf;
+			filename = linebuf + hashstrlen + 1;
+			if (*filename == ' ' || *filename == '*')
+				filename++;
+		} else {
+			malformed++;
+			continue;
+		}
+		rec = malloc(sizeof (*rec));
+		if (rec == NULL)
+			errx(1, "malloc failed");
+		rec->chksum = strdup(hashstr);
+		rec->filename = strdup(filename);
+		if (rec->chksum == NULL || rec->filename == NULL)
+			errx(1, "malloc failed");
+		rec->next = NULL;
+		*next = rec;
+		next = &rec->next;
+		lineno++;
+	}
+	fclose(inp);
+	return (lineno - 1);
 }
 
 /* Main driver.
@@ -176,16 +265,35 @@ main(int argc, char *argv[])
 	char   *p, *string;
 	char	buf[HEX_DIGEST_LENGTH];
 	size_t	len;
- 	unsigned	digest;
- 	const char*	progname;
+	char	*progname;
+	struct chksumrec	*rec;
+	int	numrecs;
 
  	if ((progname = strrchr(argv[0], '/')) == NULL)
  		progname = argv[0];
  	else
  		progname++;
 
+	/*
+	 * GNU coreutils has a number of programs named *sum. These produce
+	 * similar results to the BSD version, but in a different format,
+	 * similar to BSD's -r flag. We install links to this program with
+	 * ending 'sum' to provide this compatibility. Check here to see if the
+	 * name of the program ends in 'sum', set the flag and drop the 'sum' so
+	 * the digest lookup works. Also, make -t a nop when running in this mode
+	 * since that means 'text file' there (though it's a nop in coreutils
+	 * on unix-like systems). The -c flag conflicts, so it's just disabled
+	 * in this mode (though in the future it might be implemented).
+	 */
+	len = strlen(progname);
+	if (len > 3 && strcmp(progname + len - 3, "sum") == 0) {
+		len -= 3;
+		rflag = 1;
+		gnu_emu = true;
+	}
+
  	for (digest = 0; digest < sizeof(Algorithm)/sizeof(*Algorithm); digest++)
- 		if (strcasecmp(Algorithm[digest].progname, progname) == 0)
+ 		if (strncasecmp(Algorithm[digest].progname, progname, len) == 0)
  			break;
 
  	if (digest == sizeof(Algorithm)/sizeof(*Algorithm))
@@ -195,10 +303,17 @@ main(int argc, char *argv[])
 	checkAgainst = NULL;
 	checksFailed = 0;
 	skip = 0;
-	while ((ch = getopt(argc, argv, "c:pqrs:tx")) != -1)
+	while ((ch = getopt(argc, argv, "bc:pqrs:tx")) != -1)
 		switch (ch) {
+		case 'b':
+			bflag = 1;
+			break;
 		case 'c':
-			checkAgainst = optarg;
+			cflag = 1;
+			if (gnu_emu)
+				numrecs = gnu_check(optarg);
+			else
+				checkAgainst = optarg;
 			break;
 		case 'p':
 			pflag = 1;
@@ -214,8 +329,10 @@ main(int argc, char *argv[])
 			string = optarg;
 			break;
 		case 't':
-			MDTimeTrial(&Algorithm[digest]);
-			skip = 1;
+			if (!gnu_emu) {
+				MDTimeTrial(&Algorithm[digest]);
+				skip = 1;
+			} /* else: text mode is a nop */
 			break;
 		case 'x':
 			MDTestSuite(&Algorithm[digest]);
@@ -232,11 +349,27 @@ main(int argc, char *argv[])
 		err(1, "unable to limit rights for stdio");
 #endif
 
+	if (cflag && gnu_emu) {
+		/*
+		 * Replace argv by an array of filenames from the digest file
+		 */
+		argc = 0;
+		argv = (char**)calloc(sizeof(char *), numrecs + 1);
+		for (rec = head; rec != NULL; rec = rec->next) {
+			argv[argc] = rec->filename;
+			argc++;
+		}
+		argv[argc] = NULL;
+		rec = head;
+	}
+
 	if (*argv) {
 		do {
 			if ((fd = open(*argv, O_RDONLY)) < 0) {
 				warn("%s", *argv);
 				failed++;
+				if (cflag && gnu_emu)
+					rec = rec->next;
 				continue;
 			}
 			/*
@@ -253,11 +386,15 @@ main(int argc, char *argv[])
 					err(1, "capsicum");
 #endif
 			}
+			if (cflag && gnu_emu) {
+				checkAgainst = rec->chksum;
+				rec = rec->next;
+			}
 			p = Algorithm[digest].Fd(fd, buf);
 			(void)close(fd);
 			MDOutput(&Algorithm[digest], p, argv);
 		} while (*++argv);
-	} else if (!sflag && !skip) {
+	} else if (!cflag && !sflag && !skip) {
 #ifdef HAVE_CAPSICUM
 		if (caph_limit_stdin() < 0 || caph_enter() < 0)
 			err(1, "capsicum");
@@ -269,7 +406,12 @@ main(int argc, char *argv[])
 		p = Algorithm[digest].Data(string, len, buf);
 		MDOutput(&Algorithm[digest], p, &string);
 	}
-
+	if (gnu_emu) {
+		if (malformed > 0)
+			warnx("WARNING: %d lines are improperly formatted", malformed);
+		if (checksFailed > 0)
+			warnx("WARNING: %d computed checksums did NOT match", checksFailed);
+	}
 	if (failed != 0)
 		return (1);
 	if (checksFailed != 0)
@@ -284,6 +426,8 @@ main(int argc, char *argv[])
 static void
 MDOutput(const Algorithm_t *alg, char *p, char *argv[])
 {
+	bool checkfailed = false;
+
 	if (p == NULL) {
 		warn("%s", *argv);
 		failed++;
@@ -292,21 +436,35 @@ MDOutput(const Algorithm_t *alg, char *p, char *argv[])
 		 * If argv is NULL we are reading from stdin, where the output
 		 * format has always been just the hash.
 		 */
-		if (qflag || argv == NULL)
-			printf("%s", p);
-		else if (rflag)
-			printf("%s %s", p, *argv);
-		else
-			printf("%s (%s) = %s",
-			    alg->name, *argv, p);
-		if (checkAgainst && strcasecmp(checkAgainst, p) != 0)
-		{
-			checksFailed++;
-			if (!qflag)
-				printf(" [ Failed ]");
+		if (cflag && gnu_emu) {
+			checkfailed = strcasecmp(checkAgainst, p) != 0;
+			if (!qflag || checkfailed)
+				printf("%s: %s\n", *argv, checkfailed ? "FAILED" : "OK");
+		} else if (qflag || argv == NULL) {
+			printf("%s\n", p);
+			if (cflag)
+				checkfailed = strcasecmp(checkAgainst, p) != 0;
+		} else {
+			if (rflag)
+				if (gnu_emu)
+					if (bflag)
+						printf("%s *%s", p, *argv);
+					else
+						printf("%s  %s", p, *argv);
+				else
+					printf("%s %s", p, *argv);
+			else
+				printf("%s (%s) = %s", alg->name, *argv, p);
+			if (checkAgainst) {
+				checkfailed = strcasecmp(checkAgainst, p) != 0;
+				if (!qflag && checkfailed)
+					printf(" [ Failed ]");
+			}
+			printf("\n");
 		}
-		printf("\n");
 	}
+	if (checkfailed)
+		checksFailed++;
 }
 
 /*
@@ -348,7 +506,7 @@ MDTimeTrial(const Algorithm_t *alg)
 	printf(" done\n");
 	printf("Digest = %s", p);
 	printf("\nTime = %f seconds\n", seconds);
-	printf("Speed = %f MiB/second\n", (float) TEST_BLOCK_LEN * 
+	printf("Speed = %f MiB/second\n", (float) TEST_BLOCK_LEN *
 		(float) TEST_BLOCK_COUNT / seconds / (1 << 20));
 }
 /*
@@ -431,6 +589,17 @@ const char *SHA512_TestOutput[MDTESTCOUNT] = {
 	"1e07be23c26a86ea37ea810c8ec7809352515a970e9253c26f536cfc7a9996c45c8370583e0a78fa4a90041d71a4ceab7423f19c71b9d5a3e01249f0bebd5894",
 	"72ec1ef1124a45b047e8b7c75a932195135bb61de24ec0d1914042246e0aec3a2354e093d76f3048b456764346900cb130d2a4fd5dd16abb5e30bcb850dee843",
 	"e8a835195e039708b13d9131e025f4441dbdc521ce625f245a436dcd762f54bf5cb298d96235e6c6a304e087ec8189b9512cbdf6427737ea82793460c367b9c3"
+};
+
+const char *SHA512t224_TestOutput[MDTESTCOUNT] = {
+	"6ed0dd02806fa89e25de060c19d3ac86cabb87d6a0ddd05c333b84f4",
+	"d5cdb9ccc769a5121d4175f2bfdd13d6310e0d3d361ea75d82108327",
+	"4634270f707b6a54daae7530460842e20e37ed265ceee9a43e8924aa",
+	"ad1a4db188fe57064f4f24609d2a83cd0afb9b398eb2fcaeaae2c564",
+	"ff83148aa07ec30655c1b40aff86141c0215fe2a54f767d3f38743d8",
+	"a8b4b9174b99ffc67d6f49be9981587b96441051e16e6dd036b140d3",
+	"ae988faaa47e401a45f704d1272d99702458fea2ddc6582827556dd2",
+	"b3c3b945249b0c8c94aba76ea887bcaad5401665a1fbeb384af4d06b"
 };
 
 const char *SHA512t256_TestOutput[MDTESTCOUNT] = {
@@ -533,6 +702,9 @@ static void
 usage(const Algorithm_t *alg)
 {
 
-	fprintf(stderr, "usage: %s [-pqrtx] [-c string] [-s string] [files ...]\n", alg->progname);
+	if (gnu_emu)
+		fprintf(stderr, "usage: %ssum [-pqrtx] [-c file] [-s string] [files ...]\n", alg->progname);
+	else
+		fprintf(stderr, "usage: %s [-pqrtx] [-c string] [-s string] [files ...]\n", alg->progname);
 	exit(1);
 }

@@ -28,8 +28,8 @@
  *
  * $FreeBSD$
  */
-#ifndef	_ATOMIC_LONG_H_
-#define	_ATOMIC_LONG_H_
+#ifndef	_LINUXKPI_ASM_ATOMIC_LONG_H_
+#define	_LINUXKPI_ASM_ATOMIC_LONG_H_
 
 #include <linux/compiler.h>
 #include <sys/types.h>
@@ -41,7 +41,7 @@ typedef struct {
 } atomic_long_t;
 
 #define	atomic_long_add(i, v)		atomic_long_add_return((i), (v))
-#define	atomic_long_sub(i, v)		atomic_long_add_return(-(i), (v))
+#define	atomic_long_sub(i, v)		atomic_long_sub_return((i), (v))
 #define	atomic_long_inc_return(v)	atomic_long_add_return(1, (v))
 #define	atomic_long_inc_not_zero(v)	atomic_long_add_unless((v), 1, 0)
 
@@ -49,6 +49,12 @@ static inline long
 atomic_long_add_return(long i, atomic_long_t *v)
 {
 	return i + atomic_fetchadd_long(&v->counter, i);
+}
+
+static inline long
+atomic_long_sub_return(long i, atomic_long_t *v)
+{
+	return atomic_fetchadd_long(&v->counter, -i) - i;
 }
 
 static inline void
@@ -130,4 +136,4 @@ atomic_long_dec_and_test(atomic_long_t *v)
 	return i == 0 ;
 }
 
-#endif	/* _ATOMIC_LONG_H_ */
+#endif	/* _LINUXKPI_ASM_ATOMIC_LONG_H_ */

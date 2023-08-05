@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2001-2003
  *	Fraunhofer Institute for Open Communication Systems (FhG Fokus).
@@ -77,13 +77,15 @@ static struct mtx ngatm_unilist_mtx;
 static void
 uni_msg_init(void)
 {
+	gone_in(14, "ngatmbase: netgraph ATM modules");
+
 	mtx_init(&ngatm_unilist_mtx, "netgraph UNI msg header lists", NULL,
 	    MTX_DEF);
 }
 
 /*
  * Ensure, that the message can be extended by at least s bytes.
- * Re-allocate the message (not the header). If that failes,
+ * Re-allocate the message (not the header). If that fails,
  * free the entire message and return ENOMEM. Free space at the start of
  * the message is retained.
  */

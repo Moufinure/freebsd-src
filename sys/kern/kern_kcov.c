@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (C) 2018 The FreeBSD Foundation. All rights reserved.
  * Copyright (C) 2018, 2019 Andrew Turner
@@ -35,7 +35,9 @@
  * $FreeBSD$
  */
 
-#define	KCSAN_RUNTIME
+#ifdef KCSAN
+#define	SAN_RUNTIME
+#endif
 
 #include <sys/cdefs.h>
 __FBSDID("$FreeBSD$");
@@ -207,8 +209,7 @@ trace_pc(uintptr_t ret)
 	if (info->mode != KCOV_MODE_TRACE_PC)
 		return;
 
-	KASSERT(info->kvaddr != 0,
-	    ("__sanitizer_cov_trace_pc: NULL buf while running"));
+	KASSERT(info->kvaddr != 0, ("%s: NULL buf while running", __func__));
 
 	buf = (uint64_t *)info->kvaddr;
 
@@ -239,8 +240,7 @@ trace_cmp(uint64_t type, uint64_t arg1, uint64_t arg2, uint64_t ret)
 	if (info->mode != KCOV_MODE_TRACE_CMP)
 		return (false);
 
-	KASSERT(info->kvaddr != 0,
-	    ("__sanitizer_cov_trace_pc: NULL buf while running"));
+	KASSERT(info->kvaddr != 0, ("%s: NULL buf while running", __func__));
 
 	buf = (uint64_t *)info->kvaddr;
 

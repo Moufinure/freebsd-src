@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (C) 1996
  *	David L. Nugent.  All rights reserved.
@@ -50,6 +50,7 @@ static const char rcsid[] =
 #include <sysexits.h>
 #include <termios.h>
 #include <unistd.h>
+#include <spawn.h>
 
 #include "pw.h"
 #include "bitmap.h"
@@ -57,6 +58,7 @@ static const char rcsid[] =
 
 #define LOGNAMESIZE (MAXLOGNAME-1)
 
+extern char **environ;
 static		char locked_str[] = "*LOCKED*";
 
 static struct passwd fakeuser = {
@@ -80,8 +82,7 @@ static uid_t	 pw_gidpolicy(struct userconf *cnf, char *grname, char *nam,
 static char	*pw_homepolicy(struct userconf * cnf, char *homedir,
     const char *user);
 static char	*pw_shellpolicy(struct userconf * cnf);
-static char	*pw_password(struct userconf * cnf, char const * user,
-    bool dryrun);
+static char	*pw_password(struct userconf * cnf, char const * user);
 static char	*shell_path(char const * path, char *shells[], char *sh);
 static void	rmat(uid_t uid);
 static void	rmopie(char const * name);
@@ -511,7 +512,7 @@ pw_pwcrypt(char *password)
 }
 
 static char *
-pw_password(struct userconf * cnf, char const * user, bool dryrun)
+pw_password(struct userconf * cnf, char const * user)
 {
 	int             i, l;
 	char            pwbuf[32];
@@ -528,7 +529,7 @@ pw_password(struct userconf * cnf, char const * user, bool dryrun)
 		/*
 		 * We give this information back to the user
 		 */
-		if (conf.fd == -1 && !dryrun) {
+		if (conf.fd == -1) {
 			if (isatty(STDOUT_FILENO))
 				printf("Password for '%s' is: ", user);
 			printf("%s\n", pwbuf);
@@ -636,7 +637,7 @@ pw_checkname(char *name, int gecos)
 		showtype = "gecos field";
 	} else {
 		/* See if the name is valid as a userid or group. */
-		badchars = " ,\t:+&#%$^()!@~*?<>=|\\/\"";
+		badchars = " ,\t:+&#%$^()!@~*?<>=|\\/\";";
 		showtype = "userid/group name";
 		/* Userids and groups can not have a leading '-'. */
 		if (*ch == '-')
@@ -696,11 +697,16 @@ rmat(uid_t uid)
 			    stat(e->d_name, &st) == 0 &&
 			    !S_ISDIR(st.st_mode) &&
 			    st.st_uid == uid) {
-				char            tmp[MAXPATHLEN];
-
-				snprintf(tmp, sizeof(tmp), "/usr/bin/atrm %s",
-				    e->d_name);
-				system(tmp);
+				const char *argv[] = {
+					"/usr/sbin/atrm",
+					e->d_name,
+					NULL
+				};
+				if (posix_spawn(NULL, argv[0], NULL, NULL,
+				    (char *const *) argv, environ)) {
+					warn("Failed to execute '%s %s'",
+					    argv[0], argv[1]);
+				}
 			}
 		}
 		closedir(d);
@@ -754,6 +760,8 @@ pw_user_next(int argc, char **argv, char *name __unused)
 		case 'q':
 			quiet = true;
 			break;
+		default:
+			exit(EX_USAGE);
 		}
 	}
 
@@ -816,6 +824,8 @@ pw_user_show(int argc, char **argv, char *arg1)
 		case '7':
 			v7 = true;
 			break;
+		default:
+			exit(EX_USAGE);
 		}
 	}
 
@@ -897,6 +907,8 @@ pw_user_del(int argc, char **argv, char *arg1)
 		case 'Y':
 			nis = true;
 			break;
+		default:
+			exit(EX_USAGE);
 		}
 	}
 
@@ -945,9 +957,18 @@ pw_user_del(int argc, char **argv, char *arg1)
 		/* Remove crontabs */
 		snprintf(file, sizeof(file), "/var/cron/tabs/%s", pwd->pw_name);
 		if (access(file, F_OK) == 0) {
-			snprintf(file, sizeof(file), "crontab -u %s -r",
-			    pwd->pw_name);
-			system(file);
+			const char *argv[] = {
+				"crontab",
+				"-u",
+				pwd->pw_name,
+				"-r",
+				NULL
+			};
+			if (posix_spawnp(NULL, argv[0], NULL, NULL,
+						(char *const *) argv, environ)) {
+				warn("Failed to execute '%s %s'",
+						argv[0], argv[1]);
+			}
 		}
 	}
 
@@ -1038,6 +1059,8 @@ pw_user_lock(int argc, char **argv, char *arg1)
 		case 'q':
 			/* compatibility */
 			break;
+		default:
+			exit(EX_USAGE);
 		}
 	}
 
@@ -1055,6 +1078,8 @@ pw_user_unlock(int argc, char **argv, char *arg1)
 		case 'q':
 			/* compatibility */
 			break;
+		default:
+			exit(EX_USAGE);
 		}
 	}
 
@@ -1322,6 +1347,8 @@ pw_user_add(int argc, char **argv, char *arg1)
 		case 'Y':
 			nis = true;
 			break;
+		default:
+			exit(EX_USAGE);
 		}
 	}
 
@@ -1398,7 +1425,7 @@ pw_user_add(int argc, char **argv, char *arg1)
 	if (lc == NULL || login_setcryptfmt(lc, "sha512", NULL) == NULL)
 		warn("setting crypt(3) format");
 	login_close(lc);
-	pwd->pw_passwd = pw_password(cmdcnf, pwd->pw_name, dryrun);
+	pwd->pw_passwd = pw_password(cmdcnf, pwd->pw_name);
 	if (pwd->pw_uid == 0 && strcmp(pwd->pw_name, "root") != 0)
 		warnx("WARNING: new account `%s' has a uid of 0 "
 		    "(superuser access!)", pwd->pw_name);
@@ -1630,6 +1657,8 @@ pw_user_mod(int argc, char **argv, char *arg1)
 		case 'Y':
 			nis = true;
 			break;
+		default:
+			exit(EX_USAGE);
 		}
 	}
 
@@ -1745,7 +1774,7 @@ pw_user_mod(int argc, char **argv, char *arg1)
 		login_close(lc);
 		cnf->default_password = passwd_val(passwd,
 		    cnf->default_password);
-		pwd->pw_passwd = pw_password(cnf, pwd->pw_name, dryrun);
+		pwd->pw_passwd = pw_password(cnf, pwd->pw_name);
 		edited = true;
 	}
 

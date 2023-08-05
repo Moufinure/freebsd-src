@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2012 Chelsio Communications, Inc.
  * All rights reserved.
@@ -79,9 +79,11 @@ __FBSDID("$FreeBSD$");
 #include "tom/t4_tom.h"
 #include "tom/t4_tls.h"
 
+static struct protosw *tcp_protosw;
 static struct protosw toe_protosw;
 static struct pr_usrreqs toe_usrreqs;
 
+static struct protosw *tcp6_protosw;
 static struct protosw toe6_protosw;
 static struct pr_usrreqs toe6_usrreqs;
 
@@ -165,14 +167,13 @@ init_toepcb(struct vi_info *vi, struct toepcb *toep)
 	struct adapter *sc = pi->adapter;
 	struct tx_cl_rl_params *tc;
 
-	if (cp->tc_idx >= 0 && cp->tc_idx < sc->chip_params->nsched_cls) {
+	if (cp->tc_idx >= 0 && cp->tc_idx < sc->params.nsched_cls) {
 		tc = &pi->sched_params->cl_rl[cp->tc_idx];
 		mtx_lock(&sc->tc_lock);
-		if (tc->flags & CLRL_ERR) {
-			log(LOG_ERR,
-			    "%s: failed to associate traffic class %u with tid %u\n",
-			    device_get_nameunit(vi->dev), cp->tc_idx,
-			    toep->tid);
+		if (tc->state != CS_HW_CONFIGURED) {
+			CH_ERR(vi, "tid %d cannot be bound to traffic class %d "
+			    "because it is not configured (its state is %d)\n",
+			    toep->tid, cp->tc_idx, tc->state);
 			cp->tc_idx = -1;
 		} else {
 			tc->refcount++;
@@ -263,6 +264,15 @@ offload_socket(struct socket *so, struct toepcb *toep)
 	mtx_unlock(&td->toep_list_lock);
 }
 
+void
+restore_so_proto(struct socket *so, bool v6)
+{
+	if (v6)
+		so->so_proto = tcp6_protosw;
+	else
+		so->so_proto = tcp_protosw;
+}
+
 /* This is _not_ the normal way to "unoffload" a socket. */
 void
 undo_offload_socket(struct socket *so)
@@ -282,6 +292,7 @@ undo_offload_socket(struct socket *so)
 	sb = &so->so_rcv;
 	SOCKBUF_LOCK(sb);
 	sb->sb_flags &= ~SB_NOCOALESCE;
+	restore_so_proto(so, inp->inp_vflag & INP_IPV6);
 	SOCKBUF_UNLOCK(sb);
 
 	tp->tod = NULL;
@@ -335,7 +346,7 @@ release_offload_resources(struct toepcb *toep)
 	}
 
 	if (toep->ce)
-		t4_release_lip(sc, toep->ce);
+		t4_release_clip_entry(sc, toep->ce);
 
 	if (toep->params.tc_idx != -1)
 		t4_release_cl_rl(sc, toep->vi->pi->port_id, toep->params.tc_idx);
@@ -467,7 +478,8 @@ send_get_tcb(struct adapter *sc, u_int tid)
 	struct cpl_get_tcb *cpl;
 	struct wrq_cookie cookie;
 
-	MPASS(tid < sc->tids.ntids);
+	MPASS(tid >= sc->tids.tid_base);
+	MPASS(tid - sc->tids.tid_base < sc->tids.ntids);
 
 	cpl = start_wrq_wr(&sc->sge.ctrlq[0], howmany(sizeof(*cpl), 16),
 	    &cookie);
@@ -520,7 +532,8 @@ add_tid_to_history(struct adapter *sc, u_int tid)
 	struct tom_data *td = sc->tom_softc;
 	int rc;
 
-	MPASS(tid < sc->tids.ntids);
+	MPASS(tid >= sc->tids.tid_base);
+	MPASS(tid - sc->tids.tid_base < sc->tids.ntids);
 
 	if (td->tcb_history == NULL)
 		return (ENXIO);
@@ -570,7 +583,8 @@ lookup_tcb_histent(struct adapter *sc, u_int tid, bool addrem)
 	struct tcb_histent *te;
 	struct tom_data *td = sc->tom_softc;
 
-	MPASS(tid < sc->tids.ntids);
+	MPASS(tid >= sc->tids.tid_base);
+	MPASS(tid - sc->tids.tid_base < sc->tids.ntids);
 
 	if (td->tcb_history == NULL)
 		return (NULL);
@@ -762,7 +776,8 @@ read_tcb_using_memwin(struct adapter *sc, u_int tid, uint64_t *buf)
 	uint32_t addr;
 	u_char *tcb, tmp;
 
-	MPASS(tid < sc->tids.ntids);
+	MPASS(tid >= sc->tids.tid_base);
+	MPASS(tid - sc->tids.tid_base < sc->tids.ntids);
 
 	addr = t4_read_reg(sc, A_TP_CMM_TCB_BASE) + tid * TCB_SIZE;
 	rc = read_via_memwin(sc, 2, addr, (uint32_t *)buf, TCB_SIZE);
@@ -837,6 +852,7 @@ void
 final_cpl_received(struct toepcb *toep)
 {
 	struct inpcb *inp = toep->inp;
+	bool need_wakeup;
 
 	KASSERT(inp != NULL, ("%s: inp is NULL", __func__));
 	INP_WLOCK_ASSERT(inp);
@@ -851,7 +867,9 @@ final_cpl_received(struct toepcb *toep)
 	else if (ulp_mode(toep) == ULP_MODE_TLS)
 		tls_detach(toep);
 	toep->inp = NULL;
-	toep->flags &= ~TPF_CPL_PENDING;
+	need_wakeup = (toep->flags & TPF_WAITING_FOR_FINAL) != 0;
+	toep->flags &= ~(TPF_CPL_PENDING | TPF_WAITING_FOR_FINAL);
+	mbufq_drain(&toep->ulp_pduq);
 	mbufq_drain(&toep->ulp_pdu_reclaimq);
 
 	if (!(toep->flags & TPF_ATTACHED))
@@ -859,6 +877,14 @@ final_cpl_received(struct toepcb *toep)
 
 	if (!in_pcbrele_wlocked(inp))
 		INP_WUNLOCK(inp);
+
+	if (need_wakeup) {
+		struct mtx *lock = mtx_pool_find(mtxpool_sleep, toep);
+
+		mtx_lock(lock);
+		wakeup(toep);
+		mtx_unlock(lock);
+	}
 }
 
 void
@@ -1066,7 +1092,7 @@ select_ntuple(struct vi_info *vi, struct l2t_entry *e)
 	if (tp->protocol_shift >= 0)
 		ntuple |= (uint64_t)IPPROTO_TCP << tp->protocol_shift;
 
-	if (tp->vnic_shift >= 0 && tp->ingress_config & F_VNIC) {
+	if (tp->vnic_shift >= 0 && tp->vnic_mode == FW_VNIC_MODE_PF_VF) {
 		ntuple |= (uint64_t)(V_FT_VNID_ID_VF(vi->vin) |
 		    V_FT_VNID_ID_PF(sc->pf) | V_FT_VNID_ID_VLD(vi->vfvld)) <<
 		    tp->vnic_shift;
@@ -1112,6 +1138,7 @@ init_conn_params(struct vi_info *vi , struct offload_settings *s,
 	struct inpcb *inp = sotoinpcb(so);
 	struct tcpcb *tp = intotcpcb(inp);
 	u_long wnd;
+	u_int q_idx;
 
 	MPASS(s->offload != 0);
 
@@ -1141,11 +1168,10 @@ init_conn_params(struct vi_info *vi , struct offload_settings *s,
 	}
 
 	/* Tx traffic scheduling class. */
-	if (s->sched_class >= 0 &&
-	    s->sched_class < sc->chip_params->nsched_cls) {
-	    cp->tc_idx = s->sched_class;
-	} else
-	    cp->tc_idx = -1;
+	if (s->sched_class >= 0 && s->sched_class < sc->params.nsched_cls)
+		cp->tc_idx = s->sched_class;
+	else
+		cp->tc_idx = -1;
 
 	/* Nagle's algorithm. */
 	if (s->nagle >= 0)
@@ -1196,18 +1222,22 @@ init_conn_params(struct vi_info *vi , struct offload_settings *s,
 	cp->mtu_idx = find_best_mtu_idx(sc, inc, s);
 
 	/* Tx queue for this connection. */
-	if (s->txq >= 0 && s->txq < vi->nofldtxq)
-		cp->txq_idx = s->txq;
+	if (s->txq == QUEUE_RANDOM)
+		q_idx = arc4random();
+	else if (s->txq == QUEUE_ROUNDROBIN)
+		q_idx = atomic_fetchadd_int(&vi->txq_rr, 1);
 	else
-		cp->txq_idx = arc4random() % vi->nofldtxq;
-	cp->txq_idx += vi->first_ofld_txq;
+		q_idx = s->txq;
+	cp->txq_idx = vi->first_ofld_txq + q_idx % vi->nofldtxq;
 
 	/* Rx queue for this connection. */
-	if (s->rxq >= 0 && s->rxq < vi->nofldrxq)
-		cp->rxq_idx = s->rxq;
+	if (s->rxq == QUEUE_RANDOM)
+		q_idx = arc4random();
+	else if (s->rxq == QUEUE_ROUNDROBIN)
+		q_idx = atomic_fetchadd_int(&vi->rxq_rr, 1);
 	else
-		cp->rxq_idx = arc4random() % vi->nofldrxq;
-	cp->rxq_idx += vi->first_ofld_rxq;
+		q_idx = s->rxq;
+	cp->rxq_idx = vi->first_ofld_rxq + q_idx % vi->nofldrxq;
 
 	if (SOLISTENING(so)) {
 		/* Passive open */
@@ -1566,8 +1596,8 @@ lookup_offload_policy(struct adapter *sc, int open_type, struct mbuf *m,
 		.ecn = -1,
 		.ddp = -1,
 		.tls = -1,
-		.txq = -1,
-		.rxq = -1,
+		.txq = QUEUE_RANDOM,
+		.rxq = QUEUE_RANDOM,
 		.mss = -1,
 	};
 	static const struct offload_settings disallow_offloading_settings = {
@@ -1817,28 +1847,8 @@ t4_aio_queue_tom(struct socket *so, struct kaiocb *job)
 }
 
 static int
-t4_ctloutput_tom(struct socket *so, struct sockopt *sopt)
-{
-
-	if (sopt->sopt_level != IPPROTO_TCP)
-		return (tcp_ctloutput(so, sopt));
-
-	switch (sopt->sopt_name) {
-	case TCP_TLSOM_SET_TLS_CONTEXT:
-	case TCP_TLSOM_GET_TLS_TOM:
-	case TCP_TLSOM_CLR_TLS_TOM:
-	case TCP_TLSOM_CLR_QUIES:
-		return (t4_ctloutput_tls(so, sopt));
-	default:
-		return (tcp_ctloutput(so, sopt));
-	}
-}
-
-static int
 t4_tom_mod_load(void)
 {
-	struct protosw *tcp_protosw, *tcp6_protosw;
-
 	/* CPL handlers */
 	t4_register_cpl_handler(CPL_GET_TCB_RPL, do_get_tcb_rpl);
 	t4_register_shared_cpl_handler(CPL_L2T_WRITE_RPL, do_l2t_write_rpl2,
@@ -1856,7 +1866,6 @@ t4_tom_mod_load(void)
 	bcopy(tcp_protosw, &toe_protosw, sizeof(toe_protosw));
 	bcopy(tcp_protosw->pr_usrreqs, &toe_usrreqs, sizeof(toe_usrreqs));
 	toe_usrreqs.pru_aio_queue = t4_aio_queue_tom;
-	toe_protosw.pr_ctloutput = t4_ctloutput_tom;
 	toe_protosw.pr_usrreqs = &toe_usrreqs;
 
 	tcp6_protosw = pffindproto(PF_INET6, IPPROTO_TCP, SOCK_STREAM);
@@ -1865,7 +1874,6 @@ t4_tom_mod_load(void)
 	bcopy(tcp6_protosw, &toe6_protosw, sizeof(toe6_protosw));
 	bcopy(tcp6_protosw->pr_usrreqs, &toe6_usrreqs, sizeof(toe6_usrreqs));
 	toe6_usrreqs.pru_aio_queue = t4_aio_queue_tom;
-	toe6_protosw.pr_ctloutput = t4_ctloutput_tom;
 	toe6_protosw.pr_usrreqs = &toe6_usrreqs;
 
 	return (t4_register_uld(&tom_uld_info));

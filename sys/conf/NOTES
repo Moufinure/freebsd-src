@@ -151,7 +151,7 @@ options 	BOOTHOWTO=RB_MULTIPLE
 # Default boot tag; may use 'kern.boot_tag' loader tunable to override.  The
 # current boot's tag is also exposed via the 'kern.boot_tag' sysctl.
 options 	BOOT_TAG=\"\"
-# Maximum boot tag size the kernel's static buffer should accomodate.  Maximum
+# Maximum boot tag size the kernel's static buffer should accommodate.  Maximum
 # size for both BOOT_TAG and the assocated tunable.
 options 	BOOT_TAG_SZ=32
 
@@ -288,7 +288,6 @@ options 	SX_NOINLINE
 # PREEMPTION allows the threads that are in the kernel to be preempted by
 #	  higher priority [interrupt] threads.  It helps with interactivity
 #	  and allows interrupt threads to run sooner rather than waiting.
-#	  WARNING! Only tested on amd64 and i386.
 # FULL_PREEMPTION instructs the kernel to preempt non-realtime kernel
 #	  threads.  Its sole use is to expose race conditions and other
 #	  bugs during development.  Enabling this option will reduce
@@ -329,6 +328,8 @@ options 	SLEEPQUEUE_PROFILING
 options 	TURNSTILE_PROFILING
 options 	UMTX_PROFILING
 
+# Debugging traces for epoch(9) misuse
+options 	EPOCH_TRACE
 
 #####################################################################
 # COMPATIBILITY OPTIONS
@@ -669,6 +670,9 @@ options		IPSEC_SUPPORT
 # TLS framing and encryption/decryption of data over TCP sockets.
 options		KERN_TLS		# TLS transmit and receive offload
 
+# Netlink kernel/user<>kernel/user messaging interface
+options		NETLINK
+
 #
 # SMB/CIFS requester
 # NETSMB enables support for SMB protocol, it requires LIBMCHAIN and LIBICONV
@@ -767,7 +771,6 @@ options 	NETGRAPH_DEBUG		# enable extra debugging, this
 # Node types
 options 	NETGRAPH_ASYNC
 options 	NETGRAPH_ATMLLC
-options 	NETGRAPH_ATM_ATMPIF
 options 	NETGRAPH_BLUETOOTH		# ng_bluetooth(4)
 options 	NETGRAPH_BLUETOOTH_HCI		# ng_hci(4)
 options 	NETGRAPH_BLUETOOTH_L2CAP	# ng_l2cap(4)
@@ -817,7 +820,6 @@ options 	NETGRAPH_VJC
 options 	NETGRAPH_VLAN
 
 # NgATM - Netgraph ATM
-options 	NGATM_ATM
 options 	NGATM_ATMBASE
 options 	NGATM_SSCOP
 options 	NGATM_SSCFU
@@ -944,6 +946,9 @@ device		enc
 
 # Link aggregation interface.
 device		lagg
+
+# WireGuard interface.
+device		wg
 
 #
 # Internet family options:
@@ -1227,6 +1232,7 @@ options 	MAC_NONE
 options 	MAC_NTPD
 options 	MAC_PARTITION
 options 	MAC_PORTACL
+options 	MAC_PRIORITY
 options 	MAC_SEEOTHERUIDS
 options 	MAC_STUB
 options 	MAC_TEST
@@ -1328,8 +1334,8 @@ envvar		hint.sa.1.target="6"
 # The pt driver drives SCSI Processor devices.
 #
 # The sg driver provides a passthrough API that is compatible with the
-# Linux SG driver.  It will work in conjunction with the COMPAT_LINUX
-# option to run linux SG apps.  It can also stand on its own and provide
+# Linux SG driver.  It will work in conjunction with the Linuxulator
+# to run linux SG apps.  It can also stand on its own and provide
 # source level API compatibility for porting apps to FreeBSD.
 #
 # Target Mode support is provided here but also requires that a SIM
@@ -1722,8 +1728,7 @@ envvar		hint.ata.1.port="0x170"
 envvar		hint.ata.1.irq="15"
 
 #
-# uart: newbusified driver for serial interfaces.  It consolidates the sio(4),
-#	sab(4) and zs(4) drivers.
+# uart: generic driver for serial interfaces.
 #
 device		uart
 
@@ -1746,15 +1751,14 @@ envvar		hint.uart.0.port="0x3f8"
 envvar		hint.uart.0.flags="0x10"
 envvar		hint.uart.0.baud="115200"
 
-# `flags' for serial drivers that support consoles like sio(4) and uart(4):
+# `flags' for serial drivers that support consoles, like uart(4):
 #	0x10	enable console support for this unit.  Other console flags
 #		(if applicable) are ignored unless this is set.  Enabling
 #		console support does not make the unit the preferred console.
-#		Boot with -h or set boot_serial=YES in the loader.  For sio(4)
-#		specifically, the 0x20 flag can also be set (see above).
+#		Boot with -h or set boot_serial=YES in the loader.
 #		Currently, at most one unit can have console support; the
 #		first one (in config file order) with this flag set is
-#		preferred.  Setting this flag for sio0 gives the old behavior.
+#		preferred.
 #	0x80	use this port for serial line gdb support in ddb.  Also known
 #		as debug port.
 #
@@ -1785,7 +1789,7 @@ device		puc
 # namely those which use MII-compliant transceivers or implement
 # transceiver control interfaces that operate like an MII.  Adding
 # "device miibus" to the kernel config pulls in support for the generic
-# miibus API, the common support for for bit-bang'ing the MII and all
+# miibus API, the common support for bit-bang'ing the MII and all
 # of the PHY drivers, including a generic one for PHYs that aren't
 # specifically handled by an individual driver.  Support for specific
 # PHYs may be built by adding "device mii", "device mii_bitbang" if
@@ -2031,8 +2035,8 @@ device		rtwnfw
 # mismatch between the mbuf size assumed by the kernel and the mbuf size
 # assumed by a module.  The only driver that currently has the ability to
 # detect a mismatch is ti(4).
-options 	MCLSHIFT=12	# mbuf cluster shift in bits, 12 == 4KB
-options 	MSIZE=512	# mbuf size in bytes
+options 	MCLSHIFT=11	# mbuf cluster shift in bits, 11 == 2KB
+options 	MSIZE=256	# mbuf size in bytes
 
 #
 # Sound drivers

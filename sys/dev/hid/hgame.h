@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2020 Vladimir Kondratyev <wulf@FreeBSD.org>
  * Copyright (c) 2020 Greg V <greg@unrelenting.technology>
@@ -31,6 +31,7 @@
 
 #include <dev/hid/hidmap.h>
 
+hidmap_cb_t	hgame_hat_switch_cb;
 hidmap_cb_t	hgame_dpad_cb;
 hidmap_cb_t	hgame_final_cb;
 

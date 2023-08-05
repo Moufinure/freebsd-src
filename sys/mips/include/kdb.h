@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2004 Marcel Moolenaar
  * All rights reserved.
@@ -55,4 +55,19 @@ static __inline void
 kdb_cpu_sync_icache(unsigned char *addr, size_t size)
 {
 }
+
+static __inline int
+kdb_cpu_set_watchpoint(vm_offset_t addr, vm_size_t size, int access)
+{
+
+	return (ENXIO);
+}
+
+static __inline int
+kdb_cpu_clr_watchpoint(vm_offset_t addr, vm_size_t size)
+{
+
+	return (0);
+}
+
 #endif /* _MACHINE_KDB_H_ */

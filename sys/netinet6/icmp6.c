@@ -1113,6 +1113,7 @@ icmp6_mtudisc_update(struct ip6ctlparam *ip6cp, int validated)
 	struct mbuf *m = ip6cp->ip6c_m;	/* will be necessary for scope issue */
 	u_int mtu = ntohl(icmp6->icmp6_mtu);
 	struct in_conninfo inc;
+	uint32_t max_mtu;
 
 #if 0
 	/*
@@ -1153,7 +1154,11 @@ icmp6_mtudisc_update(struct ip6ctlparam *ip6cp, int validated)
 	if (in6_setscope(&inc.inc6_faddr, m->m_pkthdr.rcvif, NULL))
 		return;
 
-	if (mtu < tcp_maxmtu6(&inc, NULL)) {
+	max_mtu = tcp_hc_getmtu(&inc);
+	if (max_mtu == 0)
+		max_mtu = tcp_maxmtu6(&inc, NULL);
+
+	if (mtu < max_mtu) {
 		tcp_hc_updatemtu(&inc, mtu);
 		ICMP6STAT_INC(icp6s_pmtuchg);
 	}
@@ -1974,13 +1979,11 @@ icmp6_rip6_input(struct mbuf **mp, int off)
 				    &last->inp_socket->so_rcv,
 				    (struct sockaddr *)&fromsa, n, opts)
 				    == 0) {
-					/* should notify about lost packet */
+					soroverflow_locked(last->inp_socket);
 					m_freem(n);
 					if (opts) {
 						m_freem(opts);
 					}
-					SOCKBUF_UNLOCK(
-					    &last->inp_socket->so_rcv);
 				} else
 					sorwakeup_locked(last->inp_socket);
 				opts = NULL;
@@ -2020,7 +2023,7 @@ icmp6_rip6_input(struct mbuf **mp, int off)
 			m_freem(m);
 			if (opts)
 				m_freem(opts);
-			SOCKBUF_UNLOCK(&last->inp_socket->so_rcv);
+			soroverflow_locked(last->inp_socket);
 		} else
 			sorwakeup_locked(last->inp_socket);
 		INP_RUNLOCK(last);
@@ -2548,7 +2551,7 @@ icmp6_redirect_output(struct mbuf *m0, struct nhop_object *nh)
 		struct nd_opt_hdr *nd_opt;
 		char *lladdr;
 
-		ln = nd6_lookup(router_ll6, 0, ifp);
+		ln = nd6_lookup(router_ll6, LLE_SF(AF_INET6,  0), ifp);
 		if (ln == NULL)
 			goto nolladdropt;
 

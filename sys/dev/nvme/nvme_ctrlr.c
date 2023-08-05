@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (C) 2012-2016 Intel Corporation
  * All rights reserved.
@@ -30,6 +30,7 @@
 __FBSDID("$FreeBSD$");
 
 #include "opt_cam.h"
+#include "opt_nvme.h"
 
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -51,6 +52,12 @@ __FBSDID("$FreeBSD$");
 
 static void nvme_ctrlr_construct_and_submit_aer(struct nvme_controller *ctrlr,
 						struct nvme_async_event_request *aer);
+
+static void
+nvme_ctrlr_barrier(struct nvme_controller *ctrlr, int flags)
+{
+	bus_barrier(ctrlr->resource, 0, rman_get_size(ctrlr->resource), flags);
+}
 
 static void
 nvme_ctrlr_devctl_log(struct nvme_controller *ctrlr, const char *type, const char *msg, ...)
@@ -131,7 +138,7 @@ nvme_ctrlr_construct_io_qpairs(struct nvme_controller *ctrlr)
 	 * specify a smaller limit, so we need to check the MQES field in the
 	 * capabilities register. We have to cap the number of entries to the
 	 * current stride allows for in BAR 0/1, otherwise the remainder entries
-	 * are inaccessable. MQES should reflect this, and this is just a
+	 * are inaccessible. MQES should reflect this, and this is just a
 	 * fail-safe.
 	 */
 	max_entries =
@@ -232,7 +239,8 @@ nvme_ctrlr_post_failed_request(struct nvme_controller *ctrlr,
 	mtx_lock(&ctrlr->lock);
 	STAILQ_INSERT_TAIL(&ctrlr->fail_req, req, stailq);
 	mtx_unlock(&ctrlr->lock);
-	taskqueue_enqueue(ctrlr->taskqueue, &ctrlr->fail_req_task);
+	if (!ctrlr->is_dying)
+		taskqueue_enqueue(ctrlr->taskqueue, &ctrlr->fail_req_task);
 }
 
 static void
@@ -252,13 +260,19 @@ nvme_ctrlr_fail_req_task(void *arg, int pending)
 	mtx_unlock(&ctrlr->lock);
 }
 
+/*
+ * Wait for RDY to change.
+ *
+ * Starts sleeping for 1us and geometrically increases it the longer we wait,
+ * capped at 1ms.
+ */
 static int
 nvme_ctrlr_wait_for_ready(struct nvme_controller *ctrlr, int desired_val)
 {
-	int ms_waited;
+	int timeout = ticks + MSEC_2_TICKS(ctrlr->ready_timeout_in_ms);
+	sbintime_t delta_t = SBT_1US;
 	uint32_t csts;
 
-	ms_waited = 0;
 	while (1) {
 		csts = nvme_mmio_read_4(ctrlr, csts);
 		if (csts == NVME_GONE)		/* Hot unplug. */
@@ -266,12 +280,14 @@ nvme_ctrlr_wait_for_ready(struct nvme_controller *ctrlr, int desired_val)
 		if (((csts >> NVME_CSTS_REG_RDY_SHIFT) & NVME_CSTS_REG_RDY_MASK)
 		    == desired_val)
 			break;
-		if (ms_waited++ > ctrlr->ready_timeout_in_ms) {
+		if (timeout - ticks < 0) {
 			nvme_printf(ctrlr, "controller ready did not become %d "
 			    "within %d ms\n", desired_val, ctrlr->ready_timeout_in_ms);
 			return (ENXIO);
 		}
-		DELAY(1000);
+
+		pause_sbt("nvmerdy", delta_t, 0, C_PREL(1));
+		delta_t = min(SBT_1MS, delta_t * 3 / 2);
 	}
 
 	return (0);
@@ -297,30 +313,28 @@ nvme_ctrlr_disable(struct nvme_controller *ctrlr)
 	 * CSTS.RDY is 0 "has undefined results" So make sure that CSTS.RDY
 	 * isn't the desired value. Short circuit if we're already disabled.
 	 */
-	if (en == 1) {
-		if (rdy == 0) {
-			/* EN == 1, wait for  RDY == 1 or fail */
-			err = nvme_ctrlr_wait_for_ready(ctrlr, 1);
-			if (err != 0)
-				return (err);
-		}
-	} else {
-		/* EN == 0 already wait for RDY == 0 */
+	if (en == 0) {
+		/* Wait for RDY == 0 or timeout & fail */
 		if (rdy == 0)
 			return (0);
-		else
-			return (nvme_ctrlr_wait_for_ready(ctrlr, 0));
+		return (nvme_ctrlr_wait_for_ready(ctrlr, 0));
+	}
+	if (rdy == 0) {
+		/* EN == 1, wait for  RDY == 1 or timeout & fail */
+		err = nvme_ctrlr_wait_for_ready(ctrlr, 1);
+		if (err != 0)
+			return (err);
 	}
 
 	cc &= ~NVME_CC_REG_EN_MASK;
 	nvme_mmio_write_4(ctrlr, cc, cc);
+
 	/*
-	 * Some drives have issues with accessing the mmio after we
-	 * disable, so delay for a bit after we write the bit to
-	 * cope with these issues.
+	 * A few drives have firmware bugs that freeze the drive if we access
+	 * the mmio too soon after we disable.
 	 */
 	if (ctrlr->quirks & QUIRK_DELAY_B4_CHK_RDY)
-		pause("nvmeR", B4_CHK_RDY_DELAY_MS * hz / 1000);
+		pause("nvmeR", MSEC_2_TICKS(B4_CHK_RDY_DELAY_MS));
 	return (nvme_ctrlr_wait_for_ready(ctrlr, 0));
 }
 
@@ -346,19 +360,16 @@ nvme_ctrlr_enable(struct nvme_controller *ctrlr)
 	if (en == 1) {
 		if (rdy == 1)
 			return (0);
-		else
-			return (nvme_ctrlr_wait_for_ready(ctrlr, 1));
-	} else {
-		/* EN == 0 already wait for RDY == 0 or fail */
-		err = nvme_ctrlr_wait_for_ready(ctrlr, 0);
-		if (err != 0)
-			return (err);
+		return (nvme_ctrlr_wait_for_ready(ctrlr, 1));
 	}
 
+	/* EN == 0 already wait for RDY == 0 or timeout & fail */
+	err = nvme_ctrlr_wait_for_ready(ctrlr, 0);
+	if (err != 0)
+		return (err);
+
 	nvme_mmio_write_8(ctrlr, asq, ctrlr->adminq.cmd_bus_addr);
-	DELAY(5000);
 	nvme_mmio_write_8(ctrlr, acq, ctrlr->adminq.cpl_bus_addr);
-	DELAY(5000);
 
 	/* acqs and asqs are 0-based. */
 	qsize = ctrlr->adminq.num_entries - 1;
@@ -367,7 +378,6 @@ nvme_ctrlr_enable(struct nvme_controller *ctrlr)
 	aqa = (qsize & NVME_AQA_REG_ACQS_MASK) << NVME_AQA_REG_ACQS_SHIFT;
 	aqa |= (qsize & NVME_AQA_REG_ASQS_MASK) << NVME_AQA_REG_ASQS_SHIFT;
 	nvme_mmio_write_4(ctrlr, aqa, aqa);
-	DELAY(5000);
 
 	/* Initialization values for CC */
 	cc = 0;
@@ -381,6 +391,7 @@ nvme_ctrlr_enable(struct nvme_controller *ctrlr)
 	/* This evaluates to 0, which is according to spec. */
 	cc |= (PAGE_SIZE >> 13) << NVME_CC_REG_MPS_SHIFT;
 
+	nvme_ctrlr_barrier(ctrlr, BUS_SPACE_BARRIER_WRITE);
 	nvme_mmio_write_4(ctrlr, cc, cc);
 
 	return (nvme_ctrlr_wait_for_ready(ctrlr, 1));
@@ -408,14 +419,17 @@ nvme_ctrlr_hw_reset(struct nvme_controller *ctrlr)
 {
 	int err;
 
-	nvme_ctrlr_disable_qpairs(ctrlr);
+	TSENTER();
 
-	DELAY(100*1000);
+	nvme_ctrlr_disable_qpairs(ctrlr);
 
 	err = nvme_ctrlr_disable(ctrlr);
 	if (err != 0)
 		return err;
-	return (nvme_ctrlr_enable(ctrlr));
+
+	err = nvme_ctrlr_enable(ctrlr);
+	TSEXIT();
+	return (err);
 }
 
 void
@@ -433,7 +447,8 @@ nvme_ctrlr_reset(struct nvme_controller *ctrlr)
 		 */
 		return;
 
-	taskqueue_enqueue(ctrlr->taskqueue, &ctrlr->reset_task);
+	if (!ctrlr->is_dying)
+		taskqueue_enqueue(ctrlr->taskqueue, &ctrlr->reset_task);
 }
 
 static int
@@ -1046,6 +1061,8 @@ nvme_ctrlr_start(void *ctrlr_arg, bool resetting)
 	uint32_t old_num_io_queues;
 	int i;
 
+	TSENTER();
+
 	/*
 	 * Only reset adminq here when we are restarting the
 	 *  controller after a reset.  During initialization,
@@ -1118,6 +1135,7 @@ nvme_ctrlr_start(void *ctrlr_arg, bool resetting)
 
 	for (i = 0; i < ctrlr->num_io_queues; i++)
 		nvme_io_qpair_enable(&ctrlr->ioq[i]);
+	TSEXIT();
 }
 
 void
@@ -1125,22 +1143,26 @@ nvme_ctrlr_start_config_hook(void *arg)
 {
 	struct nvme_controller *ctrlr = arg;
 
-	/*
-	 * Reset controller twice to ensure we do a transition from cc.en==1 to
-	 * cc.en==0.  This is because we don't really know what status the
-	 * controller was left in when boot handed off to OS.  Linux doesn't do
-	 * this, however. If we adopt that policy, see also nvme_ctrlr_resume().
-	 */
+	TSENTER();
+
 	if (nvme_ctrlr_hw_reset(ctrlr) != 0) {
 fail:
 		nvme_ctrlr_fail(ctrlr);
 		config_intrhook_disestablish(&ctrlr->config_hook);
-		ctrlr->config_hook.ich_arg = NULL;
 		return;
 	}
 
+#ifdef NVME_2X_RESET
+	/*
+	 * Reset controller twice to ensure we do a transition from cc.en==1 to
+	 * cc.en==0.  This is because we don't really know what status the
+	 * controller was left in when boot handed off to OS.  Linux doesn't do
+	 * this, however, and when the controller is in state cc.en == 0, no
+	 * I/O can happen.
+	 */
 	if (nvme_ctrlr_hw_reset(ctrlr) != 0)
 		goto fail;
+#endif
 
 	nvme_qpair_reset(&ctrlr->adminq);
 	nvme_admin_qpair_enable(&ctrlr->adminq);
@@ -1154,10 +1176,10 @@ fail:
 
 	nvme_sysctl_initialize_ctrlr(ctrlr);
 	config_intrhook_disestablish(&ctrlr->config_hook);
-	ctrlr->config_hook.ich_arg = NULL;
 
 	ctrlr->is_initialized = 1;
 	nvme_notify_new_controller(ctrlr);
+	TSEXIT();
 }
 
 static void
@@ -1206,7 +1228,7 @@ nvme_ctrlr_poll(struct nvme_controller *ctrlr)
  * interrupts in the controller.
  */
 void
-nvme_ctrlr_intx_handler(void *arg)
+nvme_ctrlr_shared_handler(void *arg)
 {
 	struct nvme_controller *ctrlr = arg;
 
@@ -1432,9 +1454,20 @@ nvme_ctrlr_construct(struct nvme_controller *ctrlr, device_t dev)
 	if (nvme_ctrlr_construct_admin_qpair(ctrlr) != 0)
 		return (ENXIO);
 
+	/*
+	 * Create 2 threads for the taskqueue. The reset thread will block when
+	 * it detects that the controller has failed until all I/O has been
+	 * failed up the stack. The fail_req task needs to be able to run in
+	 * this case to finish the request failure for some cases.
+	 *
+	 * We could partially solve this race by draining the failed requeust
+	 * queue before proceding to free the sim, though nothing would stop
+	 * new I/O from coming in after we do that drain, but before we reach
+	 * cam_sim_free, so this big hammer is used instead.
+	 */
 	ctrlr->taskqueue = taskqueue_create("nvme_taskq", M_WAITOK,
 	    taskqueue_thread_enqueue, &ctrlr->taskqueue);
-	taskqueue_start_threads(&ctrlr->taskqueue, 1, PI_DISK, "nvme taskq");
+	taskqueue_start_threads(&ctrlr->taskqueue, 2, PI_DISK, "nvme taskq");
 
 	ctrlr->is_resetting = 0;
 	ctrlr->is_initialized = 0;
@@ -1464,8 +1497,12 @@ nvme_ctrlr_destruct(struct nvme_controller *ctrlr, device_t dev)
 {
 	int	gone, i;
 
+	ctrlr->is_dying = true;
+
 	if (ctrlr->resource == NULL)
 		goto nores;
+	if (!mtx_initialized(&ctrlr->adminq.lock))
+		goto noadminq;
 
 	/*
 	 * Check whether it is a hot unplug or a clean driver detach.
@@ -1511,6 +1548,7 @@ nvme_ctrlr_destruct(struct nvme_controller *ctrlr, device_t dev)
 	if (!gone)
 		nvme_ctrlr_disable(ctrlr);
 
+noadminq:
 	if (ctrlr->taskqueue)
 		taskqueue_free(ctrlr->taskqueue);
 
@@ -1538,27 +1576,26 @@ nvme_ctrlr_shutdown(struct nvme_controller *ctrlr)
 {
 	uint32_t	cc;
 	uint32_t	csts;
-	int		ticks = 0, timeout;
+	int		timeout;
 
 	cc = nvme_mmio_read_4(ctrlr, cc);
 	cc &= ~(NVME_CC_REG_SHN_MASK << NVME_CC_REG_SHN_SHIFT);
 	cc |= NVME_SHN_NORMAL << NVME_CC_REG_SHN_SHIFT;
 	nvme_mmio_write_4(ctrlr, cc, cc);
 
-	timeout = ctrlr->cdata.rtd3e == 0 ? 5 * hz :
-	    ((uint64_t)ctrlr->cdata.rtd3e * hz + 999999) / 1000000;
+	timeout = ticks + (ctrlr->cdata.rtd3e == 0 ? 5 * hz :
+	    ((uint64_t)ctrlr->cdata.rtd3e * hz + 999999) / 1000000);
 	while (1) {
 		csts = nvme_mmio_read_4(ctrlr, csts);
 		if (csts == NVME_GONE)		/* Hot unplug. */
 			break;
 		if (NVME_CSTS_GET_SHST(csts) == NVME_SHST_COMPLETE)
 			break;
-		if (ticks++ > timeout) {
-			nvme_printf(ctrlr, "did not complete shutdown within"
-			    " %d ticks of notification\n", timeout);
+		if (timeout - ticks < 0) {
+			nvme_printf(ctrlr, "shutdown timeout\n");
 			break;
 		}
-		pause("nvme shn", 1);
+		pause("nvmeshut", 1);
 	}
 }
 
@@ -1629,13 +1666,10 @@ nvme_ctrlr_suspend(struct nvme_controller *ctrlr)
 	 * flushes any metadata the drive may have stored so it can survive
 	 * having its power removed and prevents the unsafe shutdown count from
 	 * incriminating. Once we delete the qpairs, we have to disable them
-	 * before shutting down. The delay is out of paranoia in
-	 * nvme_ctrlr_hw_reset, and is repeated here (though we should have no
-	 * pending I/O that the delay copes with).
+	 * before shutting down.
 	 */
 	nvme_ctrlr_delete_qpairs(ctrlr);
 	nvme_ctrlr_disable_qpairs(ctrlr);
-	DELAY(100*1000);
 	nvme_ctrlr_shutdown(ctrlr);
 
 	return (0);
@@ -1651,14 +1685,17 @@ nvme_ctrlr_resume(struct nvme_controller *ctrlr)
 	if (ctrlr->is_failed)
 		return (0);
 
+	if (nvme_ctrlr_hw_reset(ctrlr) != 0)
+		goto fail;
+#ifdef NVME_2X_RESET
 	/*
-	 * Have to reset the hardware twice, just like we do on attach. See
-	 * nmve_attach() for why.
+	 * Prior to FreeBSD 13.1, FreeBSD's nvme driver reset the hardware twice
+	 * to get it into a known good state. However, the hardware's state is
+	 * good and we don't need to do this for proper functioning.
 	 */
 	if (nvme_ctrlr_hw_reset(ctrlr) != 0)
 		goto fail;
-	if (nvme_ctrlr_hw_reset(ctrlr) != 0)
-		goto fail;
+#endif
 
 	/*
 	 * Now that we've reset the hardware, we can restart the controller. Any

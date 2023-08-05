@@ -25,7 +25,7 @@
 .\"
 .\" $FreeBSD$
 .\"
-.Dd December 12, 2015
+.Dd January 2, 2023
 .Dt UNZIP 1
 .Os
 .Sh NAME
@@ -35,7 +35,10 @@
 .Nm
 .Op Fl aCcfjLlnopqtuvy
 .Op Fl d Ar dir
+.Op Fl x Ar pattern
+.Op Fl P Ar password
 .Ar zipfile
+.Op Ar member ...
 .Sh DESCRIPTION
 .\" ...
 The following options are available:
@@ -81,6 +84,10 @@ When extracting files from the zipfile, they are written to stdout.
 The normal output is suppressed as if
 .Fl q
 was specified.
+.It Fl P Ar password
+Extract encrypted files using a password.
+Putting a password on the command line using this option can be
+insecure.
 .It Fl q
 Quiet: print less information while extracting.
 .It Fl t
@@ -114,6 +121,11 @@ mode changes the way in which additional arguments are parsed.
 Currently only
 .Xr zipinfo 1L
 mode 1 is supported, which lists the file names one per line.
+.It Ar [member ...]
+Optional list of members to extract from the zipfile.
+Can include patterns, e.g.
+.Ar 'memberdir/*'
+will extract all files and dirs below memberdir.
 .El
 .Pp
 Note that only one of
@@ -172,7 +184,7 @@ utility is only able to process ZIP archives handled by
 .Xr libarchive 3 .
 Depending on the installed version of
 .Xr libarchive 3 ,
-this may or may not include self-extracting archives.
+this may or may not include self-extracting or ZIPX archives.
 .Sh SEE ALSO
 .Xr libarchive 3
 .Sh HISTORY

@@ -11,6 +11,7 @@ options 	INET6			# IPv6 communications protocols
 options 	TCP_HHOOK		# hhook(9) framework for TCP
 device		crypto			# core crypto support
 options 	IPSEC_SUPPORT		# Allow kldload of ipsec and tcpmd5
+options		NETLINK			# netlink(4) support
 options 	SCTP_SUPPORT		# Allow kldload of SCTP
 options 	FFS			# Berkeley Fast Filesystem
 options 	SOFTUPDATES		# Enable FFS soft updates support
@@ -71,3 +72,9 @@ options 	KDB_TRACE		# Print a stack trace for a panic.
 #options 	KTR_VERBOSE=0
 #options 	USB_REQ_DEBUG
 #options 	USB_VERBOSE
+
+# Enable support for the kernel PLL to use an external PPS signal,
+# under supervision of [x]ntpd(8)
+# More info in ntpd documentation: http://www.eecis.udel.edu/~ntp
+
+options 	PPS_SYNC

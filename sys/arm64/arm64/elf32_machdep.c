@@ -44,6 +44,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/imgact.h>
 #include <sys/linker.h>
 #include <sys/proc.h>
+#include <sys/reg.h>
 #include <sys/sysent.h>
 #include <sys/imgact_elf.h>
 #include <sys/syscall.h>
@@ -51,6 +52,9 @@ __FBSDID("$FreeBSD$");
 #include <sys/vnode.h>
 
 #include <machine/elf.h>
+#ifdef VFP
+#include <machine/vfp.h>
+#endif
 
 #include <compat/freebsd32/freebsd32_util.h>
 
@@ -74,22 +78,28 @@ static boolean_t elf32_arm_abi_supported(struct image_params *, int32_t *,
 
 extern void freebsd32_sendsig(sig_t catcher, ksiginfo_t *ksi, sigset_t *mask);
 
+u_long __read_frequently elf32_hwcap;
+u_long __read_frequently elf32_hwcap2;
+
 static struct sysentvec elf32_freebsd_sysvec = {
 	.sv_size	= SYS_MAXSYSCALL,
 	.sv_table	= freebsd32_sysent,
-	.sv_transtrap	= NULL,
 	.sv_fixup	= elf32_freebsd_fixup,
 	.sv_sendsig	= freebsd32_sendsig,
 	.sv_sigcode	= aarch32_sigcode,
 	.sv_szsigcode	= &sz_aarch32_sigcode,
 	.sv_name	= "FreeBSD ELF32",
 	.sv_coredump	= elf32_coredump,
+	.sv_elf_core_osabi = ELFOSABI_FREEBSD,
+	.sv_elf_core_abi_vendor = FREEBSD_ABI_VENDOR,
+	.sv_elf_core_prepare_notes = elf32_prepare_notes,
 	.sv_imgact_try	= NULL,
 	.sv_minsigstksz	= MINSIGSTKSZ,
 	.sv_minuser	= FREEBSD32_MINUSER,
 	.sv_maxuser	= FREEBSD32_MAXUSER,
 	.sv_usrstack	= FREEBSD32_USRSTACK,
 	.sv_psstrings	= FREEBSD32_PS_STRINGS,
+	.sv_psstringssz	= sizeof(struct freebsd32_ps_strings),
 	.sv_stackprot	= VM_PROT_READ | VM_PROT_WRITE,
 	.sv_copyout_auxargs = elf32_freebsd_copyout_auxargs,
 	.sv_copyout_strings = freebsd32_copyout_strings,
@@ -106,6 +116,12 @@ static struct sysentvec elf32_freebsd_sysvec = {
 	.sv_schedtail	= NULL,
 	.sv_thread_detach = NULL,
 	.sv_trap	= NULL,
+	.sv_hwcap	= &elf32_hwcap,
+	.sv_hwcap2	= &elf32_hwcap2,
+	.sv_onexec_old	= exec_onexec_old,
+	.sv_onexit	= exit_onexit,
+	.sv_regset_begin = SET_BEGIN(__elfN(regset)),
+	.sv_regset_end	= SET_LIMIT(__elfN(regset)),
 };
 INIT_SYSENTVEC(elf32_sysvec, &elf32_freebsd_sysvec);
 
@@ -236,6 +252,7 @@ freebsd32_setregs(struct thread *td, struct image_params *imgp,
    uintptr_t stack)
 {
 	struct trapframe *tf = td->td_frame;
+	struct pcb *pcb = td->td_pcb;
 
 	memset(tf, 0, sizeof(struct trapframe));
 
@@ -251,10 +268,20 @@ freebsd32_setregs(struct thread *td, struct image_params *imgp,
 	tf->tf_x[14] = imgp->entry_addr;
 	tf->tf_elr = imgp->entry_addr;
 	tf->tf_spsr = PSR_M_32;
+	if ((uint32_t)imgp->entry_addr & 1)
+		tf->tf_spsr |= PSR_T;
+
+#ifdef VFP
+	vfp_reset_state(td, pcb);
+#endif
+
+	/*
+	 * Clear debug register state. It is not applicable to the new process.
+	 */
+	bzero(&pcb->pcb_dbg_regs, sizeof(pcb->pcb_dbg_regs));
 }
 
 void
 elf32_dump_thread(struct thread *td, void *dst, size_t *off)
 {
-	/* XXX: VFP */
 }

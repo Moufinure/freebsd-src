@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2011 NetApp, Inc.
  * All rights reserved.
@@ -39,8 +39,8 @@ __FBSDID("$FreeBSD$");
 #include "pci_lpc.h"
 
 static int
-post_data_handler(struct vmctx *ctx, int vcpu, int in, int port, int bytes,
-		  uint32_t *eax, void *arg)
+post_data_handler(struct vmctx *ctx __unused, int in,
+    int port __unused, int bytes, uint32_t *eax, void *arg __unused)
 {
 	assert(in == 1);
 

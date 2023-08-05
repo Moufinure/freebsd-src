@@ -53,7 +53,6 @@
 #include <sys/avl.h>
 #include <sys/ddt.h>
 #include <sys/zfs_onexit.h>
-#include <sys/dmu_send.h>
 #include <sys/dsl_destroy.h>
 #include <sys/blkptr.h>
 #include <sys/dsl_bookmark.h>
@@ -71,6 +70,12 @@ int zfs_recv_write_batch_size = 1024 * 1024;
 
 static char *dmu_recv_tag = "dmu_recv_tag";
 const char *recv_clone_name = "%recv";
+
+typedef enum {
+	ORNS_NO,
+	ORNS_YES,
+	ORNS_MAYBE
+} or_need_sync_t;
 
 static int receive_read_payload_and_next_header(dmu_recv_cookie_t *ra, int len,
     void *buf);
@@ -122,6 +127,9 @@ struct receive_writer_arg {
 	uint8_t or_iv[ZIO_DATA_IV_LEN];
 	uint8_t or_mac[ZIO_DATA_MAC_LEN];
 	boolean_t or_byteorder;
+
+	/* Keep track of DRR_FREEOBJECTS right after DRR_OBJECT_RANGE */
+	or_need_sync_t or_need_sync;
 };
 
 typedef struct dmu_recv_begin_arg {
@@ -598,7 +606,15 @@ dmu_recv_begin_check(void *arg, dmu_tx_t *tx)
 		if (!(flags & DRR_FLAG_SPILL_BLOCK))
 			return (SET_ERROR(ZFS_ERR_SPILL_BLOCK_FLAG_MISSING));
 	} else {
-		dsflags |= DS_HOLD_FLAG_DECRYPT;
+		/*
+		 * We support unencrypted datasets below encrypted ones now,
+		 * so add the DS_HOLD_FLAG_DECRYPT flag only if we are dealing
+		 * with a dataset we may encrypt.
+		 */
+		if (drba->drba_dcp == NULL ||
+		    drba->drba_dcp->cp_crypt != ZIO_CRYPT_OFF) {
+			dsflags |= DS_HOLD_FLAG_DECRYPT;
+		}
 	}
 
 	error = dsl_dataset_hold_flags(dp, tofs, dsflags, FTAG, &ds);
@@ -1651,9 +1667,21 @@ receive_object(struct receive_writer_arg *rwa, struct drr_object *drro,
 		/* object was freed and we are about to allocate a new one */
 		object_to_hold = DMU_NEW_OBJECT;
 	} else {
+		/*
+		 * If the only record in this range so far was DRR_FREEOBJECTS
+		 * with at least one actually freed object, it's possible that
+		 * the block will now be converted to a hole. We need to wait
+		 * for the txg to sync to prevent races.
+		 */
+		if (rwa->or_need_sync == ORNS_YES)
+			txg_wait_synced(dmu_objset_pool(rwa->os), 0);
+
 		/* object is free and we are about to allocate a new one */
 		object_to_hold = DMU_NEW_OBJECT;
 	}
+
+	/* Only relevant for the first object in the range */
+	rwa->or_need_sync = ORNS_NO;
 
 	/*
 	 * If this is a multi-slot dnode there is a chance that this
@@ -1849,6 +1877,9 @@ receive_freeobjects(struct receive_writer_arg *rwa,
 
 		if (err != 0)
 			return (err);
+
+		if (rwa->or_need_sync == ORNS_MAYBE)
+			rwa->or_need_sync = ORNS_YES;
 	}
 	if (next_err != ESRCH)
 		return (next_err);
@@ -2291,6 +2322,8 @@ receive_object_range(struct receive_writer_arg *rwa,
 	bcopy(drror->drr_mac, rwa->or_mac, ZIO_DATA_MAC_LEN);
 	rwa->or_byteorder = byteorder;
 
+	rwa->or_need_sync = ORNS_MAYBE;
+
 	return (0);
 }
 
@@ -2589,8 +2622,8 @@ dprintf_drr(struct receive_record_arg *rrd, int err)
 		dprintf("drr_type = OBJECT obj = %llu type = %u "
 		    "bonustype = %u blksz = %u bonuslen = %u cksumtype = %u "
 		    "compress = %u dn_slots = %u err = %d\n",
-		    drro->drr_object, drro->drr_type,  drro->drr_bonustype,
-		    drro->drr_blksz, drro->drr_bonuslen,
+		    (u_longlong_t)drro->drr_object, drro->drr_type,
+		    drro->drr_bonustype, drro->drr_blksz, drro->drr_bonuslen,
 		    drro->drr_checksumtype, drro->drr_compress,
 		    drro->drr_dn_slots, err);
 		break;
@@ -2601,7 +2634,8 @@ dprintf_drr(struct receive_record_arg *rrd, int err)
 		    &rrd->header.drr_u.drr_freeobjects;
 		dprintf("drr_type = FREEOBJECTS firstobj = %llu "
 		    "numobjs = %llu err = %d\n",
-		    drrfo->drr_firstobj, drrfo->drr_numobjs, err);
+		    (u_longlong_t)drrfo->drr_firstobj,
+		    (u_longlong_t)drrfo->drr_numobjs, err);
 		break;
 	}
 	case DRR_WRITE:
@@ -2610,10 +2644,12 @@ dprintf_drr(struct receive_record_arg *rrd, int err)
 		dprintf("drr_type = WRITE obj = %llu type = %u offset = %llu "
 		    "lsize = %llu cksumtype = %u flags = %u "
 		    "compress = %u psize = %llu err = %d\n",
-		    drrw->drr_object, drrw->drr_type, drrw->drr_offset,
-		    drrw->drr_logical_size, drrw->drr_checksumtype,
-		    drrw->drr_flags, drrw->drr_compressiontype,
-		    drrw->drr_compressed_size, err);
+		    (u_longlong_t)drrw->drr_object, drrw->drr_type,
+		    (u_longlong_t)drrw->drr_offset,
+		    (u_longlong_t)drrw->drr_logical_size,
+		    drrw->drr_checksumtype, drrw->drr_flags,
+		    drrw->drr_compressiontype,
+		    (u_longlong_t)drrw->drr_compressed_size, err);
 		break;
 	}
 	case DRR_WRITE_BYREF:
@@ -2624,11 +2660,14 @@ dprintf_drr(struct receive_record_arg *rrd, int err)
 		    "length = %llu toguid = %llx refguid = %llx "
 		    "refobject = %llu refoffset = %llu cksumtype = %u "
 		    "flags = %u err = %d\n",
-		    drrwbr->drr_object, drrwbr->drr_offset,
-		    drrwbr->drr_length, drrwbr->drr_toguid,
-		    drrwbr->drr_refguid, drrwbr->drr_refobject,
-		    drrwbr->drr_refoffset, drrwbr->drr_checksumtype,
-		    drrwbr->drr_flags, err);
+		    (u_longlong_t)drrwbr->drr_object,
+		    (u_longlong_t)drrwbr->drr_offset,
+		    (u_longlong_t)drrwbr->drr_length,
+		    (u_longlong_t)drrwbr->drr_toguid,
+		    (u_longlong_t)drrwbr->drr_refguid,
+		    (u_longlong_t)drrwbr->drr_refobject,
+		    (u_longlong_t)drrwbr->drr_refoffset,
+		    drrwbr->drr_checksumtype, drrwbr->drr_flags, err);
 		break;
 	}
 	case DRR_WRITE_EMBEDDED:
@@ -2638,7 +2677,9 @@ dprintf_drr(struct receive_record_arg *rrd, int err)
 		dprintf("drr_type = WRITE_EMBEDDED obj = %llu offset = %llu "
 		    "length = %llu compress = %u etype = %u lsize = %u "
 		    "psize = %u err = %d\n",
-		    drrwe->drr_object, drrwe->drr_offset, drrwe->drr_length,
+		    (u_longlong_t)drrwe->drr_object,
+		    (u_longlong_t)drrwe->drr_offset,
+		    (u_longlong_t)drrwe->drr_length,
 		    drrwe->drr_compression, drrwe->drr_etype,
 		    drrwe->drr_lsize, drrwe->drr_psize, err);
 		break;
@@ -2648,7 +2689,9 @@ dprintf_drr(struct receive_record_arg *rrd, int err)
 		struct drr_free *drrf = &rrd->header.drr_u.drr_free;
 		dprintf("drr_type = FREE obj = %llu offset = %llu "
 		    "length = %lld err = %d\n",
-		    drrf->drr_object, drrf->drr_offset, drrf->drr_length,
+		    (u_longlong_t)drrf->drr_object,
+		    (u_longlong_t)drrf->drr_offset,
+		    (longlong_t)drrf->drr_length,
 		    err);
 		break;
 	}
@@ -2656,7 +2699,8 @@ dprintf_drr(struct receive_record_arg *rrd, int err)
 	{
 		struct drr_spill *drrs = &rrd->header.drr_u.drr_spill;
 		dprintf("drr_type = SPILL obj = %llu length = %llu "
-		    "err = %d\n", drrs->drr_object, drrs->drr_length, err);
+		    "err = %d\n", (u_longlong_t)drrs->drr_object,
+		    (u_longlong_t)drrs->drr_length, err);
 		break;
 	}
 	case DRR_OBJECT_RANGE:
@@ -2665,7 +2709,8 @@ dprintf_drr(struct receive_record_arg *rrd, int err)
 		    &rrd->header.drr_u.drr_object_range;
 		dprintf("drr_type = OBJECT_RANGE firstobj = %llu "
 		    "numslots = %llu flags = %u err = %d\n",
-		    drror->drr_firstobj, drror->drr_numslots,
+		    (u_longlong_t)drror->drr_firstobj,
+		    (u_longlong_t)drror->drr_numslots,
 		    drror->drr_flags, err);
 		break;
 	}
@@ -2881,8 +2926,8 @@ dmu_recv_stream(dmu_recv_cookie_t *drc, offset_t *voffp)
 	int err = 0;
 	struct receive_writer_arg *rwa = kmem_zalloc(sizeof (*rwa), KM_SLEEP);
 
-	if (dsl_dataset_is_zapified(drc->drc_ds)) {
-		uint64_t bytes;
+	if (dsl_dataset_has_resume_receive_state(drc->drc_ds)) {
+		uint64_t bytes = 0;
 		(void) zap_lookup(drc->drc_ds->ds_dir->dd_pool->dp_meta_objset,
 		    drc->drc_ds->ds_object, DS_FIELD_RESUME_BYTES,
 		    sizeof (bytes), 1, &bytes);

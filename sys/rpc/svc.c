@@ -62,6 +62,8 @@ __FBSDID("$FreeBSD$");
 #include <sys/sx.h>
 #include <sys/ucred.h>
 
+#include <net/vnet.h>
+
 #include <rpc/rpc.h>
 #include <rpc/rpcb_clnt.h>
 #include <rpc/replay.h>
@@ -126,7 +128,7 @@ svcpool_create(const char *name, struct sysctl_oid_list *sysctl_base)
 	pool->sp_space_low = (pool->sp_space_high / 3) * 2;
 
 	sysctl_ctx_init(&pool->sp_sysctl);
-	if (sysctl_base) {
+	if (IS_DEFAULT_VNET(curvnet) && sysctl_base) {
 		SYSCTL_ADD_PROC(&pool->sp_sysctl, sysctl_base, OID_AUTO,
 		    "minthreads", CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_MPSAFE,
 		    pool, 0, svcpool_minthread_sysctl, "I",
@@ -203,6 +205,8 @@ svcpool_cleanup(SVCPOOL *pool)
 		mtx_unlock(&grp->sg_lock);
 	}
 	TAILQ_FOREACH_SAFE(xprt, &cleanup, xp_link, nxprt) {
+		if (xprt->xp_socket != NULL)
+			soshutdown(xprt->xp_socket, SHUT_WR);
 		SVC_RELEASE(xprt);
 	}
 
@@ -388,6 +392,8 @@ xprt_unregister(SVCXPRT *xprt)
 	xprt_unregister_locked(xprt);
 	mtx_unlock(&grp->sg_lock);
 
+	if (xprt->xp_socket != NULL)
+		soshutdown(xprt->xp_socket, SHUT_WR);
 	SVC_RELEASE(xprt);
 }
 
@@ -1078,6 +1084,7 @@ svc_checkidle(SVCGROUP *grp)
 
 	mtx_unlock(&grp->sg_lock);
 	TAILQ_FOREACH_SAFE(xprt, &cleanup, xp_link, nxprt) {
+		soshutdown(xprt->xp_socket, SHUT_WR);
 		SVC_RELEASE(xprt);
 	}
 	mtx_lock(&grp->sg_lock);

@@ -22,7 +22,6 @@ namespace clang {
 namespace targets {
 
 class LLVM_LIBRARY_VISIBILITY VETargetInfo : public TargetInfo {
-  static const Builtin::Info BuiltinInfo[];
 
 public:
   VETargetInfo(const llvm::Triple &Triple, const TargetOptions &)
@@ -45,16 +44,15 @@ public:
     WCharType = UnsignedInt;
     WIntType = UnsignedInt;
     UseZeroLengthBitfieldAlignment = true;
-    resetDataLayout("e-m:e-i64:64-n32:64-S128");
+    resetDataLayout(
+        "e-m:e-i64:64-n32:64-S128-v64:64:64-v128:64:64-v256:64:64-v512:64:64-"
+        "v1024:64:64-v2048:64:64-v4096:64:64-v8192:64:64-v16384:64:64");
   }
 
   void getTargetDefines(const LangOptions &Opts,
                         MacroBuilder &Builder) const override;
 
-  bool hasSjLjLowering() const override {
-    // TODO
-    return false;
-  }
+  bool hasSjLjLowering() const override { return true; }
 
   ArrayRef<Builtin::Info> getTargetBuiltins() const override;
 
@@ -85,7 +83,7 @@ public:
         "sx48", "sx49", "sx50", "sx51", "sx52", "sx53", "sx54", "sx55",
         "sx56", "sx57", "sx58", "sx59", "sx60", "sx61", "sx62", "sx63",
     };
-    return llvm::makeArrayRef(GCCRegNames);
+    return llvm::ArrayRef(GCCRegNames);
   }
 
   ArrayRef<TargetInfo::GCCRegAlias> getGCCRegAliases() const override {
@@ -155,11 +153,18 @@ public:
         {{"s62"}, "sx62"},
         {{"s63"}, "sx63"},
     };
-    return llvm::makeArrayRef(GCCRegAliases);
+    return llvm::ArrayRef(GCCRegAliases);
   }
 
   bool validateAsmConstraint(const char *&Name,
                              TargetInfo::ConstraintInfo &Info) const override {
+    switch (*Name) {
+    default:
+      return false;
+    case 'v':
+      Info.setAllowsRegister();
+      return true;
+    }
     return false;
   }
 

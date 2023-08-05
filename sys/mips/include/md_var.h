@@ -36,7 +36,7 @@
 #ifndef _MACHINE_MD_VAR_H_
 #define	_MACHINE_MD_VAR_H_
 
-#include <machine/reg.h>
+#include <machine/regnum.h>
 
 /*
  * Miscellaneous machine-dependent declarations.
@@ -78,10 +78,8 @@ void	mips_postboot_fixup(void);
 void	cpu_identify(void);
 void	cpu_switch_set_userlocal(void) __asm(__STRING(cpu_switch_set_userlocal));
 
-extern int busdma_swi_pending;
-void	busdma_swi(void);
-
 struct	dumperinfo;
-int	minidumpsys(struct dumperinfo *);
+struct	minidumpstate;
+int	cpu_minidumpsys(struct dumperinfo *, const struct minidumpstate *);
 
 #endif /* !_MACHINE_MD_VAR_H_ */

@@ -5,15 +5,16 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-//
-// This file implements a set that has insertion order iteration
-// characteristics. This is useful for keeping a set of things that need to be
-// visited later but in a deterministic order (insertion order). The interface
-// is purposefully minimal.
-//
-// This file defines SetVector and SmallSetVector, which performs no allocations
-// if the SetVector has less than a certain number of elements.
-//
+///
+/// \file
+/// This file implements a set that has insertion order iteration
+/// characteristics. This is useful for keeping a set of things that need to be
+/// visited later but in a deterministic order (insertion order). The interface
+/// is purposefully minimal.
+///
+/// This file defines SetVector and SmallSetVector, which performs no
+/// allocations if the SetVector has less than a certain number of elements.
+///
 //===----------------------------------------------------------------------===//
 
 #ifndef LLVM_ADT_SETVECTOR_H
@@ -23,7 +24,6 @@
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Compiler.h"
-#include <algorithm>
 #include <cassert>
 #include <iterator>
 #include <vector>
@@ -168,18 +168,11 @@ public:
   /// \returns an iterator pointing to the next element that followed the
   /// element erased. This is the end of the SetVector if the last element is
   /// erased.
-  iterator erase(iterator I) {
+  iterator erase(const_iterator I) {
     const key_type &V = *I;
     assert(set_.count(V) && "Corrupted SetVector instances!");
     set_.erase(V);
-
-    // FIXME: No need to use the non-const iterator when built with
-    // std::vector.erase(const_iterator) as defined in C++11. This is for
-    // compatibility with non-standard libstdc++ up to 4.8 (fixed in 4.9).
-    auto NI = vector_.begin();
-    std::advance(NI, std::distance<iterator>(NI, I));
-
-    return vector_.erase(NI);
+    return vector_.erase(I);
   }
 
   /// Remove items from the set vector based on a predicate function.
@@ -205,6 +198,11 @@ public:
     return true;
   }
 
+  /// Check if the SetVector contains the given key.
+  bool contains(const key_type &key) const {
+    return set_.find(key) != set_.end();
+  }
+
   /// Count the number of elements of a given key in the SetVector.
   /// \returns 0 if the element is not in the SetVector, 1 if it is.
   size_type count(const key_type &key) const {
@@ -224,7 +222,7 @@ public:
     vector_.pop_back();
   }
 
-  LLVM_NODISCARD T pop_back_val() {
+  [[nodiscard]] T pop_back_val() {
     T Ret = back();
     pop_back();
     return Ret;

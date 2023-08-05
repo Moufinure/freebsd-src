@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2019 Isilon Systems, LLC.
  * Copyright (c) 2005-2014 Sandvine Incorporated
@@ -108,7 +108,7 @@ struct debugnet_conn_params {
 	uint32_t	dc_herald_datalen;
 
 	/*
-	 * Consistent with debugnet_send(), aux paramaters to debugnet
+	 * Consistent with debugnet_send(), aux parameters to debugnet
 	 * functions are provided host-endian (but converted to
 	 * network endian on the wire).
 	 */

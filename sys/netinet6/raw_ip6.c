@@ -214,6 +214,7 @@ rip6_input(struct mbuf **mp, int *offp, int proto)
 				if (sbappendaddr(&last->inp_socket->so_rcv,
 						(struct sockaddr *)&fromsa,
 						 n, opts) == 0) {
+					soroverflow(last->inp_socket);
 					m_freem(n);
 					if (opts)
 						m_freem(opts);
@@ -325,6 +326,7 @@ skip_2:
 		m_adj(m, *offp);
 		if (sbappendaddr(&last->inp_socket->so_rcv,
 		    (struct sockaddr *)&fromsa, m, opts) == 0) {
+			soroverflow(last->inp_socket);
 			m_freem(m);
 			if (opts)
 				m_freem(opts);
@@ -417,9 +419,13 @@ rip6_output(struct mbuf *m, struct socket *so, ...)
 	INP_WLOCK(inp);
 
 	if (control != NULL) {
-		if ((error = ip6_setpktopts(control, &opt,
+		NET_EPOCH_ENTER(et);
+		error = ip6_setpktopts(control, &opt,
 		    inp->in6p_outputopts, so->so_cred,
-		    so->so_proto->pr_protocol)) != 0) {
+		    so->so_proto->pr_protocol);
+		NET_EPOCH_EXIT(et);
+
+		if (error != 0) {
 			goto bad;
 		}
 		optp = &opt;
@@ -760,6 +766,8 @@ rip6_bind(struct socket *so, struct sockaddr *nam, struct thread *td)
 	inp = sotoinpcb(so);
 	KASSERT(inp != NULL, ("rip6_bind: inp == NULL"));
 
+	if (nam->sa_family != AF_INET6)
+		return (EAFNOSUPPORT);
 	if (nam->sa_len != sizeof(*addr))
 		return (EINVAL);
 	if ((error = prison_check_ip6(td->td_ucred, &addr->sin6_addr)) != 0)
@@ -783,11 +791,11 @@ rip6_bind(struct socket *so, struct sockaddr *nam, struct thread *td)
 		return (EADDRNOTAVAIL);
 	}
 	NET_EPOCH_EXIT(et);
-	INP_INFO_WLOCK(&V_ripcbinfo);
 	INP_WLOCK(inp);
+	INP_INFO_WLOCK(&V_ripcbinfo);
 	inp->in6p_laddr = addr->sin6_addr;
-	INP_WUNLOCK(inp);
 	INP_INFO_WUNLOCK(&V_ripcbinfo);
+	INP_WUNLOCK(inp);
 	return (0);
 }
 
@@ -865,7 +873,7 @@ rip6_send(struct socket *so, int flags, struct mbuf *m, struct sockaddr *nam,
 	struct inpcb *inp;
 	struct sockaddr_in6 tmp;
 	struct sockaddr_in6 *dst;
-	int ret;
+	int error;
 
 	inp = sotoinpcb(so);
 	KASSERT(inp != NULL, ("rip6_send: inp == NULL"));
@@ -874,8 +882,8 @@ rip6_send(struct socket *so, int flags, struct mbuf *m, struct sockaddr *nam,
 	/* Unlocked read. */
 	if (so->so_state & SS_ISCONNECTED) {
 		if (nam) {
-			m_freem(m);
-			return (EISCONN);
+			error = EISCONN;
+			goto release;
 		}
 		/* XXX */
 		bzero(&tmp, sizeof(tmp));
@@ -887,14 +895,15 @@ rip6_send(struct socket *so, int flags, struct mbuf *m, struct sockaddr *nam,
 		INP_RUNLOCK(inp);
 		dst = &tmp;
 	} else {
-		if (nam == NULL) {
-			m_freem(m);
-			return (ENOTCONN);
-		}
-		if (nam->sa_len != sizeof(struct sockaddr_in6)) {
-			m_freem(m);
-			return (EINVAL);
-		}
+		error = 0;
+		if (nam == NULL)
+			error = ENOTCONN;
+		else if (nam->sa_family != AF_INET6)
+			error = EAFNOSUPPORT;
+		else if (nam->sa_len != sizeof(struct sockaddr_in6))
+			error = EINVAL;
+		if (error != 0)
+			goto release;
 		tmp = *(struct sockaddr_in6 *)nam;
 		dst = &tmp;
 
@@ -908,12 +917,17 @@ rip6_send(struct socket *so, int flags, struct mbuf *m, struct sockaddr *nam,
 			    "unspec. Assume AF_INET6\n");
 			dst->sin6_family = AF_INET6;
 		} else if (dst->sin6_family != AF_INET6) {
-			m_freem(m);
-			return(EAFNOSUPPORT);
+			error = EAFNOSUPPORT;
+			goto release;
 		}
 	}
-	ret = rip6_output(m, so, dst, control);
-	return (ret);
+	return (rip6_output(m, so, dst, control));
+
+release:
+	if (control != NULL)
+		m_freem(control);
+	m_freem(m);
+	return (error);
 }
 
 struct pr_usrreqs rip6_usrreqs = {

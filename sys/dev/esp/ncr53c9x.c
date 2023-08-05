@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD AND BSD-2-Clause NetBSD
+ * SPDX-License-Identifier: BSD-2-Clause AND BSD-2-Clause NetBSD
  *
  * Copyright (c) 2004 Scott Long
  * Copyright (c) 2005, 2008 Marius Strobl <marius@FreeBSD.org>
@@ -402,7 +402,7 @@ ncr53c9x_attach(struct ncr53c9x_softc *sc)
 
 	NCR_UNLOCK(sc);
 
-	gone_in_dev(sc->sc_dev, 13, "esp(4) driver");
+	gone_in_dev(sc->sc_dev, 14, "esp(4) driver");
 	return (0);
 
 fail_async:

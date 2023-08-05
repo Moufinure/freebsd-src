@@ -40,10 +40,15 @@ extern u_long elf_hwcap;
 extern register_t mvendorid;
 extern register_t marchid;
 extern register_t mimpid;
+extern u_int mmu_caps;
+
+/* Supervisor-mode extension support */
+extern bool has_sstc;
+extern bool has_sscofpmf;
 
 struct dumperinfo;
+struct minidumpstate;
 
-void busdma_swi(void);
-int minidumpsys(struct dumperinfo *);
+int cpu_minidumpsys(struct dumperinfo *, const struct minidumpstate *);
 
 #endif /* !_MACHINE_MD_VAR_H_ */

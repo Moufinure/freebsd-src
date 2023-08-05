@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2011 NetApp, Inc.
  * All rights reserved.
@@ -39,7 +39,7 @@ struct vm_exit;
 /*
  * inout emulation handlers return 0 on success and -1 on failure.
  */
-typedef int (*inout_func_t)(struct vmctx *ctx, int vcpu, int in, int port,
+typedef int (*inout_func_t)(struct vmctx *ctx, int in, int port,
 			    int bytes, uint32_t *eax, void *arg);
 
 struct inout_port {
@@ -70,10 +70,9 @@ struct inout_port {
 		0							\
 	};								\
 	DATA_SET(inout_port_set, __CONCAT(__inout_port, __LINE__))
-	
+
 void	init_inout(void);
-int	emulate_inout(struct vmctx *, int vcpu, struct vm_exit *vmexit,
-		      int strict);
+int	emulate_inout(struct vmctx *, int vcpu, struct vm_exit *vmexit);
 int	register_inout(struct inout_port *iop);
 int	unregister_inout(struct inout_port *iop);
 

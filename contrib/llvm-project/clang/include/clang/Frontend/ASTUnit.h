@@ -31,8 +31,6 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/IntrusiveRefCntPtr.h"
-#include "llvm/ADT/None.h"
-#include "llvm/ADT/Optional.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringMap.h"
@@ -42,6 +40,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -222,7 +221,7 @@ private:
   llvm::StringMap<SourceLocation> PreambleSrcLocCache;
 
   /// The contents of the preamble.
-  llvm::Optional<PrecompiledPreamble> Preamble;
+  std::optional<PrecompiledPreamble> Preamble;
 
   /// When non-NULL, this is the buffer used to store the contents of
   /// the main file when it has been padded for use with the precompiled
@@ -688,14 +687,17 @@ public:
   /// lifetime is expected to extend past that of the returned ASTUnit.
   ///
   /// \returns - The initialized ASTUnit or null if the AST failed to load.
-  static std::unique_ptr<ASTUnit> LoadFromASTFile(
-      const std::string &Filename, const PCHContainerReader &PCHContainerRdr,
-      WhatToLoad ToLoad, IntrusiveRefCntPtr<DiagnosticsEngine> Diags,
-      const FileSystemOptions &FileSystemOpts, bool UseDebugInfo = false,
-      bool OnlyLocalDecls = false, ArrayRef<RemappedFile> RemappedFiles = None,
-      CaptureDiagsKind CaptureDiagnostics = CaptureDiagsKind::None,
-      bool AllowPCHWithCompilerErrors = false,
-      bool UserFilesAreVolatile = false);
+  static std::unique_ptr<ASTUnit>
+  LoadFromASTFile(const std::string &Filename,
+                  const PCHContainerReader &PCHContainerRdr, WhatToLoad ToLoad,
+                  IntrusiveRefCntPtr<DiagnosticsEngine> Diags,
+                  const FileSystemOptions &FileSystemOpts,
+                  bool UseDebugInfo = false, bool OnlyLocalDecls = false,
+                  CaptureDiagsKind CaptureDiagnostics = CaptureDiagsKind::None,
+                  bool AllowASTWithCompilerErrors = false,
+                  bool UserFilesAreVolatile = false,
+                  IntrusiveRefCntPtr<llvm::vfs::FileSystem> VFS =
+                      llvm::vfs::getRealFileSystem());
 
 private:
   /// Helper function for \c LoadFromCompilerInvocation() and
@@ -756,7 +758,6 @@ public:
       CaptureDiagsKind CaptureDiagnostics = CaptureDiagsKind::None,
       unsigned PrecompilePreambleAfterNParses = 0,
       bool CacheCodeCompletionResults = false,
-      bool IncludeBriefCommentsInCodeCompletion = false,
       bool UserFilesAreVolatile = false,
       std::unique_ptr<ASTUnit> *ErrAST = nullptr);
 
@@ -821,7 +822,7 @@ public:
       IntrusiveRefCntPtr<DiagnosticsEngine> Diags, StringRef ResourceFilesPath,
       bool OnlyLocalDecls = false,
       CaptureDiagsKind CaptureDiagnostics = CaptureDiagsKind::None,
-      ArrayRef<RemappedFile> RemappedFiles = None,
+      ArrayRef<RemappedFile> RemappedFiles = std::nullopt,
       bool RemappedFilesKeepOriginalName = true,
       unsigned PrecompilePreambleAfterNParses = 0,
       TranslationUnitKind TUKind = TU_Complete,
@@ -833,7 +834,7 @@ public:
       bool SingleFileParse = false, bool UserFilesAreVolatile = false,
       bool ForSerialization = false,
       bool RetainExcludedConditionalBlocks = false,
-      llvm::Optional<StringRef> ModuleFormat = llvm::None,
+      std::optional<StringRef> ModuleFormat = std::nullopt,
       std::unique_ptr<ASTUnit> *ErrAST = nullptr,
       IntrusiveRefCntPtr<llvm::vfs::FileSystem> VFS = nullptr);
 
@@ -849,7 +850,7 @@ public:
   /// \returns True if a failure occurred that causes the ASTUnit not to
   /// contain any translation-unit information, false otherwise.
   bool Reparse(std::shared_ptr<PCHContainerOperations> PCHContainerOps,
-               ArrayRef<RemappedFile> RemappedFiles = None,
+               ArrayRef<RemappedFile> RemappedFiles = std::nullopt,
                IntrusiveRefCntPtr<llvm::vfs::FileSystem> VFS = nullptr);
 
   /// Free data that will be re-generated on the next parse.

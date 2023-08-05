@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2011 NetApp, Inc.
  * All rights reserved.
@@ -48,6 +48,11 @@ struct vm_memmap {
 };
 #define	VM_MEMMAP_F_WIRED	0x01
 #define	VM_MEMMAP_F_IOMMU	0x02
+
+struct vm_munmap {
+	vm_paddr_t	gpa;
+	size_t		len;
+};
 
 #define	VM_MEMSEG_NAME(m)	((m)->name[0] != '\0' ? (m)->name : NULL)
 struct vm_memseg {
@@ -142,7 +147,7 @@ struct vm_pptdev_mmio {
 };
 
 struct vm_pptdev_msi {
-	int		vcpu;
+	int		vcpu;		/* unused */
 	int		bus;
 	int		slot;
 	int		func;
@@ -152,7 +157,7 @@ struct vm_pptdev_msi {
 };
 
 struct vm_pptdev_msix {
-	int		vcpu;
+	int		vcpu;		/* unused */
 	int		bus;
 	int		slot;
 	int		func;
@@ -169,6 +174,7 @@ struct vm_nmi {
 #define	MAX_VM_STATS	64
 struct vm_stats {
 	int		cpuid;				/* in */
+	int		index;				/* in */
 	int		num_entries;			/* out */
 	struct timeval	tv;
 	uint64_t	statbuf[MAX_VM_STATS];
@@ -270,6 +276,7 @@ enum {
 	IOCNUM_MMAP_MEMSEG = 16,
 	IOCNUM_MMAP_GETNEXT = 17,
 	IOCNUM_GLA2GPA_NOFAULT = 18,
+	IOCNUM_MUNMAP_MEMSEG = 19,
 
 	/* register/state accessors */
 	IOCNUM_SET_REGISTER = 20,
@@ -302,6 +309,7 @@ enum {
 	IOCNUM_PPTDEV_MSI = 43,
 	IOCNUM_PPTDEV_MSIX = 44,
 	IOCNUM_PPTDEV_DISABLE_MSIX = 45,
+	IOCNUM_UNMAP_PPTDEV_MMIO = 46,
 
 	/* statistics */
 	IOCNUM_VM_STATS = 50, 
@@ -358,6 +366,8 @@ enum {
 	_IOW('v', IOCNUM_MMAP_MEMSEG, struct vm_memmap)
 #define	VM_MMAP_GETNEXT	\
 	_IOWR('v', IOCNUM_MMAP_GETNEXT, struct vm_memmap)
+#define	VM_MUNMAP_MEMSEG	\
+	_IOW('v', IOCNUM_MUNMAP_MEMSEG, struct vm_munmap)
 #define	VM_SET_REGISTER \
 	_IOW('v', IOCNUM_SET_REGISTER, struct vm_register)
 #define	VM_GET_REGISTER \
@@ -416,6 +426,8 @@ enum {
 	_IOW('v', IOCNUM_PPTDEV_MSIX, struct vm_pptdev_msix)
 #define	VM_PPTDEV_DISABLE_MSIX \
 	_IOW('v', IOCNUM_PPTDEV_DISABLE_MSIX, struct vm_pptdev)
+#define	VM_UNMAP_PPTDEV_MMIO \
+	_IOW('v', IOCNUM_UNMAP_PPTDEV_MMIO, struct vm_pptdev_mmio)
 #define VM_INJECT_NMI \
 	_IOW('v', IOCNUM_INJECT_NMI, struct vm_nmi)
 #define	VM_STATS \

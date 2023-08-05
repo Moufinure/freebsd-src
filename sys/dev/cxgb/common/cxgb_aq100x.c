@@ -1,5 +1,5 @@
 /**************************************************************************
-SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+SPDX-License-Identifier: BSD-2-Clause
 
 Copyright (c) 2009 Chelsio Inc.
 All rights reserved.
@@ -79,7 +79,7 @@ enum {
 } while (0)
 
 /*
- * Return value is temperature in celcius, 0xffff for error or don't know.
+ * Return value is temperature in celsius, 0xffff for error or don't know.
  */
 static int
 aq100x_temperature(struct cphy *phy)

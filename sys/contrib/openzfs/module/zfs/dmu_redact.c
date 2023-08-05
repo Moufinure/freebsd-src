@@ -141,7 +141,7 @@ record_merge_enqueue(bqueue_t *q, struct redact_record **build,
 {
 	if (new->eos_marker) {
 		if (*build != NULL)
-			bqueue_enqueue(q, *build, sizeof (*build));
+			bqueue_enqueue(q, *build, sizeof (**build));
 		bqueue_enqueue_flush(q, new, sizeof (*new));
 		return;
 	}
@@ -249,11 +249,11 @@ zfs_get_deleteq(objset_t *os)
  * Third, if there is a deleted object, we need to create a redaction record for
  * all of the blocks in that object.
  */
-/*ARGSUSED*/
 static int
 redact_cb(spa_t *spa, zilog_t *zilog, const blkptr_t *bp,
     const zbookmark_phys_t *zb, const struct dnode_phys *dnp, void *arg)
 {
+	(void) spa, (void) zilog;
 	struct redact_thread_arg *rta = arg;
 	struct redact_record *record;
 
@@ -816,13 +816,14 @@ perform_thread_merge(bqueue_t *q, uint32_t num_threads,
 		avl_remove(&end_tree, &redact_nodes[i]);
 		kmem_free(redact_nodes[i].record,
 		    sizeof (struct redact_record));
+		bqueue_destroy(&thread_args[i].q);
 	}
 
 	avl_destroy(&start_tree);
 	avl_destroy(&end_tree);
 	kmem_free(redact_nodes, num_threads * sizeof (*redact_nodes));
 	if (current_record != NULL)
-		bqueue_enqueue(q, current_record, sizeof (current_record));
+		bqueue_enqueue(q, current_record, sizeof (*current_record));
 	return (err);
 }
 
@@ -1164,6 +1165,7 @@ dmu_redact_snap(const char *snapname, nvlist_t *redactnvl,
 	(void) thread_create(NULL, 0, redact_merge_thread, rmta, 0, curproc,
 	    TS_RUN, minclsyspri);
 	err = perform_redaction(os, new_rl, rmta);
+	bqueue_destroy(&rmta->q);
 	kmem_free(rmta, sizeof (struct redact_merge_thread_arg));
 
 out:

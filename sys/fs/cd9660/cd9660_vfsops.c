@@ -378,7 +378,6 @@ iso_mountfs(devvp, mp)
 	mp->mnt_data = isomp;
 	mp->mnt_stat.f_fsid.val[0] = dev2udev(dev);
 	mp->mnt_stat.f_fsid.val[1] = mp->mnt_vfc->vfc_typenum;
-	mp->mnt_maxsymlinklen = 0;
 	MNT_ILOCK(mp);
 	if (isverified)
 		mp->mnt_flag |= MNT_VERIFIED;
@@ -528,9 +527,6 @@ cd9660_unmount(mp, mntflags)
 	dev_rel(isomp->im_dev);
 	free(isomp, M_ISOFSMNT);
 	mp->mnt_data = NULL;
-	MNT_ILOCK(mp);
-	mp->mnt_flag &= ~MNT_LOCAL;
-	MNT_IUNLOCK(mp);
 	return (error);
 }
 

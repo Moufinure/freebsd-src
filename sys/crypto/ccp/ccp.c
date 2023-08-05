@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2017 Chelsio Communications, Inc.
  * Copyright (c) 2017 Conrad Meyer <cem@FreeBSD.org>
@@ -101,6 +101,9 @@ ccp_populate_sglist(struct sglist *sg, struct crypto_buffer *cb)
 	case CRYPTO_BUF_MBUF:
 		error = sglist_append_mbuf(sg, cb->cb_mbuf);
 		break;
+	case CRYPTO_BUF_SINGLE_MBUF:
+		error = sglist_append_single_mbuf(sg, cb->cb_mbuf);
+		break;
 	case CRYPTO_BUF_UIO:
 		error = sglist_append_uio(sg, cb->cb_uio);
 		break;
@@ -109,7 +112,7 @@ ccp_populate_sglist(struct sglist *sg, struct crypto_buffer *cb)
 		break;
 	case CRYPTO_BUF_VMPAGE:
 		error = sglist_append_vmpages(sg, cb->cb_vm_page,
-		    cb->cb_vm_page_len, cb->cb_vm_page_offset);
+		    cb->cb_vm_page_offset, cb->cb_vm_page_len);
 		break;
 	default:
 		error = EINVAL;
@@ -375,11 +378,6 @@ ccp_probesession(device_t dev, const struct crypto_session_params *csp)
 	case CSP_MODE_AEAD:
 		switch (csp->csp_cipher_alg) {
 		case CRYPTO_AES_NIST_GCM_16:
-			if (csp->csp_ivlen != AES_GCM_IV_LEN)
-				return (EINVAL);
-			if (csp->csp_auth_mlen < 0 ||
-			    csp->csp_auth_mlen > AES_GMAC_HASH_LEN)
-				return (EINVAL);
 			if ((sc->hw_features & VERSION_CAP_AES) == 0)
 				return (EINVAL);
 			break;

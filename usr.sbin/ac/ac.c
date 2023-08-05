@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 1994 Christopher G. Demetriou
  * Copyright (c) 1994 Simon J. Gerraty
@@ -68,7 +68,7 @@ struct user_entry {
 };
 
 /*
- * this is for chosing whether to ignore a login
+ * this is for choosing whether to ignore a login
  */
 struct tty_entry {
 	SLIST_ENTRY(tty_entry) next;

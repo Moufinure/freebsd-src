@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2020 The FreeBSD Foundation
  *
@@ -181,5 +181,11 @@
 #define	LINUX_EHWPOISON		133
 
 #define	LINUX_ELAST		LINUX_EHWPOISON
+
+/*
+ * This is a special "internal" errno that must never be returned
+ * to a Linux process, but might be observed via ptrace(2).
+ */
+#define	LINUX_ERESTARTSYS	512
 
 #endif /* _LINUX_ERRNO_H_ */

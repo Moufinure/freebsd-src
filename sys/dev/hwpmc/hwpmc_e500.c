@@ -341,7 +341,7 @@ e500_pcpu_init(struct pmc_mdep *md, int cpu)
 
 	for (i = 0; i < E500_MAX_PMCS; i++)
 		/* Initialize the PMC to stopped */
-		powerpc_stop_pmc(cpu, i);
+		e500_set_pmc(cpu, i, PMCN_NONE);
 
 	/* Unfreeze global register. */
 	mtpmr(PMR_PMGC0, PMGC_PMIE | PMGC_FCECE);
@@ -375,6 +375,9 @@ e500_allocate_pmc(int cpu, int ri, struct pmc *pm,
 	    ("[powerpc,%d] illegal CPU value %d", __LINE__, cpu));
 	KASSERT(ri >= 0 && ri < E500_MAX_PMCS,
 	    ("[powerpc,%d] illegal row index %d", __LINE__, ri));
+
+	if (a->pm_class != PMC_CLASS_E500)
+		return (EINVAL);
 
 	caps = a->pm_caps;
 

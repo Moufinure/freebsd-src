@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2013 EMC Corp.
  * All rights reserved.
@@ -729,7 +729,7 @@ NVME_LOGPAGE(ple,
     NVME_LOG_PREDICTABLE_LATENCY_EVENT_AGGREGATE,	NULL,	"Predictable Latency Event Aggregate",
     NULL,				DEFAULT_SIZE);
 NVME_LOGPAGE(ana,
-    NVME_LOG_ASYMMETRIC_NAMESPAVE_ACCESS,	NULL,	"Asymmetric Namespace Access",
+    NVME_LOG_ASYMMETRIC_NAMESPACE_ACCESS,	NULL,	"Asymmetric Namespace Access",
     NULL,				DEFAULT_SIZE);
 NVME_LOGPAGE(pel,
     NVME_LOG_PERSISTENT_EVENT_LOG,	NULL,	"Persistent Event Log",

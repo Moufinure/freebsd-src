@@ -35,13 +35,17 @@
     ..
     lib
         clang
-            11.0.1
+            16
                 include
                     cuda_wrappers
                     ..
                     fuzzer
                     ..
+                    hlsl
+                    ..
                     openmp_wrappers
+                    ..
+                    orc_rt
                     ..
                     ppc_wrappers
                     ..
@@ -55,6 +59,8 @@
                 lib
                     freebsd
                     ..
+                ..
+                share
                 ..
             ..
         ..
@@ -156,6 +162,8 @@
         ..
         sm.bin
         ..
+        zfs
+        ..
     ..
     local
     ..
@@ -165,6 +173,10 @@
     ..
     share
         atf             tags=package=tests
+        ..
+        bhyve
+            kbdlayout
+            ..
         ..
         bsdconfig
             media
@@ -1272,8 +1284,6 @@
             Mexico
             ..
             Pacific
-            ..
-            SystemV
             ..
             US
             ..

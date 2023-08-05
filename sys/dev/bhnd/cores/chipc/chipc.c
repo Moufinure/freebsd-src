@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2015-2016 Landon Fuller <landon@landonf.org>
  * Copyright (c) 2016 Michael Zhilin <mizhka@gmail.com>
@@ -411,7 +411,7 @@ chipc_find_nvram_src(struct chipc_softc *sc, struct chipc_caps *caps)
 
 	/*
 	 * We check for hardware presence in order of precedence. For example,
-	 * SPROM is is always used in preference to internal OTP if found.
+	 * SPROM is always used in preference to internal OTP if found.
 	 */
 	if (CHIPC_QUIRK(sc, SUPPORTS_SPROM) && caps->sprom) {
 		srom_ctrl = bhnd_bus_read_4(sc->core, CHIPC_SPROM_CTRL);
@@ -621,11 +621,8 @@ chipc_child_location_str(device_t dev, device_t child, char *buf,
 static device_t
 chipc_add_child(device_t dev, u_int order, const char *name, int unit)
 {
-	struct chipc_softc	*sc;
 	struct chipc_devinfo	*dinfo;
 	device_t		 child;
-
-	sc = device_get_softc(dev);
 
 	child = device_add_child_ordered(dev, order, name, unit);
 	if (child == NULL)
@@ -1167,13 +1164,13 @@ chipc_should_enable_muxed_sprom(struct chipc_softc *sc)
 	if (!CHIPC_QUIRK(sc, MUX_SPROM))
 		return (true);
 
-	mtx_lock(&Giant);	/* for newbus */
+	bus_topo_lock();
 
 	parent = device_get_parent(sc->dev);
 	hostb = bhnd_bus_find_hostb_device(parent);
 
 	if ((error = device_get_children(parent, &devs, &devcount))) {
-		mtx_unlock(&Giant);
+		bus_topo_unlock();
 		return (false);
 	}
 
@@ -1196,7 +1193,7 @@ chipc_should_enable_muxed_sprom(struct chipc_softc *sc)
 	}
 
 	free(devs, M_TEMP);
-	mtx_unlock(&Giant);
+	bus_topo_unlock();
 	return (result);
 }
 

@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause
+ *
  * Copyright (c) 2016 Nicole Graziano <nicole@nextbsd.org>
  * Copyright (c) 2017 Matthew Macy <mmacy@mattmacy.io>
  * All rights reserved.
@@ -42,10 +44,10 @@
 /*********************************************************************
  *  Local Function prototypes
  *********************************************************************/
-static int em_tso_setup(struct adapter *adapter, if_pkt_info_t pi, u32 *txd_upper,
-    u32 *txd_lower);
-static int em_transmit_checksum_setup(struct adapter *adapter, if_pkt_info_t pi,
-    u32 *txd_upper, u32 *txd_lower);
+static int em_tso_setup(struct e1000_softc *sc, if_pkt_info_t pi,
+    uint32_t *txd_upper, uint32_t *txd_lower);
+static int em_transmit_checksum_setup(struct e1000_softc *sc,
+    if_pkt_info_t pi, uint32_t *txd_upper, uint32_t *txd_lower);
 static int em_isc_txd_encap(void *arg, if_pkt_info_t pi);
 static void em_isc_txd_flush(void *arg, uint16_t txqid, qidx_t pidx);
 static int em_isc_txd_credits_update(void *arg, uint16_t txqid, bool clear);
@@ -62,9 +64,8 @@ static int lem_isc_rxd_available(void *arg, uint16_t rxqid, qidx_t idx,
    qidx_t budget);
 static int lem_isc_rxd_pkt_get(void *arg, if_rxd_info_t ri);
 
-static void lem_receive_checksum(int status, int errors, if_rxd_info_t ri);
-static void em_receive_checksum(uint32_t status, if_rxd_info_t ri);
-static int em_determine_rsstype(u32 pkt_info);
+static void em_receive_checksum(uint16_t, uint8_t, if_rxd_info_t);
+static int em_determine_rsstype(uint32_t pkt_info);
 extern int em_intr(void *arg);
 
 struct if_txrx em_txrx = {
@@ -92,9 +93,9 @@ struct if_txrx lem_txrx = {
 extern if_shared_ctx_t em_sctx;
 
 void
-em_dump_rs(struct adapter *adapter)
+em_dump_rs(struct e1000_softc *sc)
 {
-	if_softc_ctx_t scctx = adapter->shared;
+	if_softc_ctx_t scctx = sc->shared;
 	struct em_tx_queue *que;
 	struct tx_ring *txr;
 	qidx_t i, ntxd, qid, cur;
@@ -103,8 +104,8 @@ em_dump_rs(struct adapter *adapter)
 
 	printf("\n");
 	ntxd = scctx->isc_ntxd[0];
-	for (qid = 0; qid < adapter->tx_num_queues; qid++) {
-		que = &adapter->tx_queues[qid];
+	for (qid = 0; qid < sc->tx_num_queues; qid++) {
+		que = &sc->tx_queues[qid];
 		txr =  &que->txr;
 		rs_cidx = txr->tx_rs_cidx;
 		if (rs_cidx != txr->tx_rs_pidx) {
@@ -117,7 +118,8 @@ em_dump_rs(struct adapter *adapter)
 			cur = txr->tx_rsq[rs_cidx];
 			printf("qid[%d]->tx_rsq[rs_cidx-1=%d]: %d  ", qid, rs_cidx, cur);
 		}
-		printf("cidx_prev=%d rs_pidx=%d ",txr->tx_cidx_processed, txr->tx_rs_pidx);
+		printf("cidx_prev=%d rs_pidx=%d ",txr->tx_cidx_processed,
+		    txr->tx_rs_pidx);
 		for (i = 0; i < ntxd; i++) {
 			if (txr->tx_base[i].upper.fields.status & E1000_TXD_STAT_DD)
 				printf("%d set ", i);
@@ -133,13 +135,16 @@ em_dump_rs(struct adapter *adapter)
  *
  **********************************************************************/
 static int
-em_tso_setup(struct adapter *adapter, if_pkt_info_t pi, u32 *txd_upper, u32 *txd_lower)
+em_tso_setup(struct e1000_softc *sc, if_pkt_info_t pi, uint32_t *txd_upper,
+    uint32_t *txd_lower)
 {
-	if_softc_ctx_t scctx = adapter->shared;
-	struct em_tx_queue *que = &adapter->tx_queues[pi->ipi_qsidx];
+	if_softc_ctx_t scctx = sc->shared;
+	struct em_tx_queue *que = &sc->tx_queues[pi->ipi_qsidx];
 	struct tx_ring *txr = &que->txr;
+	struct e1000_hw *hw = &sc->hw;
 	struct e1000_context_desc *TXD;
 	int cur, hdr_len;
+	uint32_t cmd_type_len;
 
 	hdr_len = pi->ipi_ehdrlen + pi->ipi_ip_hlen + pi->ipi_tcp_hlen;
 	*txd_lower = (E1000_TXD_CMD_DEXT |	/* Extended descr type */
@@ -160,7 +165,8 @@ em_tso_setup(struct adapter *adapter, if_pkt_info_t pi, u32 *txd_upper, u32 *txd
 	TXD->lower_setup.ip_fields.ipcss = pi->ipi_ehdrlen;
 	TXD->lower_setup.ip_fields.ipcse =
 	    htole16(pi->ipi_ehdrlen + pi->ipi_ip_hlen - 1);
-	TXD->lower_setup.ip_fields.ipcso = pi->ipi_ehdrlen + offsetof(struct ip, ip_sum);
+	TXD->lower_setup.ip_fields.ipcso =
+	    pi->ipi_ehdrlen + offsetof(struct ip, ip_sum);
 
 	/*
 	 * Start offset for payload checksum calculation.
@@ -179,24 +185,32 @@ em_tso_setup(struct adapter *adapter, if_pkt_info_t pi, u32 *txd_upper, u32 *txd
 	TXD->tcp_seg_setup.fields.mss = htole16(pi->ipi_tso_segsz);
 	TXD->tcp_seg_setup.fields.hdr_len = hdr_len;
 
-	TXD->cmd_and_length = htole32(adapter->txd_cmd |
-				E1000_TXD_CMD_DEXT |	/* Extended descr */
-				E1000_TXD_CMD_TSE |	/* TSE context */
-				E1000_TXD_CMD_IP |	/* Do IP csum */
-				E1000_TXD_CMD_TCP |	/* Do TCP checksum */
-				      (pi->ipi_len - hdr_len)); /* Total len */
-	txr->tx_tso = TRUE;
+	/*
+	 * "PCI/PCI-X SDM 4.0" page 45, and "PCIe GbE SDM 2.5" page 63
+	 * - Set up basic TUCMDs
+	 * - Enable IP bit on 82544
+	 * - For others IP bit on indicates IPv4, while off indicates IPv6
+	*/
+	cmd_type_len = sc->txd_cmd |
+	    E1000_TXD_CMD_DEXT | /* Extended descr */
+	    E1000_TXD_CMD_TSE |  /* TSE context */
+	    E1000_TXD_CMD_TCP;   /* Do TCP checksum */
+	if (hw->mac.type == e1000_82544)
+		cmd_type_len |= E1000_TXD_CMD_IP;
+	else if (pi->ipi_etype == ETHERTYPE_IP)
+		cmd_type_len |= E1000_TXD_CMD_IP;
+	TXD->cmd_and_length = htole32(cmd_type_len |
+	    (pi->ipi_len - hdr_len)); /* Total len */
+
+	txr->tx_tso = true;
 
 	if (++cur == scctx->isc_ntxd[0]) {
 		cur = 0;
 	}
-	DPRINTF(iflib_get_dev(adapter->ctx), "%s: pidx: %d cur: %d\n", __FUNCTION__, pi->ipi_pidx, cur);
+	DPRINTF(iflib_get_dev(sc->ctx), "%s: pidx: %d cur: %d\n", __FUNCTION__,
+	    pi->ipi_pidx, cur);
 	return (cur);
 }
-
-#define TSO_WORKAROUND 4
-#define DONT_FORCE_CTX 1
-
 
 /*********************************************************************
  *  The offload context is protocol specific (TCP/UDP) and thus
@@ -214,21 +228,23 @@ em_tso_setup(struct adapter *adapter, if_pkt_info_t pi, u32 *txd_upper, u32 *txd
  *  in turn greatly slow down performance to send small sized
  *  frames.
  **********************************************************************/
+#define DONT_FORCE_CTX 1
 
 static int
-em_transmit_checksum_setup(struct adapter *adapter, if_pkt_info_t pi, u32 *txd_upper, u32 *txd_lower)
+em_transmit_checksum_setup(struct e1000_softc *sc, if_pkt_info_t pi,
+    uint32_t *txd_upper, uint32_t *txd_lower)
 {
-	 struct e1000_context_desc *TXD = NULL;
-	if_softc_ctx_t scctx = adapter->shared;
-	struct em_tx_queue *que = &adapter->tx_queues[pi->ipi_qsidx];
+	struct e1000_context_desc *TXD = NULL;
+	if_softc_ctx_t scctx = sc->shared;
+	struct em_tx_queue *que = &sc->tx_queues[pi->ipi_qsidx];
 	struct tx_ring *txr = &que->txr;
 	int csum_flags = pi->ipi_csum_flags;
 	int cur, hdr_len;
-	u32 cmd;
+	uint32_t cmd;
 
 	cur = pi->ipi_pidx;
 	hdr_len = pi->ipi_ehdrlen + pi->ipi_ip_hlen;
-	cmd = adapter->txd_cmd;
+	cmd = sc->txd_cmd;
 
 	/*
 	 * The 82574L can only remember the *last* context used
@@ -238,7 +254,7 @@ em_transmit_checksum_setup(struct adapter *adapter, if_pkt_info_t pi, u32 *txd_u
 	 * second note.
 	 */
 	if (DONT_FORCE_CTX &&
-	    adapter->tx_num_queues == 1 &&
+	    sc->tx_num_queues == 1 &&
 	    txr->csum_lhlen == pi->ipi_ehdrlen &&
 	    txr->csum_iphlen == pi->ipi_ip_hlen &&
 	    txr->csum_flags == csum_flags) {
@@ -252,26 +268,37 @@ em_transmit_checksum_setup(struct adapter *adapter, if_pkt_info_t pi, u32 *txd_u
 	}
 
 	TXD = (struct e1000_context_desc *)&txr->tx_base[cur];
+	/*
+	 * ipcss - Start offset for header checksum calculation.
+	 * ipcse - End offset for header checksum calculation.
+	 * ipcso - Offset of place to put the checksum.
+	 *
+	 * We set ipcsX values regardless of IP version to work around HW issues
+	 * and ipcse must be 0 for IPv6 per "PCIe GbE SDM 2.5" page 61.
+	 * IXSM controls whether it's inserted.
+	 */
+	TXD->lower_setup.ip_fields.ipcss = pi->ipi_ehdrlen;
+	TXD->lower_setup.ip_fields.ipcso = pi->ipi_ehdrlen +
+	    offsetof(struct ip, ip_sum);
 	if (csum_flags & CSUM_IP) {
 		*txd_upper |= E1000_TXD_POPTS_IXSM << 8;
-		/*
-		 * Start offset for header checksum calculation.
-		 * End offset for header checksum calculation.
-		 * Offset of place to put the checksum.
-		 */
-		TXD->lower_setup.ip_fields.ipcss = pi->ipi_ehdrlen;
 		TXD->lower_setup.ip_fields.ipcse = htole16(hdr_len);
-		TXD->lower_setup.ip_fields.ipcso = pi->ipi_ehdrlen + offsetof(struct ip, ip_sum);
 		cmd |= E1000_TXD_CMD_IP;
-	}
+	} else if (csum_flags & (CSUM_IP6_TCP | CSUM_IP6_UDP))
+		TXD->lower_setup.ip_fields.ipcse = htole16(0);
 
-	if (csum_flags & (CSUM_TCP|CSUM_UDP)) {
+	/*
+	 * tucss - Start offset for payload checksum calculation.
+	 * tucse - End offset for payload checksum calculation.
+	 * tucso - Offset of place to put the checksum.
+	 */
+	if (csum_flags & (CSUM_TCP | CSUM_UDP | CSUM_IP6_TCP | CSUM_IP6_UDP)) {
 		uint8_t tucso;
 
 		*txd_upper |= E1000_TXD_POPTS_TXSM << 8;
 		*txd_lower = E1000_TXD_CMD_DEXT | E1000_TXD_DTYP_D;
 
-		if (csum_flags & CSUM_TCP) {
+		if (csum_flags & (CSUM_TCP | CSUM_IP6_TCP)) {
 			tucso = hdr_len + offsetof(struct tcphdr, th_sum);
 			cmd |= E1000_TXD_CMD_TCP;
 		} else
@@ -294,15 +321,18 @@ em_transmit_checksum_setup(struct adapter *adapter, if_pkt_info_t pi, u32 *txd_u
 	if (++cur == scctx->isc_ntxd[0]) {
 		cur = 0;
 	}
-	DPRINTF(iflib_get_dev(adapter->ctx), "checksum_setup csum_flags=%x txd_upper=%x txd_lower=%x hdr_len=%d cmd=%x\n",
-		      csum_flags, *txd_upper, *txd_lower, hdr_len, cmd);
+	DPRINTF(iflib_get_dev(sc->ctx),
+	    "checksum_setup csum_flags=%x txd_upper=%x txd_lower=%x hdr_len=%d cmd=%x\n",
+	    csum_flags, *txd_upper, *txd_lower, hdr_len, cmd);
 	return (cur);
 }
+
+#define TSO_WORKAROUND 4 /* TSO sentinel descriptor */
 
 static int
 em_isc_txd_encap(void *arg, if_pkt_info_t pi)
 {
-	struct adapter *sc = arg;
+	struct e1000_softc *sc = arg;
 	if_softc_ctx_t scctx = sc->shared;
 	struct em_tx_queue *que = &sc->tx_queues[pi->ipi_qsidx];
 	struct tx_ring *txr = &que->txr;
@@ -310,7 +340,7 @@ em_isc_txd_encap(void *arg, if_pkt_info_t pi)
 	int nsegs = pi->ipi_nsegs;
 	int csum_flags = pi->ipi_csum_flags;
 	int i, j, first, pidx_last;
-	u32 txd_flags, txd_upper = 0, txd_lower = 0;
+	uint32_t txd_flags, txd_upper = 0, txd_lower = 0;
 
 	struct e1000_tx_desc *ctxd = NULL;
 	bool do_tso, tso_desc;
@@ -319,7 +349,7 @@ em_isc_txd_encap(void *arg, if_pkt_info_t pi)
 	txd_flags = pi->ipi_flags & IPI_TX_INTR ? E1000_TXD_CMD_RS : 0;
 	i = first = pi->ipi_pidx;
 	do_tso = (csum_flags & CSUM_TSO);
-	tso_desc = FALSE;
+	tso_desc = false;
 	ntxd = scctx->isc_ntxd[0];
 	/*
 	 * TSO Hardware workaround, if this packet is not
@@ -327,16 +357,16 @@ em_isc_txd_encap(void *arg, if_pkt_info_t pi)
 	 * it follows a TSO burst, then we need to add a
 	 * sentinel descriptor to prevent premature writeback.
 	 */
-	if ((!do_tso) && (txr->tx_tso == TRUE)) {
+	if ((!do_tso) && (txr->tx_tso == true)) {
 		if (nsegs == 1)
-			tso_desc = TRUE;
-		txr->tx_tso = FALSE;
+			tso_desc = true;
+		txr->tx_tso = false;
 	}
 
 	/* Do hardware assists */
 	if (do_tso) {
 		i = em_tso_setup(sc, pi, &txd_upper, &txd_lower);
-		tso_desc = TRUE;
+		tso_desc = true;
 	} else if (csum_flags & EM_CSUM_OFFLOAD) {
 		i = em_transmit_checksum_setup(sc, pi, &txd_upper, &txd_lower);
 	}
@@ -348,8 +378,9 @@ em_isc_txd_encap(void *arg, if_pkt_info_t pi)
 		txd_lower |= htole32(E1000_TXD_CMD_VLE);
 	}
 
-	DPRINTF(iflib_get_dev(sc->ctx), "encap: set up tx: nsegs=%d first=%d i=%d\n", nsegs, first, i);
-	/* XXX adapter->pcix_82544 -- lem_fill_descriptors */
+	DPRINTF(iflib_get_dev(sc->ctx),
+	    "encap: set up tx: nsegs=%d first=%d i=%d\n", nsegs, first, i);
+	/* XXX sc->pcix_82544 -- lem_fill_descriptors */
 
 	/* Set up our transmit descriptors */
 	for (j = 0; j < nsegs; j++) {
@@ -384,7 +415,9 @@ em_isc_txd_encap(void *arg, if_pkt_info_t pi)
 			pidx_last = i;
 			if (++i == scctx->isc_ntxd[0])
 				i = 0;
-			DPRINTF(iflib_get_dev(sc->ctx), "TSO path pidx_last=%d i=%d ntxd[0]=%d\n", pidx_last, i, scctx->isc_ntxd[0]);
+			DPRINTF(iflib_get_dev(sc->ctx),
+			    "TSO path pidx_last=%d i=%d ntxd[0]=%d\n",
+			    pidx_last, i, scctx->isc_ntxd[0]);
 		} else {
 			ctxd->buffer_addr = htole64(seg_addr);
 			ctxd->lower.data = htole32(cmd | txd_lower | seg_len);
@@ -392,7 +425,8 @@ em_isc_txd_encap(void *arg, if_pkt_info_t pi)
 			pidx_last = i;
 			if (++i == scctx->isc_ntxd[0])
 				i = 0;
-			DPRINTF(iflib_get_dev(sc->ctx), "pidx_last=%d i=%d ntxd[0]=%d\n", pidx_last, i, scctx->isc_ntxd[0]);
+			DPRINTF(iflib_get_dev(sc->ctx), "pidx_last=%d i=%d ntxd[0]=%d\n",
+			    pidx_last, i, scctx->isc_ntxd[0]);
 		}
 	}
 
@@ -403,12 +437,15 @@ em_isc_txd_encap(void *arg, if_pkt_info_t pi)
 	 */
 	if (txd_flags && nsegs) {
 		txr->tx_rsq[txr->tx_rs_pidx] = pidx_last;
-		DPRINTF(iflib_get_dev(sc->ctx), "setting to RS on %d rs_pidx %d first: %d\n", pidx_last, txr->tx_rs_pidx, first);
+		DPRINTF(iflib_get_dev(sc->ctx),
+		    "setting to RS on %d rs_pidx %d first: %d\n",
+		    pidx_last, txr->tx_rs_pidx, first);
 		txr->tx_rs_pidx = (txr->tx_rs_pidx+1) & (ntxd-1);
 		MPASS(txr->tx_rs_pidx != txr->tx_rs_cidx);
 	}
 	ctxd->lower.data |= htole32(E1000_TXD_CMD_EOP | txd_flags);
-	DPRINTF(iflib_get_dev(sc->ctx), "tx_buffers[%d]->eop = %d ipi_new_pidx=%d\n", first, pidx_last, i);
+	DPRINTF(iflib_get_dev(sc->ctx),
+	    "tx_buffers[%d]->eop = %d ipi_new_pidx=%d\n", first, pidx_last, i);
 	pi->ipi_new_pidx = i;
 
 	return (0);
@@ -417,19 +454,19 @@ em_isc_txd_encap(void *arg, if_pkt_info_t pi)
 static void
 em_isc_txd_flush(void *arg, uint16_t txqid, qidx_t pidx)
 {
-	struct adapter *adapter = arg;
-	struct em_tx_queue *que = &adapter->tx_queues[txqid];
+	struct e1000_softc *sc = arg;
+	struct em_tx_queue *que = &sc->tx_queues[txqid];
 	struct tx_ring *txr = &que->txr;
 
-	E1000_WRITE_REG(&adapter->hw, E1000_TDT(txr->me), pidx);
+	E1000_WRITE_REG(&sc->hw, E1000_TDT(txr->me), pidx);
 }
 
 static int
 em_isc_txd_credits_update(void *arg, uint16_t txqid, bool clear)
 {
-	struct adapter *adapter = arg;
-	if_softc_ctx_t scctx = adapter->shared;
-	struct em_tx_queue *que = &adapter->tx_queues[txqid];
+	struct e1000_softc *sc = arg;
+	if_softc_ctx_t scctx = sc->shared;
+	struct em_tx_queue *que = &sc->tx_queues[txqid];
 	struct tx_ring *txr = &que->txr;
 
 	qidx_t processed = 0;
@@ -462,7 +499,7 @@ em_isc_txd_credits_update(void *arg, uint16_t txqid, bool clear)
 		if (delta < 0)
 			delta += ntxd;
 		MPASS(delta > 0);
-		DPRINTF(iflib_get_dev(adapter->ctx),
+		DPRINTF(iflib_get_dev(sc->ctx),
 			      "%s: cidx_processed=%u cur=%u clear=%d delta=%d\n",
 			      __FUNCTION__, prev, cur, clear, delta);
 
@@ -484,7 +521,7 @@ em_isc_txd_credits_update(void *arg, uint16_t txqid, bool clear)
 static void
 lem_isc_rxd_refill(void *arg, if_rxd_update_t iru)
 {
-	struct adapter *sc = arg;
+	struct e1000_softc *sc = arg;
 	if_softc_ctx_t scctx = sc->shared;
 	struct em_rx_queue *que = &sc->rx_queues[iru->iru_qsidx];
 	struct rx_ring *rxr = &que->rxr;
@@ -512,7 +549,7 @@ lem_isc_rxd_refill(void *arg, if_rxd_update_t iru)
 static void
 em_isc_rxd_refill(void *arg, if_rxd_update_t iru)
 {
-	struct adapter *sc = arg;
+	struct e1000_softc *sc = arg;
 	if_softc_ctx_t scctx = sc->shared;
 	uint16_t rxqid = iru->iru_qsidx;
 	struct em_rx_queue *que = &sc->rx_queues[rxqid];
@@ -539,9 +576,10 @@ em_isc_rxd_refill(void *arg, if_rxd_update_t iru)
 }
 
 static void
-em_isc_rxd_flush(void *arg, uint16_t rxqid, uint8_t flid __unused, qidx_t pidx)
+em_isc_rxd_flush(void *arg, uint16_t rxqid, uint8_t flid __unused,
+    qidx_t pidx)
 {
-	struct adapter *sc = arg;
+	struct e1000_softc *sc = arg;
 	struct em_rx_queue *que = &sc->rx_queues[rxqid];
 	struct rx_ring *rxr = &que->rxr;
 
@@ -551,12 +589,12 @@ em_isc_rxd_flush(void *arg, uint16_t rxqid, uint8_t flid __unused, qidx_t pidx)
 static int
 lem_isc_rxd_available(void *arg, uint16_t rxqid, qidx_t idx, qidx_t budget)
 {
-	struct adapter *sc = arg;
+	struct e1000_softc *sc = arg;
 	if_softc_ctx_t scctx = sc->shared;
 	struct em_rx_queue *que = &sc->rx_queues[rxqid];
 	struct rx_ring *rxr = &que->rxr;
 	struct e1000_rx_desc *rxd;
-	u32 staterr = 0;
+	uint32_t staterr = 0;
 	int cnt, i;
 
 	for (cnt = 0, i = idx; cnt < scctx->isc_nrxd[0] && cnt <= budget;) {
@@ -576,12 +614,12 @@ lem_isc_rxd_available(void *arg, uint16_t rxqid, qidx_t idx, qidx_t budget)
 static int
 em_isc_rxd_available(void *arg, uint16_t rxqid, qidx_t idx, qidx_t budget)
 {
-	struct adapter *sc = arg;
+	struct e1000_softc *sc = arg;
 	if_softc_ctx_t scctx = sc->shared;
 	struct em_rx_queue *que = &sc->rx_queues[rxqid];
 	struct rx_ring *rxr = &que->rxr;
 	union e1000_rx_desc_extended *rxd;
-	u32 staterr = 0;
+	uint32_t staterr = 0;
 	int cnt, i;
 
 	for (cnt = 0, i = idx; cnt < scctx->isc_nrxd[0] && cnt <= budget;) {
@@ -601,13 +639,13 @@ em_isc_rxd_available(void *arg, uint16_t rxqid, qidx_t idx, qidx_t budget)
 static int
 lem_isc_rxd_pkt_get(void *arg, if_rxd_info_t ri)
 {
-	struct adapter *adapter = arg;
-	if_softc_ctx_t scctx = adapter->shared;
-	struct em_rx_queue *que = &adapter->rx_queues[ri->iri_qsidx];
+	struct e1000_softc *sc = arg;
+	if_softc_ctx_t scctx = sc->shared;
+	struct em_rx_queue *que = &sc->rx_queues[ri->iri_qsidx];
 	struct rx_ring *rxr = &que->rxr;
 	struct e1000_rx_desc *rxd;
-	u16 len;
-	u32 status, errors;
+	uint16_t len;
+	uint32_t status, errors;
 	bool eop;
 	int i, cidx;
 
@@ -629,7 +667,7 @@ lem_isc_rxd_pkt_get(void *arg, if_rxd_info_t ri)
 
 		/* Make sure bad packets are discarded */
 		if (errors & E1000_RXD_ERR_FRAME_ERR_MASK) {
-			adapter->dropped_pkts++;
+			sc->dropped_pkts++;
 			/* XXX fixup if common */
 			return (EBADMSG);
 		}
@@ -645,12 +683,12 @@ lem_isc_rxd_pkt_get(void *arg, if_rxd_info_t ri)
 		i++;
 	} while (!eop);
 
-	/* XXX add a faster way to look this up */
-	if (adapter->hw.mac.type >= e1000_82543 && !(status & E1000_RXD_STAT_IXSM))
-		lem_receive_checksum(status, errors, ri);
+	if (scctx->isc_capenable & IFCAP_RXCSUM)
+		em_receive_checksum(status, errors, ri);
 
-	if (status & E1000_RXD_STAT_VP) {
-		ri->iri_vtag = le16toh(rxd->special);
+	if (scctx->isc_capenable & IFCAP_VLAN_HWTAGGING &&
+	    status & E1000_RXD_STAT_VP) {
+		ri->iri_vtag = le16toh(rxd->special & E1000_RXD_SPC_VLAN_MASK);
 		ri->iri_flags |= M_VLANTAG;
 	}
 
@@ -662,19 +700,19 @@ lem_isc_rxd_pkt_get(void *arg, if_rxd_info_t ri)
 static int
 em_isc_rxd_pkt_get(void *arg, if_rxd_info_t ri)
 {
-	struct adapter *adapter = arg;
-	if_softc_ctx_t scctx = adapter->shared;
-	struct em_rx_queue *que = &adapter->rx_queues[ri->iri_qsidx];
+	struct e1000_softc *sc = arg;
+	if_softc_ctx_t scctx = sc->shared;
+	struct em_rx_queue *que = &sc->rx_queues[ri->iri_qsidx];
 	struct rx_ring *rxr = &que->rxr;
 	union e1000_rx_desc_extended *rxd;
 
-	u16 len;
-	u32 pkt_info;
-	u32 staterr = 0;
+	uint16_t len;
+	uint32_t pkt_info;
+	uint32_t staterr;
 	bool eop;
-	int i, cidx, vtag;
+	int i, cidx;
 
-	i = vtag = 0;
+	staterr = i = 0;
 	cidx = ri->iri_cidx;
 
 	do {
@@ -692,7 +730,7 @@ em_isc_rxd_pkt_get(void *arg, if_rxd_info_t ri)
 
 		/* Make sure bad packets are discarded */
 		if (staterr & E1000_RXDEXT_ERR_FRAME_ERR_MASK) {
-			adapter->dropped_pkts++;
+			sc->dropped_pkts++;
 			return EBADMSG;
 		}
 
@@ -707,17 +745,14 @@ em_isc_rxd_pkt_get(void *arg, if_rxd_info_t ri)
 		i++;
 	} while (!eop);
 
-	/* XXX add a faster way to look this up */
-	if (adapter->hw.mac.type >= e1000_82543)
-		em_receive_checksum(staterr, ri);
+	if (scctx->isc_capenable & IFCAP_RXCSUM)
+		em_receive_checksum(staterr, staterr >> 24, ri);
 
-	if (staterr & E1000_RXD_STAT_VP) {
-		vtag = le16toh(rxd->wb.upper.vlan);
-	}
-
-	ri->iri_vtag = vtag;
-	if (vtag)
+	if (scctx->isc_capenable & IFCAP_VLAN_HWTAGGING &&
+	    staterr & E1000_RXD_STAT_VP) {
+		ri->iri_vtag = le16toh(rxd->wb.upper.vlan);
 		ri->iri_flags |= M_VLANTAG;
+	}
 
 	ri->iri_flowid = le32toh(rxd->wb.lower.hi_dword.rss);
 	ri->iri_rsstype = em_determine_rsstype(pkt_info);
@@ -734,19 +769,24 @@ em_isc_rxd_pkt_get(void *arg, if_rxd_info_t ri)
  *
  *********************************************************************/
 static void
-lem_receive_checksum(int status, int errors, if_rxd_info_t ri)
+em_receive_checksum(uint16_t status, uint8_t errors, if_rxd_info_t ri)
 {
-	/* Did it pass? */
-	if (status & E1000_RXD_STAT_IPCS && !(errors & E1000_RXD_ERR_IPE))
-		ri->iri_csum_flags = (CSUM_IP_CHECKED|CSUM_IP_VALID);
+	if (__predict_false(status & E1000_RXD_STAT_IXSM))
+		return;
 
-	if (status & E1000_RXD_STAT_TCPCS) {
-		/* Did it pass? */
-		if (!(errors & E1000_RXD_ERR_TCPE)) {
-			ri->iri_csum_flags |=
-			(CSUM_DATA_VALID | CSUM_PSEUDO_HDR);
-			ri->iri_csum_data = htons(0xffff);
-		}
+	/* If there is a layer 3 or 4 error we are done */
+	if (__predict_false(errors & (E1000_RXD_ERR_IPE | E1000_RXD_ERR_TCPE)))
+		return;
+
+	/* IP Checksum Good */
+	if (status & E1000_RXD_STAT_IPCS)
+		ri->iri_csum_flags = (CSUM_IP_CHECKED | CSUM_IP_VALID);
+
+	/* Valid L4E checksum */
+	if (__predict_true(status &
+	    (E1000_RXD_STAT_TCPCS | E1000_RXD_STAT_UDPCS))) {
+		ri->iri_csum_flags |= CSUM_DATA_VALID | CSUM_PSEUDO_HDR;
+		ri->iri_csum_data = htons(0xffff);
 	}
 }
 
@@ -756,7 +796,7 @@ lem_receive_checksum(int status, int errors, if_rxd_info_t ri)
  *
  ******************************************************************/
 static int
-em_determine_rsstype(u32 pkt_info)
+em_determine_rsstype(uint32_t pkt_info)
 {
 	switch (pkt_info & E1000_RXDADV_RSSTYPE_MASK) {
 	case E1000_RXDADV_RSSTYPE_IPV4_TCP:
@@ -765,7 +805,7 @@ em_determine_rsstype(u32 pkt_info)
 		return M_HASHTYPE_RSS_IPV4;
 	case E1000_RXDADV_RSSTYPE_IPV6_TCP:
 		return M_HASHTYPE_RSS_TCP_IPV6;
-	case E1000_RXDADV_RSSTYPE_IPV6_EX: 
+	case E1000_RXDADV_RSSTYPE_IPV6_EX:
 		return M_HASHTYPE_RSS_IPV6_EX;
 	case E1000_RXDADV_RSSTYPE_IPV6:
 		return M_HASHTYPE_RSS_IPV6;
@@ -773,32 +813,5 @@ em_determine_rsstype(u32 pkt_info)
 		return M_HASHTYPE_RSS_TCP_IPV6_EX;
 	default:
 		return M_HASHTYPE_OPAQUE;
-	}
-}
-
-static void
-em_receive_checksum(uint32_t status, if_rxd_info_t ri)
-{
-	ri->iri_csum_flags = 0;
-
-	/* Ignore Checksum bit is set */
-	if (status & E1000_RXD_STAT_IXSM)
-		return;
-
-	/* If the IP checksum exists and there is no IP Checksum error */
-	if ((status & (E1000_RXD_STAT_IPCS | E1000_RXDEXT_STATERR_IPE)) ==
-	    E1000_RXD_STAT_IPCS) {
-		ri->iri_csum_flags = (CSUM_IP_CHECKED | CSUM_IP_VALID);
-	}
-
-	/* TCP or UDP checksum */
-	if ((status & (E1000_RXD_STAT_TCPCS | E1000_RXDEXT_STATERR_TCPE)) ==
-	    E1000_RXD_STAT_TCPCS) {
-		ri->iri_csum_flags |= (CSUM_DATA_VALID | CSUM_PSEUDO_HDR);
-		ri->iri_csum_data = htons(0xffff);
-	}
-	if (status & E1000_RXD_STAT_UDPCS) {
-		ri->iri_csum_flags |= (CSUM_DATA_VALID | CSUM_PSEUDO_HDR);
-		ri->iri_csum_data = htons(0xffff);
 	}
 }

@@ -297,6 +297,7 @@ zstream_do_dump(int argc, char *argv[])
 
 	fletcher_4_init();
 	while (read_hdr(drr, &zc)) {
+		uint64_t featureflags = 0;
 
 		/*
 		 * If this is the first DMU record being processed, check for
@@ -459,6 +460,18 @@ zstream_do_dump(int argc, char *argv[])
 				drro->drr_toguid = BSWAP_64(drro->drr_toguid);
 				drro->drr_maxblkid =
 				    BSWAP_64(drro->drr_maxblkid);
+			}
+
+			featureflags =
+			    DMU_GET_FEATUREFLAGS(drrb->drr_versioninfo);
+
+			if (featureflags & DMU_BACKUP_FEATURE_RAW &&
+			    drro->drr_bonuslen > drro->drr_raw_bonuslen) {
+				(void) fprintf(stderr,
+				    "Warning: Object %llu has bonuslen = "
+				    "%u > raw_bonuslen = %u\n\n",
+				    (u_longlong_t)drro->drr_object,
+				    drro->drr_bonuslen, drro->drr_raw_bonuslen);
 			}
 
 			payload_size = DRR_OBJECT_PAYLOAD_SIZE(drro);

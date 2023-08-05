@@ -1598,6 +1598,8 @@ sctty_ioctl(struct tty *tp, u_long cmd, caddr_t data, struct thread *td)
 	case OPIO_KEYMAP: /* set keyboard translation table (compat) */
 	case GIO_DEADKEYMAP: /* get accent key translation table */
 	case PIO_DEADKEYMAP: /* set accent key translation table */
+	case OGIO_DEADKEYMAP: /* get accent key translation table (compat) */
+	case OPIO_DEADKEYMAP: /* set accent key translation table (compat) */
 	case GETFKEY: /* get function key string */
 	case SETFKEY: /* set function key string */
 		error = kbdd_ioctl(sc->kbd, cmd, data);
@@ -4258,6 +4260,11 @@ sc_respond(scr_stat *scp, const u_char *p, int count, int wakeup)
 	}
 }
 
+/*
+ * pitch is the divisor for 1.193182MHz PIT clock. By dividing 1193172 / pitch,
+ * we convert it back to Hz.
+ * duration is in ticks of 1/hz.
+ */
 void
 sc_bell(scr_stat *scp, int pitch, int duration)
 {
@@ -4277,7 +4284,7 @@ sc_bell(scr_stat *scp, int pitch, int duration)
 	} else if (duration != 0 && pitch != 0) {
 		if (scp != scp->sc->cur_scp)
 			pitch *= 2;
-		sysbeep(1193182 / pitch, duration);
+		sysbeep(1193182 / pitch, SBT_1S * duration / hz);
 	}
 }
 

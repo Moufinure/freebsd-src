@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2015 Netflix, Inc.
  *
@@ -375,10 +375,8 @@ ndaioctl(struct disk *dp, u_long cmd, void *data, int fflag,
     struct thread *td)
 {
 	struct cam_periph *periph;
-	struct nda_softc *softc;
 
 	periph = (struct cam_periph *)dp->d_drv1;
-	softc = (struct nda_softc *)periph->softc;
 
 	switch (cmd) {
 	case NVME_IO_TEST:
@@ -501,7 +499,7 @@ ndastrategy(struct bio *bp)
 }
 
 static int
-ndadump(void *arg, void *virtual, vm_offset_t physical, off_t offset, size_t length)
+ndadump(void *arg, void *virtual, off_t offset, size_t length)
 {
 	struct	    cam_periph *periph;
 	struct	    nda_softc *softc;
@@ -883,7 +881,7 @@ ndaregister(struct cam_periph *periph, void *arg)
 	/*
 	 * Register this media as a disk
 	 */
-	(void)cam_periph_hold(periph, PRIBIO);
+	(void)cam_periph_acquire(periph);
 	cam_periph_unlock(periph);
 	snprintf(announce_buf, sizeof(announce_buf),
 	    "kern.cam.nda.%d.quirks", periph->unit_number);
@@ -898,7 +896,8 @@ ndaregister(struct cam_periph *periph, void *arg)
 	disk->d_strategy = ndastrategy;
 	disk->d_ioctl = ndaioctl;
 	disk->d_getattr = ndagetattr;
-	disk->d_dump = ndadump;
+	if (cam_sim_pollable(periph->sim))
+		disk->d_dump = ndadump;
 	disk->d_gone = ndadiskgonecb;
 	disk->d_name = "nda";
 	disk->d_drv1 = periph;
@@ -931,10 +930,12 @@ ndaregister(struct cam_periph *periph, void *arg)
 	 * d_ident and d_descr are both far bigger than the length of either
 	 *  the serial or model number strings.
 	 */
-	cam_strvis(disk->d_descr, cd->mn,
-	    NVME_MODEL_NUMBER_LENGTH, sizeof(disk->d_descr));
-	cam_strvis(disk->d_ident, cd->sn,
-	    NVME_SERIAL_NUMBER_LENGTH, sizeof(disk->d_ident));
+	cam_strvis_flag(disk->d_descr, cd->mn, NVME_MODEL_NUMBER_LENGTH,
+	    sizeof(disk->d_descr), CAM_STRVIS_FLAG_NONASCII_SPC);
+
+	cam_strvis_flag(disk->d_ident, cd->sn, NVME_SERIAL_NUMBER_LENGTH,
+	    sizeof(disk->d_ident), CAM_STRVIS_FLAG_NONASCII_SPC);
+
 	disk->d_hba_vendor = cpi.hba_vendor;
 	disk->d_hba_device = cpi.hba_device;
 	disk->d_hba_subvendor = cpi.hba_subvendor;
@@ -958,20 +959,7 @@ ndaregister(struct cam_periph *periph, void *arg)
 	if (nda_nvd_compat)
 		disk_add_alias(disk, "nvd");
 
-	/*
-	 * Acquire a reference to the periph before we register with GEOM.
-	 * We'll release this reference once GEOM calls us back (via
-	 * ndadiskgonecb()) telling us that our provider has been freed.
-	 */
-	if (cam_periph_acquire(periph) != 0) {
-		xpt_print(periph->path, "%s: lost periph during "
-			  "registration!\n", __func__);
-		cam_periph_lock(periph);
-		return (CAM_REQ_CMP_ERR);
-	}
-	disk_create(softc->disk, DISK_VERSION);
 	cam_periph_lock(periph);
-	cam_periph_unhold(periph);
 
 	snprintf(announce_buf, sizeof(announce_buf),
 		"%juMB (%ju %u byte sectors)",
@@ -996,6 +984,15 @@ ndaregister(struct cam_periph *periph, void *arg)
 	    ndaasync, periph, periph->path);
 
 	softc->state = NDA_STATE_NORMAL;
+
+	/*
+	 * We'll release this reference once GEOM calls us back via
+	 * ndadiskgonecb(), telling us that our provider has been freed.
+	 */
+	if (cam_periph_acquire(periph) == 0)
+		disk_create(softc->disk, DISK_VERSION);
+
+	cam_periph_release_locked(periph);
 	return(CAM_REQ_CMP);
 }
 
@@ -1268,11 +1265,13 @@ ndadone(struct cam_periph *periph, union ccb *done_ccb)
 static int
 ndaerror(union ccb *ccb, u_int32_t cam_flags, u_int32_t sense_flags)
 {
+#ifdef CAM_IO_STATS
 	struct nda_softc *softc;
 	struct cam_periph *periph;
 
 	periph = xpt_path_periph(ccb->ccb_h.path);
 	softc = (struct nda_softc *)periph->softc;
+#endif
 
 	switch (ccb->ccb_h.status & CAM_STATUS_MASK) {
 	case CAM_CMD_TIMEOUT:
@@ -1314,14 +1313,14 @@ ndaflush(void)
 
 		if (SCHEDULER_STOPPED()) {
 			/*
-			 * If we paniced with the lock held or the periph is not
+			 * If we panicked with the lock held or the periph is not
 			 * open, do not recurse.  Otherwise, call ndadump since
 			 * that avoids the sleeping cam_periph_getccb does if no
 			 * CCBs are available.
 			 */
 			if (!cam_periph_owned(periph) &&
 			    (softc->flags & NDA_FLAG_OPEN)) {
-				ndadump(softc->disk, NULL, 0, 0, 0);
+				ndadump(softc->disk, NULL, 0, 0);
 			}
 			continue;
 		}
@@ -1350,6 +1349,9 @@ ndaflush(void)
 static void
 ndashutdown(void *arg, int howto)
 {
+
+	if ((howto & RB_NOSYNC) != 0)
+		return;
 
 	ndaflush();
 }

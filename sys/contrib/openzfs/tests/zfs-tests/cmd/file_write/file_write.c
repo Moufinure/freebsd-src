@@ -44,7 +44,7 @@ static unsigned char bigbuffer[BIGBUFFERSIZE];
 static void usage(char *);
 
 /*
- * psudo-randomize the buffer
+ * pseudo-randomize the buffer
  */
 static void randomize_buffer(int block_size) {
 	int i;
@@ -251,7 +251,7 @@ usage(char *prog)
 	    "\t[-s offset] [-c write_count] [-d data]\n\n"
 	    "Where [data] equal to zero causes chars "
 	    "0->%d to be repeated throughout, or [data]\n"
-	    "equal to 'R' for psudorandom data.\n",
+	    "equal to 'R' for pseudorandom data.\n",
 	    prog, DATA_RANGE);
 
 	exit(1);

@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2005-2006 Robert N. M. Watson
  * All rights reserved.
@@ -27,6 +27,8 @@
  *
  * $FreeBSD$
  */
+
+#define _WANT_FREEBSD_BITSET
 
 #include <sys/param.h>
 #include <sys/counter.h>

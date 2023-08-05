@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-NetBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2002 The NetBSD Foundation, Inc.
  * All rights reserved.
@@ -59,6 +59,7 @@ __FBSDID("$FreeBSD$");
 #include <errno.h>
 #include <grp.h>
 #include <limits.h>
+#include <locale.h>
 #include <paths.h>
 #include <pwd.h>
 #include <stdio.h>
@@ -372,7 +373,7 @@ main(int argc, char *argv[])
 			errs = 1;
 			linkfail = 1;
 			if (!quiet)
-				warn("%s: stat", file);
+				warn("%s", file);
 		}
 		else
 			output(&st, file, statfmt, fn, nonl);
@@ -639,14 +640,9 @@ format1(const struct stat *st,
 		small = (sizeof(st->st_dev) == 4);
 		data = (what == SHOW_st_dev) ? st->st_dev : st->st_rdev;
 #if HAVE_DEVNAME
-		sdata = (what == SHOW_st_dev) ?
-		    devname(st->st_dev, S_IFBLK) :
-		    devname(st->st_rdev, 
-		    S_ISCHR(st->st_mode) ? S_IFCHR :
-		    S_ISBLK(st->st_mode) ? S_IFBLK :
-		    0U);
-		if (sdata == NULL)
-			sdata = "???";
+		sdata = devname(what == SHOW_st_dev ? st->st_dev :
+		    st->st_rdev, S_ISCHR(st->st_mode) ? S_IFCHR :
+		    (S_ISBLK(st->st_mode) ? S_IFBLK : 0));
 #endif /* HAVE_DEVNAME */
 		if (hilo == HIGH_PIECE) {
 			data = major(data);
@@ -763,6 +759,7 @@ format1(const struct stat *st,
 			ts.tv_sec = 0;
 			tm = localtime(&ts.tv_sec);
 		}
+		(void)setlocale(LC_TIME, "");
 		(void)strftime(path, sizeof(path), timefmt, tm);
 		sdata = path;
 		formats = FMTF_DECIMAL | FMTF_OCTAL | FMTF_UNSIGNED | FMTF_HEX |

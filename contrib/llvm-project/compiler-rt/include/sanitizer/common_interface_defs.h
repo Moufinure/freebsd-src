@@ -28,7 +28,7 @@ typedef struct {
   // Enable sandbox support in sanitizer coverage.
   int coverage_sandboxed;
   // File descriptor to write coverage data to. If -1 is passed, a file will
-  // be pre-opened by __sanitizer_sandobx_on_notify(). This field has no
+  // be pre-opened by __sanitizer_sandbox_on_notify(). This field has no
   // effect if coverage_sandboxed == 0.
   intptr_t coverage_fd;
   // If non-zero, split the coverage data into well-formed blocks. This is
@@ -43,6 +43,9 @@ void __sanitizer_set_report_path(const char *path);
 // Tell the tools to write their reports to the provided file descriptor
 // (casted to void *).
 void __sanitizer_set_report_fd(void *fd);
+// Get the current full report file path, if a path was specified by
+// an earlier call to __sanitizer_set_report_path. Returns null otherwise.
+const char *__sanitizer_get_report_path();
 
 // Notify the tools that the sandbox is going to be turned on. The reserved
 // parameter will be used in the future to hold a structure with functions
@@ -156,6 +159,40 @@ void __sanitizer_annotate_contiguous_container(const void *beg,
                                                const void *old_mid,
                                                const void *new_mid);
 
+/// Similar to <c>__sanitizer_annotate_contiguous_container</c>.
+///
+/// Annotates the current state of a contiguous container memory,
+/// such as <c>std::deque</c>'s single chunk, when the boundries are moved.
+///
+/// A contiguous chunk is a chunk that keeps all of its elements
+/// in a contiguous region of memory. The container owns the region of memory
+/// <c>[storage_beg, storage_end)</c>; the memory <c>[container_beg,
+/// container_end)</c> is used to store the current elements, and the memory
+/// <c>[storage_beg, container_beg), [container_end, storage_end)</c> is
+/// reserved for future elements (<c>storage_beg <= container_beg <=
+/// container_end <= storage_end</c>). For example, in <c> std::deque </c>:
+/// - chunk with a frist deques element will have container_beg equal to address
+///  of the first element.
+/// - in every next chunk with elements, true is  <c> container_beg ==
+/// storage_beg </c>.
+///
+/// Argument requirements:
+/// During unpoisoning memory of empty container (before first element is
+/// added):
+/// - old_container_beg_p == old_container_end_p
+/// During poisoning after last element was removed:
+/// - new_container_beg_p == new_container_end_p
+/// \param storage_beg Beginning of memory region.
+/// \param storage_end End of memory region.
+/// \param old_container_beg Old beginning of used region.
+/// \param old_container_end End of used region.
+/// \param new_container_beg New beginning of used region.
+/// \param new_container_end New end of used region.
+void __sanitizer_annotate_double_ended_contiguous_container(
+    const void *storage_beg, const void *storage_end,
+    const void *old_container_beg, const void *old_container_end,
+    const void *new_container_beg, const void *new_container_end);
+
 /// Returns true if the contiguous container <c>[beg, end)</c> is properly
 /// poisoned.
 ///
@@ -175,6 +212,31 @@ void __sanitizer_annotate_contiguous_container(const void *beg,
 int __sanitizer_verify_contiguous_container(const void *beg, const void *mid,
                                             const void *end);
 
+/// Returns true if the double ended contiguous
+/// container <c>[storage_beg, storage_end)</c> is properly poisoned.
+///
+/// Proper poisoning could occur, for example, with
+/// <c>__sanitizer_annotate_double_ended_contiguous_container</c>), that is, if
+/// <c>[storage_beg, container_beg)</c> is not addressable, <c>[container_beg,
+/// container_end)</c> is addressable and <c>[container_end, end)</c> is
+/// unaddressable. Full verification requires O (<c>storage_end -
+/// storage_beg</c>) time; this function tries to avoid such complexity by
+/// touching only parts of the container around <c><i>storage_beg</i></c>,
+/// <c><i>container_beg</i></c>, <c><i>container_end</i></c>, and
+/// <c><i>storage_end</i></c>.
+///
+/// \param storage_beg Beginning of memory region.
+/// \param container_beg Beginning of used region.
+/// \param container_end End of used region.
+/// \param storage_end End of memory region.
+///
+/// \returns True if the double-ended contiguous container <c>[storage_beg,
+/// container_beg, container_end, end)</c> is properly poisoned - only
+/// [container_beg; container_end) is addressable.
+int __sanitizer_verify_double_ended_contiguous_container(
+    const void *storage_beg, const void *container_beg,
+    const void *container_end, const void *storage_end);
+
 /// Similar to <c>__sanitizer_verify_contiguous_container()</c> but also
 /// returns the address of the first improperly poisoned byte.
 ///
@@ -188,6 +250,20 @@ int __sanitizer_verify_contiguous_container(const void *beg, const void *mid,
 const void *__sanitizer_contiguous_container_find_bad_address(const void *beg,
                                                               const void *mid,
                                                               const void *end);
+
+/// returns the address of the first improperly poisoned byte.
+///
+/// Returns NULL if the area is poisoned properly.
+///
+/// \param storage_beg Beginning of memory region.
+/// \param container_beg Beginning of used region.
+/// \param container_end End of used region.
+/// \param storage_end End of memory region.
+///
+/// \returns The bad address or NULL.
+const void *__sanitizer_double_ended_contiguous_container_find_bad_address(
+    const void *storage_beg, const void *container_beg,
+    const void *container_end, const void *storage_end);
 
 /// Prints the stack trace leading to this call (useful for calling from the
 /// debugger).
@@ -208,6 +284,15 @@ void __sanitizer_symbolize_pc(void *pc, const char *fmt, char *out_buf,
 // Same as __sanitizer_symbolize_pc, but for data section (i.e. globals).
 void __sanitizer_symbolize_global(void *data_ptr, const char *fmt,
                                   char *out_buf, size_t out_buf_size);
+// Determine the return address.
+#if !defined(_MSC_VER) || defined(__clang__)
+#define __sanitizer_return_address()                                           \
+  __builtin_extract_return_addr(__builtin_return_address(0))
+#else
+extern "C" void *_ReturnAddress(void);
+#pragma intrinsic(_ReturnAddress)
+#define __sanitizer_return_address() _ReturnAddress()
+#endif
 
 /// Sets the callback to be called immediately before death on error.
 ///
@@ -320,7 +405,7 @@ void __sanitizer_print_memory_profile(size_t top_percent,
 /// signal callback runs during the switch, it will not benefit from stack
 /// use-after-return detection.
 ///
-/// \param fake_stack_save [out] Fake stack save location.
+/// \param[out] fake_stack_save Fake stack save location.
 /// \param bottom Bottom address of stack.
 /// \param size Size of stack in bytes.
 void __sanitizer_start_switch_fiber(void **fake_stack_save,
@@ -335,8 +420,8 @@ void __sanitizer_start_switch_fiber(void **fake_stack_save,
 /// <c>__sanitizer_start_switch_fiber()</c>.
 ///
 /// \param fake_stack_save Fake stack save location.
-/// \param bottom_old [out] Bottom address of old stack.
-/// \param size_old [out] Size of old stack in bytes.
+/// \param[out] bottom_old Bottom address of old stack.
+/// \param[out] size_old Size of old stack in bytes.
 void __sanitizer_finish_switch_fiber(void *fake_stack_save,
                                      const void **bottom_old,
                                      size_t *size_old);

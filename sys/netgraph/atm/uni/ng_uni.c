@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2001-2003
  *	Fraunhofer Institute for Open Communication Systems (FhG Fokus).
@@ -224,6 +224,8 @@ static int
 ng_uni_constructor(node_p node)
 {
 	struct priv *priv;
+
+	gone_in(14, "ng_uni: netgraph ATM modules");
 
 	priv = malloc(sizeof(*priv), M_NG_UNI, M_WAITOK | M_ZERO);
 

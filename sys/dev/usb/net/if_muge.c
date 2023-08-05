@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (C) 2012 Ben Gray <bgray@freebsd.org>.
  * Copyright (C) 2018 The FreeBSD Foundation.
@@ -932,7 +932,7 @@ lan78xx_phy_init(struct muge_softc *sc)
 	    ANAR_10 | ANAR_10_FD | ANAR_TX | ANAR_TX_FD |
 	    ANAR_CSMA | ANAR_FC | ANAR_PAUSE_ASYM);
 
-	/* Restart auto-negotation. */
+	/* Restart auto-negotiation. */
 	bmcr |= BMCR_STARTNEG;
 	bmcr |= BMCR_AUTOEN;
 	lan78xx_miibus_writereg(sc->sc_ue.ue_dev, sc->sc_phyno, MII_BMCR, bmcr);
@@ -1585,7 +1585,7 @@ muge_attach_post(struct usb_ether *ue)
  *	@ue: the USB ethernet device
  *
  *	Most of this is boilerplate code and copied from the base USB ethernet
- *	driver.  It has been overriden so that we can indicate to the system
+ *	driver.  It has been overridden so that we can indicate to the system
  *	that the chip supports H/W checksumming.
  *
  *	RETURNS:
@@ -1638,11 +1638,11 @@ muge_attach_post_sub(struct usb_ether *ue)
 
 	ifp->if_capenable = ifp->if_capabilities;
 
-	mtx_lock(&Giant);
+	bus_topo_lock();
 	error = mii_attach(ue->ue_dev, &ue->ue_miibus, ifp, uether_ifmedia_upd,
 	    ue->ue_methods->ue_mii_sts, BMSR_DEFCAPMASK, sc->sc_phyno,
 	    MII_OFFSET_ANY, 0);
-	mtx_unlock(&Giant);
+	bus_topo_unlock();
 
 	return (0);
 }

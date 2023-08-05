@@ -171,8 +171,8 @@ kcf_prov_tab_rem_provider(crypto_provider_id_t prov_id)
 	 * at that time.
 	 */
 
-	KCF_PROV_REFRELE(prov_desc);
 	KCF_PROV_IREFRELE(prov_desc);
+	KCF_PROV_REFRELE(prov_desc);
 
 	return (CRYPTO_SUCCESS);
 }
@@ -377,7 +377,7 @@ kcf_provider_zero_refcnt(kcf_provider_desc_t *desc)
 			mutex_exit(&desc->pd_lock);
 			break;
 		}
-		/* FALLTHRU */
+		fallthrough;
 
 	case CRYPTO_HW_PROVIDER:
 	case CRYPTO_LOGICAL_PROVIDER:

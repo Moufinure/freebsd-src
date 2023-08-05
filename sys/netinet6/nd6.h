@@ -243,6 +243,7 @@ struct nd_prefix {
 #define ndpr_raf		ndpr_flags
 #define ndpr_raf_onlink		ndpr_flags.onlink
 #define ndpr_raf_auto		ndpr_flags.autonomous
+#define ndpr_raf_ra_derived	ndpr_flags.ra_derived
 #define ndpr_raf_router		ndpr_flags.router
 
 struct nd_pfxrouter {
@@ -376,10 +377,10 @@ int nd6_resolve(struct ifnet *, int, struct mbuf *,
 int nd6_ioctl(u_long, caddr_t, struct ifnet *);
 void nd6_cache_lladdr(struct ifnet *, struct in6_addr *,
 	char *, int, int, int);
-void nd6_grab_holdchain(struct llentry *, struct mbuf **,
-    struct sockaddr_in6 *);
-int nd6_flush_holdchain(struct ifnet *, struct mbuf *,
-    struct sockaddr_in6 *);
+bool nd6_try_set_entry_addr(struct ifnet *ifp, struct llentry *lle, char *lladdr);
+struct mbuf *nd6_grab_holdchain(struct llentry *);
+int nd6_flush_holdchain(struct ifnet *, struct llentry *, struct mbuf *);
+void nd6_flush_children_holdchain(struct ifnet *, struct llentry *);
 int nd6_add_ifa_lle(struct in6_ifaddr *);
 void nd6_rem_ifa_lle(struct in6_ifaddr *, int);
 int nd6_output_ifp(struct ifnet *, struct ifnet *, struct mbuf *,

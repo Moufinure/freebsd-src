@@ -29,8 +29,8 @@
  * $FreeBSD$
  */
 
-#ifndef _ASM_ATOMIC_H_
-#define	_ASM_ATOMIC_H_
+#ifndef _LINUXKPI_ASM_ATOMIC_H_
+#define	_LINUXKPI_ASM_ATOMIC_H_
 
 #include <linux/compiler.h>
 #include <sys/types.h>
@@ -220,6 +220,7 @@ atomic_cmpxchg(atomic_t *v, int old, int new)
 	__ret.val;							\
 })
 
+#define	cmpxchg64(...)		cmpxchg(__VA_ARGS__)
 #define	cmpxchg_relaxed(...)	cmpxchg(__VA_ARGS__)
 
 #define	xchg(ptr, new) ({						\
@@ -268,6 +269,28 @@ atomic_cmpxchg(atomic_t *v, int old, int new)
 	__ret.val;							\
 })
 
+#define try_cmpxchg(p, op, n)							\
+({										\
+	__typeof(p) __op = (__typeof((p)))(op);					\
+	__typeof(*(p)) __o = *__op;						\
+	__typeof(*(p)) __p = __sync_val_compare_and_swap((p), (__o), (n));	\
+	if (__p != __o)								\
+		*__op = __p;							\
+	(__p == __o);								\
+})
+
+#define __atomic_try_cmpxchg(type, _p, _po, _n)		\
+({							\
+	__typeof(_po) __po = (_po);			\
+	__typeof(*(_po)) __r, __o = *__po;		\
+	__r = atomic_cmpxchg##type((_p), __o, (_n));	\
+	if (unlikely(__r != __o))			\
+		*__po = __r;				\
+	likely(__r == __o);				\
+})
+
+#define	atomic_try_cmpxchg(_p, _po, _n)	__atomic_try_cmpxchg(, _p, _po, _n)
+
 static inline int
 atomic_dec_if_positive(atomic_t *v)
 {
@@ -307,6 +330,13 @@ static inline int atomic_fetch_##op(int i, atomic_t *v)		\
 	return (c);						\
 }
 
+static inline int
+atomic_fetch_inc(atomic_t *v)
+{
+
+	return ((atomic_inc_return(v) - 1));
+}
+
 LINUX_ATOMIC_OP(or, |)
 LINUX_ATOMIC_OP(and, &)
 LINUX_ATOMIC_OP(andnot, &~)
@@ -317,4 +347,4 @@ LINUX_ATOMIC_FETCH_OP(and, &)
 LINUX_ATOMIC_FETCH_OP(andnot, &~)
 LINUX_ATOMIC_FETCH_OP(xor, ^)
 
-#endif					/* _ASM_ATOMIC_H_ */
+#endif					/* _LINUXKPI_ASM_ATOMIC_H_ */

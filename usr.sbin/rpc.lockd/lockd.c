@@ -426,7 +426,7 @@ main(int argc, char **argv)
 	 * Note that it is NOT sensible to run this program from inetd - the
 	 * protocol assumes that it will run immediately at boot time.
 	 */
-	if ((foreground == 0) && daemon(0, debug_level > 0)) {
+	if ((foreground == 0) && daemon(0, 0)) {
 		err(1, "cannot fork");
 		/* NOTREACHED */
 	}
@@ -489,7 +489,7 @@ main(int argc, char **argv)
  *
  * It gets called one time for each transport.
  *
- * It returns 0 upon success, 1 for ingore the call and -1 to indicate
+ * It returns 0 upon success, 1 for ignore the call and -1 to indicate
  * bind failed with EADDRINUSE.
  *
  * Any file descriptors that have been created are stored in sock_fd and

@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 1999 Peter Wemm <peter@FreeBSD.org>
  * All rights reserved.
@@ -41,7 +41,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/signalvar.h>
 #include <sys/sysent.h>
 #include <sys/sx.h>
-#include <sys/umtx.h>
+#include <sys/umtxvar.h>
 #include <sys/unistd.h>
 #include <sys/wait.h>
 #include <sys/sched.h>
@@ -95,6 +95,7 @@ kproc_create(void (*func)(void *), void *arg,
 
 	bzero(&fr, sizeof(fr));
 	fr.fr_flags = RFMEM | RFFDG | RFPROC | RFSTOPPED | flags;
+	fr.fr_flags2 = FR2_KPROC;
 	fr.fr_pages = pages;
 	fr.fr_procp = &p2;
 	error = fork1(&thread0, &fr);
@@ -105,21 +106,11 @@ kproc_create(void (*func)(void *), void *arg,
 	if (newpp != NULL)
 		*newpp = p2;
 
-	/* this is a non-swapped system process */
-	PROC_LOCK(p2);
-	td = FIRST_THREAD_IN_PROC(p2);
-	p2->p_flag |= P_SYSTEM | P_KPROC;
-	td->td_pflags |= TDP_KTHREAD;
-	mtx_lock(&p2->p_sigacts->ps_mtx);
-	p2->p_sigacts->ps_flag |= PS_NOCLDWAIT;
-	mtx_unlock(&p2->p_sigacts->ps_mtx);
-	PROC_UNLOCK(p2);
-
 	/* set up arg0 for 'ps', et al */
 	va_start(ap, fmt);
 	vsnprintf(p2->p_comm, sizeof(p2->p_comm), fmt, ap);
 	va_end(ap);
-	/* set up arg0 for 'ps', et al */
+	td = FIRST_THREAD_IN_PROC(p2);
 	va_start(ap, fmt);
 	vsnprintf(td->td_name, sizeof(td->td_name), fmt, ap);
 	va_end(ap);
@@ -295,15 +286,17 @@ kthread_add(void (*func)(void *), void *arg, struct proc *p,
 	TSTHREAD(newtd, newtd->td_name);
 
 	newtd->td_proc = p;  /* needed for cpu_copy_thread */
+	newtd->td_pflags |= TDP_KTHREAD;
+
 	/* might be further optimized for kthread */
 	cpu_copy_thread(newtd, oldtd);
+
 	/* put the designated function(arg) as the resume context */
 	cpu_fork_kthread_handler(newtd, func, arg);
 
-	newtd->td_pflags |= TDP_KTHREAD;
 	thread_cow_get_proc(newtd, p);
 
-	/* this code almost the same as create_thread() in kern_thr.c */
+	/* This code is similar to thread_create() in kern_thr.c. */
 	p->p_flag |= P_HADTHREADS;
 	thread_link(newtd, p);
 	thread_lock(oldtd);

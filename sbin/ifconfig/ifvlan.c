@@ -121,16 +121,11 @@ vlan_parse_ethervid(const char *name)
 {
 	char ifname[IFNAMSIZ];
 	char *cp;
-	int vid;
+	unsigned int vid;
 
 	strlcpy(ifname, name, IFNAMSIZ);
 	if ((cp = strrchr(ifname, '.')) == NULL)
 		return;
-	/*
-	 * Don't mix vlan/vlandev parameters with dot notation.
-	 */
-	if (params.vlr_tag != NOTAG || params.vlr_parent[0] != '\0')
-		errx(1, "ambiguous vlan specification");
 	/*
 	 * Derive params from interface name: "parent.vid".
 	 */
@@ -139,13 +134,27 @@ vlan_parse_ethervid(const char *name)
 		errx(1, "invalid vlan tag");
 
 	vid = *cp++ - '0';
-	while ((*cp >= '0') && (*cp <= '9'))
+	while ((*cp >= '0') && (*cp <= '9')) {
 		vid = (vid * 10) + (*cp++ - '0');
-	if ((*cp != '\0') || (vid & ~0xFFF))
+		if (vid >= 0xFFF)
+			errx(1, "invalid vlan tag");
+	}
+	if (*cp != '\0')
 		errx(1, "invalid vlan tag");
 
-	strlcpy(params.vlr_parent, ifname, IFNAMSIZ);
-	params.vlr_tag = (vid & 0xFFF);
+	/*
+	 * allow "devX.Y vlandev devX vlan Y" syntax
+	 */
+	if (params.vlr_tag == NOTAG || params.vlr_tag == vid)
+		params.vlr_tag = vid;
+	else
+		errx(1, "ambiguous vlan specification");
+
+	/* Restrict overriding interface name */
+	if (params.vlr_parent[0] == '\0' || !strcmp(params.vlr_parent, ifname))
+		strlcpy(params.vlr_parent, ifname, IFNAMSIZ);
+	else
+		errx(1, "ambiguous vlan specification");
 }
 
 static void

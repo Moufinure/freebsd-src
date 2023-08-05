@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2019 Alexander V. Chernikov
  *
@@ -454,7 +454,7 @@ sa_equal_msg_flags(const struct sockaddr *a, const struct sockaddr *b, char *msg
 		b6 = (const struct sockaddr_in6 *)b;
 		if (!IN6_ARE_ADDR_EQUAL(&a6->sin6_addr, &b6->sin6_addr)) {
 			inet_ntop(AF_INET6, &a6->sin6_addr, a_s, sizeof(a_s));
-			inet_ntop(AF_INET6, &b6->sin6_addr, a_s, sizeof(a_s));
+			inet_ntop(AF_INET6, &b6->sin6_addr, b_s, sizeof(b_s));
 			snprintf(msg, sz, "addr diff: %s vs %s", a_s, b_s);
 			return 0;
 		}

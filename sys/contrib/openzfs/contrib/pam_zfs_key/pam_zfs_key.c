@@ -82,7 +82,11 @@ alloc_pw_size(size_t len)
 		return (NULL);
 	}
 	pw->len = len;
-	pw->value = malloc(len);
+	/*
+	 * The use of malloc() triggers a spurious gcc 11 -Wmaybe-uninitialized
+	 * warning in the mlock() function call below, so use calloc().
+	 */
+	pw->value = calloc(len, 1);
 	if (!pw->value) {
 		free(pw);
 		return (NULL);
@@ -99,7 +103,11 @@ alloc_pw_string(const char *source)
 		return (NULL);
 	}
 	pw->len = strlen(source) + 1;
-	pw->value = malloc(pw->len);
+	/*
+	 * The use of malloc() triggers a spurious gcc 11 -Wmaybe-uninitialized
+	 * warning in the mlock() function call below, so use calloc().
+	 */
+	pw->value = calloc(pw->len, 1);
 	if (!pw->value) {
 		free(pw);
 		return (NULL);
@@ -488,7 +496,6 @@ zfs_key_config_get_dataset(zfs_key_config_t *config)
 		if (zhp == NULL) {
 			pam_syslog(NULL, LOG_ERR, "dataset %s not found",
 			    config->homes_prefix);
-			zfs_close(zhp);
 			return (NULL);
 		}
 
@@ -498,6 +505,10 @@ zfs_key_config_get_dataset(zfs_key_config_t *config)
 		char *dsname = config->dsname;
 		config->dsname = NULL;
 		return (dsname);
+	}
+
+	if (config->homes_prefix == NULL) {
+		return (NULL);
 	}
 
 	size_t len = ZFS_MAX_DATASET_NAME_LEN;
@@ -537,16 +548,11 @@ zfs_key_config_modify_session_counter(pam_handle_t *pamh,
 		    errno);
 		return (-1);
 	}
-	size_t runtime_path_len = strlen(runtime_path);
-	size_t counter_path_len = runtime_path_len + 1 + 10;
-	char *counter_path = malloc(counter_path_len + 1);
-	if (!counter_path) {
+
+	char *counter_path;
+	if (asprintf(&counter_path, "%s/%u", runtime_path, config->uid) == -1)
 		return (-1);
-	}
-	counter_path[0] = 0;
-	strcat(counter_path, runtime_path);
-	snprintf(counter_path + runtime_path_len, counter_path_len, "/%d",
-	    config->uid);
+
 	const int fd = open(counter_path,
 	    O_RDWR | O_CLOEXEC | O_CREAT | O_NOFOLLOW,
 	    S_IRUSR | S_IWUSR);
@@ -703,7 +709,10 @@ pam_sm_open_session(pam_handle_t *pamh, int flags,
 		return (PAM_SUCCESS);
 	}
 	zfs_key_config_t config;
-	zfs_key_config_load(pamh, &config, argc, argv);
+	if (zfs_key_config_load(pamh, &config, argc, argv) != 0) {
+		return (PAM_SESSION_ERR);
+	}
+
 	if (config.uid < 1000) {
 		zfs_key_config_free(&config);
 		return (PAM_SUCCESS);
@@ -757,7 +766,9 @@ pam_sm_close_session(pam_handle_t *pamh, int flags,
 		return (PAM_SUCCESS);
 	}
 	zfs_key_config_t config;
-	zfs_key_config_load(pamh, &config, argc, argv);
+	if (zfs_key_config_load(pamh, &config, argc, argv) != 0) {
+		return (PAM_SESSION_ERR);
+	}
 	if (config.uid < 1000) {
 		zfs_key_config_free(&config);
 		return (PAM_SUCCESS);

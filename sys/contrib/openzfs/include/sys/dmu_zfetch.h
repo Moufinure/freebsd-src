@@ -49,20 +49,24 @@ typedef struct zfetch {
 
 typedef struct zstream {
 	uint64_t	zs_blkid;	/* expect next access at this blkid */
-	uint64_t	zs_pf_blkid;	/* next block to prefetch */
+	unsigned int	zs_pf_dist;	/* data prefetch distance in bytes */
+	unsigned int	zs_ipf_dist;	/* L1 prefetch distance in bytes */
+	uint64_t	zs_pf_start;	/* first data block to prefetch */
+	uint64_t	zs_pf_end;	/* data block to prefetch up to */
+	uint64_t	zs_ipf_start;	/* first data block to prefetch L1 */
+	uint64_t	zs_ipf_end;	/* data block to prefetch L1 up to */
 
-	/*
-	 * We will next prefetch the L1 indirect block of this level-0
-	 * block id.
-	 */
-	uint64_t	zs_ipf_blkid;
-
-	kmutex_t	zs_lock;	/* protects stream */
-	hrtime_t	zs_atime;	/* time last prefetch issued */
-	hrtime_t	zs_start_time;	/* start of last prefetch */
 	list_node_t	zs_node;	/* link for zf_stream */
+	hrtime_t	zs_atime;	/* time last prefetch issued */
 	zfetch_t	*zs_fetch;	/* parent fetch */
-	zfs_refcount_t	zs_blocks; /* number of pending blocks in the stream */
+	boolean_t	zs_missed;	/* stream saw cache misses */
+	boolean_t	zs_more;	/* need more distant prefetch */
+	zfs_refcount_t	zs_callers;	/* number of pending callers */
+	/*
+	 * Number of stream references: dnode, callers and pending blocks.
+	 * The stream memory is freed when the number returns to zero.
+	 */
+	zfs_refcount_t	zs_refs;
 } zstream_t;
 
 void		zfetch_init(void);
@@ -70,7 +74,10 @@ void		zfetch_fini(void);
 
 void		dmu_zfetch_init(zfetch_t *, struct dnode *);
 void		dmu_zfetch_fini(zfetch_t *);
-void		dmu_zfetch(zfetch_t *, uint64_t, uint64_t, boolean_t,
+zstream_t	*dmu_zfetch_prepare(zfetch_t *, uint64_t, uint64_t, boolean_t,
+    boolean_t);
+void		dmu_zfetch_run(zstream_t *, boolean_t, boolean_t);
+void		dmu_zfetch(zfetch_t *, uint64_t, uint64_t, boolean_t, boolean_t,
     boolean_t);
 
 

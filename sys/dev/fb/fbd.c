@@ -1,8 +1,7 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2013 The FreeBSD Foundation
- * All rights reserved.
  *
  * This software was developed by Aleksandr Rybalko under sponsorship from the
  * FreeBSD Foundation.
@@ -203,7 +202,7 @@ fb_init(struct fb_list_entry *entry, int unit)
 }
 
 int
-fbd_list()
+fbd_list(void)
 {
 	struct fb_list_entry *entry;
 
@@ -211,8 +210,8 @@ fbd_list()
 		return (ENOENT);
 
 	LIST_FOREACH(entry, &fb_list_head, fb_list) {
-		printf("FB %s @%p\n", entry->fb_info->fb_name,
-		    (void *)entry->fb_info->fb_pbase);
+		printf("FB %s @%#jx\n", entry->fb_info->fb_name,
+		    (uintmax_t)entry->fb_info->fb_pbase);
 	}
 
 	return (0);

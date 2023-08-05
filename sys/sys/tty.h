@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2008 Ed Schouten <ed@FreeBSD.org>
  * All rights reserved.
@@ -144,7 +144,7 @@ struct xtty {
 	size_t	xt_size;	/* Structure size. */
 	size_t	xt_insize;	/* Input queue size. */
 	size_t	xt_incc;	/* Canonicalized characters. */
-	size_t	xt_inlc;	/* Input line charaters. */
+	size_t	xt_inlc;	/* Input line characters. */
 	size_t	xt_inlow;	/* Input low watermark. */
 	size_t	xt_outsize;	/* Output queue size. */
 	size_t	xt_outcc;	/* Output queue usage. */

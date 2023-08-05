@@ -22,6 +22,7 @@
 __FBSDID("$FreeBSD$");
 
 #define PFIOC_USE_LATEST
+#define _WANT_FREEBSD_BITSET
 
 #include <sys/types.h>
 #include <sys/bitset.h>
@@ -872,7 +873,7 @@ eval_pfqueue_fairq(struct pfctl *pf __unused, struct pf_altq *pa,
 
 	opts = &pa->pq_u.fairq_opts;
 
-	if (pa->parent == NULL) {
+	if (parent == NULL) {
 		/* root queue */
 		opts->lssc_m1 = pa->ifbandwidth;
 		opts->lssc_m2 = pa->ifbandwidth;
@@ -1234,7 +1235,7 @@ char *
 rate2str(double rate)
 {
 	char		*buf;
-	static char	 r2sbuf[R2S_BUFS][RATESTR_MAX];  /* ring bufer */
+	static char	 r2sbuf[R2S_BUFS][RATESTR_MAX];  /* ring buffer */
 	static int	 idx = 0;
 	int		 i;
 	static const char unit[] = " KMG";

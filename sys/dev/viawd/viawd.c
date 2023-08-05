@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2011 Fabien Thomas <fabient@FreeBSD.org>
  * All rights reserved.
@@ -226,7 +226,7 @@ viawd_detach(device_t dev)
 		viawd_tmr_set(sc, VIAWD_TIMEOUT_SHUTDOWN);
 		viawd_tmr_state(sc, 1);
 		device_printf(dev,
-		    "Keeping watchog alive during shutdown for %d seconds\n",
+		    "Keeping watchdog alive during shutdown for %d seconds\n",
 		    VIAWD_TIMEOUT_SHUTDOWN);
 	}
 

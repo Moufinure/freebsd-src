@@ -735,10 +735,8 @@ mvneta_attach(device_t self)
 		    mvneta_mediastatus, BMSR_DEFCAPMASK, sc->phy_addr,
 		    MII_OFFSET_ANY, 0);
 		if (error != 0) {
-			if (bootverbose) {
-				device_printf(self,
-				    "MII attach failed, error: %d\n", error);
-			}
+			device_printf(self, "MII attach failed, error: %d\n",
+			    error);
 			ether_ifdetach(sc->ifp);
 			mvneta_detach(self);
 			return (error);
@@ -1690,7 +1688,7 @@ mvneta_enable_intr(struct mvneta_softc *sc)
 	reg |= MVNETA_PRXTXTI_PMISCICSUMMARY;
 	MVNETA_WRITE(sc, MVNETA_PRXTXTIM, reg);
 
-	if (sc->use_inband_status) {
+	if (!sc->phy_attached || sc->use_inband_status) {
 		/* Enable Port MISC Intr. (via RXTX_TH_Summary bit) */
 		MVNETA_WRITE(sc, MVNETA_PMIM, MVNETA_PMI_PHYSTATUSCHNG |
 		    MVNETA_PMI_LINKCHANGE | MVNETA_PMI_PSCSYNCCHANGE);
@@ -1720,9 +1718,9 @@ mvneta_rxtxth_intr(void *arg)
 		return;
 	MVNETA_WRITE(sc, MVNETA_PRXTXTIC, ~ic);
 
-	/* Ack maintance interrupt first */
+	/* Ack maintenance interrupt first */
 	if (__predict_false((ic & MVNETA_PRXTXTI_PMISCICSUMMARY) &&
-	    sc->use_inband_status)) {
+	    (!sc->phy_attached || sc->use_inband_status))) {
 		mvneta_sc_lock(sc);
 		mvneta_misc_intr(sc);
 		mvneta_sc_unlock(sc);
@@ -1954,7 +1952,7 @@ mvneta_transmit(struct ifnet *ifp, struct mbuf *m)
 
 	tx = MVNETA_TX_RING(sc, q);
 
-	/* If buf_ring is full start transmit immediatly. */
+	/* If buf_ring is full start transmit immediately. */
 	if (buf_ring_full(tx->br)) {
 		mvneta_tx_lockq(sc, q);
 		mvneta_xmit_locked(sc, q);
@@ -2069,9 +2067,11 @@ mvneta_ioctl(struct ifnet *ifp, u_long cmd, caddr_t data)
 	struct ifreq *ifr;
 	int error, mask;
 	uint32_t flags;
+	bool reinit;
 	int q;
 
 	error = 0;
+	reinit = false;
 	sc = ifp->if_softc;
 	ifr = (struct ifreq *)data;
 	switch (cmd) {
@@ -2168,29 +2168,30 @@ mvneta_ioctl(struct ifnet *ifp, u_long cmd, caddr_t data)
 				ifp->if_hwassist = CSUM_IP | CSUM_TCP |
 					CSUM_UDP;
 			}
-
+			/*
+			 * Reinitialize RX queues.
+			 * We need to update RX descriptor size.
+			 */
 			if (ifp->if_drv_flags & IFF_DRV_RUNNING) {
-				/* Stop hardware */
+				reinit = true;
 				mvneta_stop_locked(sc);
-				/*
-				 * Reinitialize RX queues.
-				 * We need to update RX descriptor size.
-				 */
-				for (q = 0; q < MVNETA_RX_QNUM_MAX; q++) {
-					mvneta_rx_lockq(sc, q);
-					if (mvneta_rx_queue_init(ifp, q) != 0) {
-						device_printf(sc->dev,
-						    "initialization failed:"
-						    " cannot initialize queue\n");
-						mvneta_rx_unlockq(sc, q);
-						error = ENOBUFS;
-						break;
-					}
-					mvneta_rx_unlockq(sc, q);
-				}
-				/* Trigger reinitialization */
-				mvneta_init_locked(sc);
 			}
+
+			for (q = 0; q < MVNETA_RX_QNUM_MAX; q++) {
+				mvneta_rx_lockq(sc, q);
+				if (mvneta_rx_queue_init(ifp, q) != 0) {
+					device_printf(sc->dev,
+					    "initialization failed:"
+					    " cannot initialize queue\n");
+					mvneta_rx_unlockq(sc, q);
+					error = ENOBUFS;
+					break;
+				}
+				mvneta_rx_unlockq(sc, q);
+			}
+			if (reinit)
+				mvneta_init_locked(sc);
+
 			mvneta_sc_unlock(sc);
                 }
                 break;
@@ -2478,7 +2479,7 @@ mvneta_update_media(struct mvneta_softc *sc, int media)
 
 	sc->autoneg = (IFM_SUBTYPE(media) == IFM_AUTO);
 
-	if (sc->use_inband_status)
+	if (!sc->phy_attached || sc->use_inband_status)
 		mvneta_update_autoneg(sc, IFM_SUBTYPE(media) == IFM_AUTO);
 
 	mvneta_update_eee(sc);
@@ -2641,7 +2642,7 @@ mvneta_linkup(struct mvneta_softc *sc)
 
 	KASSERT_SC_MTX(sc);
 
-	if (!sc->use_inband_status) {
+	if (!sc->phy_attached || !sc->use_inband_status) {
 		reg  = MVNETA_READ(sc, MVNETA_PANC);
 		reg |= MVNETA_PANC_FORCELINKPASS;
 		reg &= ~MVNETA_PANC_FORCELINKFAIL;
@@ -2661,7 +2662,7 @@ mvneta_linkdown(struct mvneta_softc *sc)
 
 	KASSERT_SC_MTX(sc);
 
-	if (!sc->use_inband_status) {
+	if (!sc->phy_attached || !sc->use_inband_status) {
 		reg  = MVNETA_READ(sc, MVNETA_PANC);
 		reg &= ~MVNETA_PANC_FORCELINKPASS;
 		reg |= MVNETA_PANC_FORCELINKFAIL;

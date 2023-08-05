@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2009-2020 Alexander Motin <mav@FreeBSD.org>
  * Copyright (c) 1997-2009 by Matthew Jacob
@@ -191,7 +191,7 @@ isp_attach_chan(ispsoftc_t *isp, struct cam_devq *devq, int chan)
 	    "Cause a Lost Frame on a Read");
 #endif
 	SYSCTL_ADD_PROC(ctx, SYSCTL_CHILDREN(tree), OID_AUTO,
-	    "role", CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_NEEDGIANT,
+	    "role", CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_MPSAFE,
 	    isp, chan, isp_role_sysctl, "I", "Current role");
 	SYSCTL_ADD_UINT(ctx, SYSCTL_CHILDREN(tree), OID_AUTO,
 	    "speed", CTLFLAG_RD, &fcp->isp_gbspeed, 0,

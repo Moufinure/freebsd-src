@@ -1,5 +1,7 @@
 # $FreeBSD$
 
+PACKAGE=	kerberos-lib
+
 LIB=	roken
 LIBADD=	crypt
 VERSION_MAP=	${KRB5DIR}/lib/roken/version-script.map

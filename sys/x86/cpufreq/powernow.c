@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2004-2005 Bruno Ducrot
  * Copyright (c) 2004 FUKUDA Nobuhiko <nfukuda@spa.is.uec.ac.jp>
@@ -876,7 +876,8 @@ pn_identify(driver_t *driver, device_t parent)
 	}
 	if (device_find_child(parent, "powernow", -1) != NULL)
 		return;
-	if (BUS_ADD_CHILD(parent, 10, "powernow", -1) == NULL)
+	if (BUS_ADD_CHILD(parent, 10, "powernow", device_get_unit(parent))
+	    == NULL)
 		device_printf(parent, "powernow: add child failed\n");
 }
 

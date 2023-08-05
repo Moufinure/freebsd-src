@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 1999 Assar Westerlund
  * All rights reserved.
@@ -173,7 +173,7 @@ kern_syscall_module_handler(struct sysent *sysents, struct module *mod,
     int what, void *arg)
 {
 	struct syscall_module_data *data = arg;
-	modspecific_t ms;
+	modspecific_t ms = { 0 };
 	int error;
 
 	switch (what) {

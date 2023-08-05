@@ -27,6 +27,7 @@
 
 #include <libnvpair.h>
 #include <libzfs.h>
+#include <libzutil.h>
 
 #ifdef	__cplusplus
 extern "C" {
@@ -67,7 +68,6 @@ int for_each_pool(int, char **, boolean_t unavail, zprop_list_t **,
     boolean_t, zpool_iter_f, void *);
 
 /* Vdev list functions */
-typedef int (*pool_vdev_iter_f)(zpool_handle_t *, nvlist_t *, void *);
 int for_each_vdev(zpool_handle_t *zhp, pool_vdev_iter_f func, void *data);
 
 typedef struct zpool_list zpool_list_t;
@@ -129,6 +129,7 @@ int check_device(const char *path, boolean_t force,
 boolean_t check_sector_size_database(char *path, int *sector_size);
 void vdev_error(const char *fmt, ...);
 int check_file(const char *file, boolean_t force, boolean_t isspare);
+void after_zpool_upgrade(zpool_handle_t *zhp);
 
 #ifdef	__cplusplus
 }

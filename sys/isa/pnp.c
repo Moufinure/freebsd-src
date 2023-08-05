@@ -1,5 +1,5 @@
 /*
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 1996, Sujal M. Patel
  * All rights reserved.
@@ -115,7 +115,7 @@ pnp_write(int d, u_char r)
  * Intel May 94.
  */
 static void
-pnp_send_initiation_key()
+pnp_send_initiation_key(void)
 {
 	int cur, i;
 

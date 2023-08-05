@@ -47,7 +47,7 @@
 # @hdr is the array of fields that needs to be printed, so we
 # just iterate over this array and print the values using our pretty printer.
 #
-# This script must remain compatible with Python 2.6+ and Python 3.4+.
+# This script must remain compatible with Python 3.6+.
 #
 
 import sys
@@ -271,7 +271,7 @@ def print_values():
     if pretty_print:
         fmt = lambda col: prettynum(cols[col][0], cols[col][1], v[col])
     else:
-        fmt = lambda col: v[col]
+        fmt = lambda col: str(v[col])
 
     sys.stdout.write(sep.join(fmt(col) for col in hdr))
     sys.stdout.write("\n")

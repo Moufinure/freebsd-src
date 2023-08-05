@@ -905,6 +905,9 @@ TAILQ_HEAD(sysctl_ctx_list, sysctl_ctx_entry);
 	    NULL);							\
 })
 
+#define	SYSCTL_FOREACH(oidp, list) \
+	SLIST_FOREACH(oidp, list, oid_link)
+
 /*
  * A macro to generate a read-only sysctl to indicate the presence of optional
  * kernel features.
@@ -982,6 +985,7 @@ TAILQ_HEAD(sysctl_ctx_list, sysctl_ctx_entry);
 #define	KERN_HOSTUUID		36	/* string: host UUID identifier */
 #define	KERN_ARND		37	/* int: from arc4rand() */
 #define	KERN_MAXPHYS		38	/* int: MAXPHYS value */
+#define	KERN_LOCKF		39	/* struct: lockf reports */
 /*
  * KERN_PROC subtypes
  */

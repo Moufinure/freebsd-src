@@ -1,7 +1,7 @@
 #!/bin/sh
 
 #-
-# SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+# SPDX-License-Identifier: BSD-2-Clause
 #
 # Copyright 2004-2007 Colin Percival
 # All rights reserved
@@ -36,7 +36,7 @@
 # --no-stats	-- don't show progress statistics while fetching files
 usage () {
 	cat <<EOF
-usage: `basename $0` [options] command ... [path]
+usage: `basename $0` [options] command ...
 
 Options:
   -b basedir   -- Operate on a system mounted at basedir
@@ -47,8 +47,9 @@ Options:
                   (default: /etc/freebsd-update.conf)
   -F           -- Force a fetch operation to proceed in the
                   case of an unfinished upgrade
+  -j jail      -- Operate on the given jail specified by jid or name
   -k KEY       -- Trust an RSA key with SHA256 hash of KEY
-  -r release   -- Target for upgrade (e.g., 11.1-RELEASE)
+  -r release   -- Target for upgrade (e.g., 13.2-RELEASE)
   -s server    -- Server from which to fetch updates
                   (default: update.FreeBSD.org)
   -t address   -- Mail output of cron command, if any, to address
@@ -324,6 +325,19 @@ config_SourceRelease () {
 	export UNAME_r
 }
 
+# Get the Jail's path and the version of its installed userland
+config_TargetJail () {
+	JAIL=$1
+	UNAME_r=$(freebsd-version -j ${JAIL})
+	BASEDIR=$(jls -j ${JAIL} -h path | awk 'NR == 2 {print}')
+	if [ -z ${BASEDIR} ] || [ -z ${UNAME_r} ]; then
+		echo "The specified jail either doesn't exist or" \
+		      "does not have freebsd-version."
+		exit 1
+	fi
+	export UNAME_r
+}
+
 # Define what happens to output of utilities
 config_VerboseLevel () {
 	if [ -z ${VERBOSELEVEL} ]; then
@@ -410,6 +424,23 @@ config_BackupKernelSymbolFiles () {
 	fi
 }
 
+config_CreateBootEnv () {
+	if [ -z ${BOOTENV} ]; then
+		case $1 in
+		[Yy][Ee][Ss])
+			BOOTENV=yes
+			;;
+		[Nn][Oo])
+			BOOTENV=no
+			;;
+		*)
+			return 1
+			;;
+		esac
+	else
+		return 1
+	fi
+}
 # Handle one line of configuration
 configline () {
 	if [ $# -eq 0 ]; then
@@ -474,6 +505,10 @@ parse_cmdline () {
 		-d)
 			if [ $# -eq 1 ]; then usage; fi; shift
 			config_WorkDir $1 || usage
+			;;
+		-j)
+			if [ $# -eq 1 ]; then usage; fi; shift
+			config_TargetJail $1 || usage
 			;;
 		-k)
 			if [ $# -eq 1 ]; then usage; fi; shift
@@ -586,6 +621,7 @@ default_params () {
 	config_BackupKernel yes
 	config_BackupKernelDir /boot/kernel.old
 	config_BackupKernelSymbolFiles no
+	config_CreateBootEnv yes
 
 	# Merge these defaults into the earlier-configured settings
 	mergeconfig
@@ -850,6 +886,49 @@ install_check_params () {
 	fi
 }
 
+# Creates a new boot environment
+install_create_be () {
+	# Figure out if we're running in a jail and return if we are
+	if [ `sysctl -n security.jail.jailed` = 1 ]; then
+		return 1
+	fi
+	# Operating on roots that aren't located at / will, more often than not,
+	# not touch the boot environment.
+	if [ "$BASEDIR" != "/" ]; then
+		return 1
+	fi
+	# Create a boot environment if enabled
+	if [ ${BOOTENV} = yes ]; then
+		bectl check 2>/dev/null
+		case $? in
+			0)
+				# Boot environment are supported
+				CREATEBE=yes
+				;;
+			255)
+				# Boot environments are not supported
+				CREATEBE=no
+				;;
+			*)
+				# If bectl returns an unexpected exit code, don't create a BE
+				CREATEBE=no
+				;;
+		esac
+		if [ ${CREATEBE} = yes ]; then
+			echo -n "Creating snapshot of existing boot environment... "
+			VERSION=`freebsd-version -ku | sort -V | tail -n 1`
+			TIMESTAMP=`date +"%Y-%m-%d_%H%M%S"`
+			bectl create ${VERSION}_${TIMESTAMP}
+			if [ $? -eq 0 ]; then
+				echo "done.";
+			else
+				echo "failed."
+				exit 1
+			fi
+		fi
+	fi
+}
+
 # Perform sanity checks and set some final parameters in
 # preparation for UNinstalling updates.
 rollback_check_params () {
@@ -1041,7 +1120,7 @@ fetch_pick_server () {
 			This may be because upgrading from this platform (${ARCH})
 			or release (${RELNUM}) is unsupported by `basename $0`. Only
 			platforms with Tier 1 support can be upgraded by `basename $0`.
-			See https://www.freebsd.org/platforms/index.html for more info.
+			See https://www.freebsd.org/platforms/ for more info.
 
 			If unsupported, FreeBSD must be upgraded by source.
 		EOF
@@ -1598,11 +1677,12 @@ fetch_inspect_system () {
 	echo "done."
 }
 
-# For any paths matching ${MERGECHANGES}, compare $1 and $2 and find any
-# files which differ; generate $3 containing these paths and the old hashes.
+# For any paths matching ${MERGECHANGES}, compare $2 against $1 and $3 and
+# find any files with values unique to $2; generate $4 containing these paths
+# and their corresponding hashes from $1.
 fetch_filter_mergechanges () {
 	# Pull out the paths and hashes of the files matching ${MERGECHANGES}.
-	for F in $1 $2; do
+	for F in $1 $2 $3; do
 		for X in ${MERGECHANGES}; do
 			grep -E "^${X}" ${F}
 		done |
@@ -1610,9 +1690,10 @@ fetch_filter_mergechanges () {
 		    sort > ${F}-values
 	done
 
-	# Any line in $2-values which doesn't appear in $1-values and is a
-	# file means that we should list the path in $3.
-	comm -13 $1-values $2-values |
+	# Any line in $2-values which doesn't appear in $1-values or $3-values
+	# and is a file means that we should list the path in $3.
+	sort $1-values $3-values |
+	    comm -13 - $2-values |
 	    fgrep '|f|' |
 	    cut -f 1 -d '|' > $2-paths
 
@@ -1624,10 +1705,10 @@ fetch_filter_mergechanges () {
 	while read X; do
 		look "${X}|" $1-values |
 		    head -1
-	done < $2-paths > $3
+	done < $2-paths > $4
 
 	# Clean up
-	rm $1-values $2-values $2-paths
+	rm $1-values $2-values $3-values $2-paths
 }
 
 # For any paths matching ${UPDATEIFUNMODIFIED}, remove lines from $[123]
@@ -2464,8 +2545,21 @@ The following file could not be merged automatically: ${F}
 Press Enter to edit this file in ${EDITOR} and resolve the conflicts
 manually...
 			EOF
-			read dummy </dev/tty
-			${EDITOR} `pwd`/merge/new/${F} < /dev/tty
+			while true; do
+				read dummy </dev/tty
+				${EDITOR} `pwd`/merge/new/${F} < /dev/tty
+
+				if ! grep -qE '^(<<<<<<<|=======|>>>>>>>)([[:space:]].*)?$' $(pwd)/merge/new/${F} ; then
+					break
+				fi
+				cat <<-EOF
+
+Merge conflict markers remain in: ${F}
+These must be resolved for the system to be functional.
+
+Press Enter to return to editing this file.
+				EOF
+			done
 		done < failed.merges
 		rm failed.merges
 
@@ -2619,7 +2713,7 @@ upgrade_run () {
 
 	# Based on ${MERGECHANGES}, generate a file tomerge-old with the
 	# paths and hashes of old versions of files to merge.
-	fetch_filter_mergechanges INDEX-OLD INDEX-PRESENT tomerge-old
+	fetch_filter_mergechanges INDEX-OLD INDEX-PRESENT INDEX-NEW tomerge-old
 
 	# Based on ${UPDATEIFUNMODIFIED}, remove lines from INDEX-* which
 	# correspond to lines in INDEX-PRESENT with hashes not appearing
@@ -2944,6 +3038,14 @@ Kernel updates have been installed.  Please reboot and run
 		install_from_index INDEX-NEW || return 1
 		install_delete INDEX-OLD INDEX-NEW || return 1
 
+		# Restart sshd if running (PR263489).  Note that this does not
+		# affect child sshd processes handling existing sessions.
+		if service sshd status >/dev/null 2>/dev/null; then
+			echo
+			echo "Restarting sshd after upgrade"
+			service sshd restart
+		fi
+
 		# Rehash certs if we actually have certctl installed.
 		if which certctl>/dev/null; then
 			env DESTDIR=${BASEDIR} certctl rehash
@@ -2958,7 +3060,8 @@ Kernel updates have been installed.  Please reboot and run
 			if [ ! -d ${BASEDIR}/$D ]; then
 				continue
 			fi
-			if [ -z "$(find ${BASEDIR}/$D -type f -newer ${BASEDIR}/$D/mandoc.db)" ]; then
+			if [ -f ${BASEDIR}/$D/mandoc.db ] && \
+			    [ -z "$(find ${BASEDIR}/$D -type f -newer ${BASEDIR}/$D/mandoc.db)" ]; then
 				continue;
 			fi
 			makewhatis ${BASEDIR}/$D
@@ -3365,6 +3468,7 @@ cmd_updatesready () {
 cmd_install () {
 	finalize_components_config ${COMPONENTS}
 	install_check_params
+	install_create_be
 	install_run || exit 1
 }
 
@@ -3402,6 +3506,9 @@ fi
 
 # Set LC_ALL in order to avoid problems with character ranges like [A-Z].
 export LC_ALL=C
+
+# Clear environment variables that may affect operation of tools that we use.
+unset GREP_OPTIONS
 
 get_params $@
 for COMMAND in ${COMMANDS}; do

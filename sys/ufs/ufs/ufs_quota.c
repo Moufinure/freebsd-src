@@ -562,6 +562,7 @@ quotaon(struct thread *td, struct mount *mp, int type, void *fname)
 	VOP_UNLOCK(vp);
 	MNT_ILOCK(mp);
 	mp->mnt_flag |= MNT_QUOTA;
+	mp->mnt_stat.f_flags |= MNT_QUOTA;
 	MNT_IUNLOCK(mp);
 
 	vpp = &ump->um_quotas[type];
@@ -764,6 +765,7 @@ quotaoff_inchange(struct thread *td, struct mount *mp, int type)
 	if (i == MAXQUOTAS) {
 		MNT_ILOCK(mp);
 		mp->mnt_flag &= ~MNT_QUOTA;
+		mp->mnt_stat.f_flags &= ~MNT_QUOTA;
 		MNT_IUNLOCK(mp);
 	}
 	UFS_UNLOCK(ump);
@@ -1684,9 +1686,7 @@ dqflush(struct vnode *vp)
  * Return count of number of quota structures found.
  */
 int
-quotaref(vp, qrp)
-	struct vnode *vp;
-	struct dquot **qrp;
+quotaref(struct vnode *vp, struct dquot **qrp)
 {
 	struct inode *ip;
 	struct dquot *dq;
@@ -1721,8 +1721,7 @@ quotaref(vp, qrp)
  * Release a set of quota structures obtained from a vnode.
  */
 void
-quotarele(qrp)
-	struct dquot **qrp;
+quotarele(struct dquot **qrp)
 {
 	struct dquot *dq;
 	int i;
@@ -1739,10 +1738,7 @@ quotarele(qrp)
  * Positive numbers when adding blocks; negative numbers when freeing blocks.
  */
 void
-quotaadj(qrp, ump, blkcount)
-	struct dquot **qrp;
-	struct ufsmount *ump;
-	int64_t blkcount;
+quotaadj(struct dquot **qrp, struct ufsmount *ump, int64_t blkcount)
 {
 	struct dquot *dq;
 	ufs2_daddr_t ncurblocks;

@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2008-2009 Ed Schouten <ed@FreeBSD.org>
  * All rights reserved.
@@ -53,7 +53,7 @@ typedef unsigned char teken_color_t;
 #define	TC_BLACK	0
 #define	TC_RED		1
 #define	TC_GREEN	2
-#define	TC_BROWN	3
+#define	TC_YELLOW	3
 #define	TC_BLUE		4
 #define	TC_MAGENTA	5
 #define	TC_CYAN		6

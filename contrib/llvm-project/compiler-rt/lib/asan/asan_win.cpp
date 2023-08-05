@@ -1,4 +1,5 @@
-//===-- asan_win.cpp ------------------------------------------------------===//
+//===-- asan_win.cpp
+//------------------------------------------------------===//>
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -13,21 +14,20 @@
 
 #include "sanitizer_common/sanitizer_platform.h"
 #if SANITIZER_WINDOWS
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
+#  define WIN32_LEAN_AND_MEAN
+#  include <stdlib.h>
+#  include <windows.h>
 
-#include <stdlib.h>
-
-#include "asan_interceptors.h"
-#include "asan_internal.h"
-#include "asan_mapping.h"
-#include "asan_report.h"
-#include "asan_stack.h"
-#include "asan_thread.h"
-#include "sanitizer_common/sanitizer_libc.h"
-#include "sanitizer_common/sanitizer_mutex.h"
-#include "sanitizer_common/sanitizer_win.h"
-#include "sanitizer_common/sanitizer_win_defs.h"
+#  include "asan_interceptors.h"
+#  include "asan_internal.h"
+#  include "asan_mapping.h"
+#  include "asan_report.h"
+#  include "asan_stack.h"
+#  include "asan_thread.h"
+#  include "sanitizer_common/sanitizer_libc.h"
+#  include "sanitizer_common/sanitizer_mutex.h"
+#  include "sanitizer_common/sanitizer_win.h"
+#  include "sanitizer_common/sanitizer_win_defs.h"
 
 using namespace __asan;
 
@@ -49,8 +49,8 @@ uptr __asan_get_shadow_memory_dynamic_address() {
 static LPTOP_LEVEL_EXCEPTION_FILTER default_seh_handler;
 static LPTOP_LEVEL_EXCEPTION_FILTER user_seh_handler;
 
-extern "C" SANITIZER_INTERFACE_ATTRIBUTE
-long __asan_unhandled_exception_filter(EXCEPTION_POINTERS *info) {
+extern "C" SANITIZER_INTERFACE_ATTRIBUTE long __asan_unhandled_exception_filter(
+    EXCEPTION_POINTERS *info) {
   EXCEPTION_RECORD *exception_record = info->ExceptionRecord;
   CONTEXT *context = info->ContextRecord;
 
@@ -134,7 +134,7 @@ INTERCEPTOR(int, _except_handler4, void *a, void *b, void *c, void *d) {
 static thread_return_t THREAD_CALLING_CONV asan_thread_start(void *arg) {
   AsanThread *t = (AsanThread *)arg;
   SetCurrentThread(t);
-  return t->ThreadStart(GetTid(), /* signal_thread_is_registered */ nullptr);
+  return t->ThreadStart(GetTid());
 }
 
 INTERCEPTOR_WINAPI(HANDLE, CreateThread, LPSECURITY_ATTRIBUTES security,
@@ -187,8 +187,16 @@ void InitializePlatformInterceptors() {
   }
 }
 
+void InstallAtExitCheckLeaks() {}
+
 void AsanApplyToGlobals(globals_op_fptr op, const void *needle) {
   UNIMPLEMENTED();
+}
+
+void FlushUnneededASanShadowMemory(uptr p, uptr size) {
+  // Since asan's mapping is compacting, the shadow chunk may be
+  // not page-aligned, so we only flush the page-aligned portion.
+  ReleaseMemoryPagesToOS(MemToShadow(p), MemToShadow(p + size));
 }
 
 // ---------------------- TSD ---------------- {{{
@@ -247,24 +255,13 @@ void *AsanDoesNotSupportStaticLinkage() {
 }
 
 uptr FindDynamicShadowStart() {
-  uptr granularity = GetMmapGranularity();
-  uptr alignment = 8 * granularity;
-  uptr left_padding = granularity;
-  uptr space_size = kHighShadowEnd + left_padding;
-  uptr shadow_start = FindAvailableMemoryRange(space_size, alignment,
-                                               granularity, nullptr, nullptr);
-  CHECK_NE((uptr)0, shadow_start);
-  CHECK(IsAligned(shadow_start, alignment));
-  return shadow_start;
+  return MapDynamicShadow(MemToShadowSize(kHighMemEnd), ASAN_SHADOW_SCALE,
+                          /*min_shadow_base_alignment*/ 0, kHighMemEnd);
 }
 
 void AsanCheckDynamicRTPrereqs() {}
 
 void AsanCheckIncompatibleRT() {}
-
-void ReadContextStack(void *context, uptr *stack, uptr *ssize) {
-  UNIMPLEMENTED();
-}
 
 void AsanOnDeadlySignal(int, void *siginfo, void *context) { UNIMPLEMENTED(); }
 

@@ -36,11 +36,13 @@
 __FBSDID("$FreeBSD$");
 
 #include "opt_capsicum.h"
+#include "opt_ktrace.h"
 
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/capsicum.h>
 #include <sys/kernel.h>
+#include <sys/ktrace.h>
 #include <sys/lock.h>
 #include <sys/malloc.h>
 #include <sys/mutex.h>
@@ -391,9 +393,7 @@ sysarch(struct thread *td, struct sysarch_args *uap)
 }
 
 int
-amd64_set_ioperm(td, uap)
-	struct thread *td;
-	struct i386_ioperm_args *uap;
+amd64_set_ioperm(struct thread *td, struct i386_ioperm_args *uap)
 {
 	char *iomap;
 	struct amd64tss *tssp;
@@ -448,9 +448,7 @@ amd64_set_ioperm(td, uap)
 }
 
 int
-amd64_get_ioperm(td, uap)
-	struct thread *td;
-	struct i386_ioperm_args *uap;
+amd64_get_ioperm(struct thread *td, struct i386_ioperm_args *uap)
 {
 	int i, state;
 	char *iomap;
@@ -492,15 +490,19 @@ set_user_ldt(struct mdproc *mdp)
 }
 
 static void
-set_user_ldt_rv(struct vmspace *vmsp)
+set_user_ldt_rv(void *arg)
 {
-	struct thread *td;
+	struct proc *orig, *target;
+	struct proc_ldt *ldt;
 
-	td = curthread;
-	if (vmsp != td->td_proc->p_vmspace)
+	orig = arg;
+	target = curthread->td_proc;
+
+	ldt = (void *)atomic_load_acq_ptr((uintptr_t *)&orig->p_md.md_ldt);
+	if (target->p_md.md_ldt != ldt)
 		return;
 
-	set_user_ldt(&td->td_proc->p_md);
+	set_user_ldt(&target->p_md);
 }
 
 struct proc_ldt *
@@ -550,8 +552,7 @@ user_ldt_alloc(struct proc *p, int force)
 	atomic_thread_fence_rel();
 	mdp->md_ldt = new_ldt;
 	critical_exit();
-	smp_rendezvous(NULL, (void (*)(void *))set_user_ldt_rv, NULL,
-	    p->p_vmspace);
+	smp_rendezvous(NULL, set_user_ldt_rv, NULL, p);
 
 	return (mdp->md_ldt);
 }

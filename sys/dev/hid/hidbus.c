@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2019-2020 Vladimir Kondratyev <wulf@FreeBSD.org>
  *
@@ -169,6 +169,25 @@ hidbus_locate(const void *desc, hid_size_t size, int32_t u, enum hid_kind k,
 		*id = 0;
 	hid_end_parse(d);
 	return (0);
+}
+
+bool
+hidbus_is_collection(const void *desc, hid_size_t size, int32_t usage,
+    uint8_t tlc_index)
+{
+	struct hid_data *d;
+	struct hid_item h;
+	bool ret = false;
+
+	d = hid_start_parse(desc, size, 0);
+	HIDBUS_FOREACH_ITEM(d, &h, tlc_index) {
+		if (h.kind == hid_collection && h.usage == usage) {
+			ret = true;
+			break;
+		}
+	}
+	hid_end_parse(d);
+	return (ret);
 }
 
 static device_t
@@ -457,6 +476,9 @@ hidbus_write_ivar(device_t bus, device_t child, int which, uintptr_t value)
 		break;
 	case HIDBUS_IVAR_FLAGS:
 		tlc->flags = value;
+		if ((value & HIDBUS_FLAG_CAN_POLL) != 0)
+			HID_INTR_SETUP(
+			    device_get_parent(bus), NULL, NULL, NULL);
 		break;
 	case HIDBUS_IVAR_DRIVER_INFO:
 		tlc->driver_info = value;
@@ -589,20 +611,20 @@ hidbus_intr_start(device_t child)
 	struct hidbus_softc *sc = device_get_softc(bus);
 	struct hidbus_ivars *ivar = device_get_ivars(child);
 	struct hidbus_ivars *tlc;
-	int refcnt = 0;
+	bool refcnted = false;
 	int error;
 
 	if (sx_xlock_sig(&sc->sx) != 0)
 		return (EINTR);
 	CK_STAILQ_FOREACH(tlc, &sc->tlcs, link) {
-		refcnt += tlc->refcnt;
+		refcnted |= (tlc->refcnt != 0);
 		if (tlc == ivar) {
 			mtx_lock(tlc->mtx);
 			++tlc->refcnt;
 			mtx_unlock(tlc->mtx);
 		}
 	}
-	error = refcnt != 0 ? 0 : HID_INTR_START(device_get_parent(bus));
+	error = refcnted ? 0 : HID_INTR_START(device_get_parent(bus));
 	sx_unlock(&sc->sx);
 
 	return (error);
@@ -615,7 +637,7 @@ hidbus_intr_stop(device_t child)
 	struct hidbus_softc *sc = device_get_softc(bus);
 	struct hidbus_ivars *ivar = device_get_ivars(child);
 	struct hidbus_ivars *tlc;
-	bool refcnt = 0;
+	bool refcnted = false;
 	int error;
 
 	if (sx_xlock_sig(&sc->sx) != 0)
@@ -627,9 +649,9 @@ hidbus_intr_stop(device_t child)
 			--tlc->refcnt;
 			mtx_unlock(tlc->mtx);
 		}
-		refcnt += tlc->refcnt;
+		refcnted |= (tlc->refcnt != 0);
 	}
-	error = refcnt != 0 ? 0 : HID_INTR_STOP(device_get_parent(bus));
+	error = refcnted ? 0 : HID_INTR_STOP(device_get_parent(bus));
 	sx_unlock(&sc->sx);
 
 	return (error);
@@ -890,6 +912,7 @@ static device_method_t hidbus_methods[] = {
 	DEVMETHOD(hid_set_report,	hid_set_report),
 	DEVMETHOD(hid_set_idle,		hid_set_idle),
 	DEVMETHOD(hid_set_protocol,	hid_set_protocol),
+	DEVMETHOD(hid_ioctl,		hid_ioctl),
 
 	DEVMETHOD_END
 };
@@ -903,5 +926,6 @@ driver_t hidbus_driver = {
 
 MODULE_DEPEND(hidbus, hid, 1, 1, 1);
 MODULE_VERSION(hidbus, 1);
+DRIVER_MODULE(hidbus, hvhid, hidbus_driver, hidbus_devclass, 0, 0);
 DRIVER_MODULE(hidbus, iichid, hidbus_driver, hidbus_devclass, 0, 0);
 DRIVER_MODULE(hidbus, usbhid, hidbus_driver, hidbus_devclass, 0, 0);

@@ -1,6 +1,6 @@
 /* $FreeBSD$ */
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2008 Hans Petter Selasky. All rights reserved.
  *
@@ -32,12 +32,6 @@
 
 #ifndef _LIBUSB20_INT_H_
 #define	_LIBUSB20_INT_H_
-
-#ifdef COMPAT_32BIT
-#define	libusb20_pass_ptr(ptr)	((uint64_t)(uintptr_t)(ptr))
-#else
-#define	libusb20_pass_ptr(ptr)	(ptr)
-#endif
 
 struct libusb20_device;
 struct libusb20_backend;
@@ -159,11 +153,7 @@ struct libusb20_transfer {
 	/*
 	 * Pointer to a list of buffer pointers:
 	 */
-#ifdef COMPAT_32BIT
-	uint64_t *ppBuffer;
-#else
 	void  **ppBuffer;
-#endif
 	/*
 	 * Pointer to frame lengths, which are updated to actual length
 	 * after the USB transfer completes:

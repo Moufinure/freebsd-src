@@ -69,6 +69,7 @@ extern uint32_t zfs_vdev_async_write_max_active;
  * Virtual device operations
  */
 typedef int	vdev_init_func_t(spa_t *spa, nvlist_t *nv, void **tsd);
+typedef void	vdev_kobj_post_evt_func_t(vdev_t *vd);
 typedef void	vdev_fini_func_t(vdev_t *vd);
 typedef int	vdev_open_func_t(vdev_t *vd, uint64_t *size, uint64_t *max_size,
     uint64_t *ashift, uint64_t *pshift);
@@ -123,6 +124,7 @@ typedef const struct vdev_ops {
 	vdev_config_generate_func_t	*vdev_op_config_generate;
 	vdev_nparity_func_t		*vdev_op_nparity;
 	vdev_ndisks_func_t		*vdev_op_ndisks;
+	vdev_kobj_post_evt_func_t	*vdev_op_kobj_evt_post;
 	char				vdev_op_type[16];
 	boolean_t			vdev_op_leaf;
 } vdev_ops_t;
@@ -435,6 +437,7 @@ struct vdev {
 	boolean_t	vdev_isl2cache;	/* was a l2cache device		*/
 	boolean_t	vdev_copy_uberblocks;  /* post expand copy uberblocks */
 	boolean_t	vdev_resilver_deferred;  /* resilver deferred */
+	boolean_t	vdev_kobj_flag; /* kobj event record */
 	vdev_queue_t	vdev_queue;	/* I/O deadline schedule queue	*/
 	vdev_cache_t	vdev_cache;	/* physical block cache		*/
 	spa_aux_vdev_t	*vdev_aux;	/* for l2cache and spares vdevs	*/
@@ -458,10 +461,11 @@ struct vdev {
 	kmutex_t	vdev_probe_lock; /* protects vdev_probe_zio	*/
 
 	/*
-	 * We rate limit ZIO delay and ZIO checksum events, since they
+	 * We rate limit ZIO delay, deadman, and checksum events, since they
 	 * can flood ZED with tons of events when a drive is acting up.
 	 */
 	zfs_ratelimit_t vdev_delay_rl;
+	zfs_ratelimit_t vdev_deadman_rl;
 	zfs_ratelimit_t vdev_checksum_rl;
 };
 
@@ -501,7 +505,7 @@ typedef enum vbe_vers {
 	 * and is protected by an embedded checksum. By default, GRUB will
 	 * check if the boot filesystem supports storing the environment data
 	 * in a special location, and if so, will invoke filesystem specific
-	 * logic to retrieve it. This can be overriden by a variable, should
+	 * logic to retrieve it. This can be overridden by a variable, should
 	 * the user so desire.
 	 */
 	VB_RAW = 0,
@@ -641,6 +645,7 @@ extern int vdev_obsolete_counts_are_precise(vdev_t *vd, boolean_t *are_precise);
  */
 int vdev_checkpoint_sm_object(vdev_t *vd, uint64_t *sm_obj);
 void vdev_metaslab_group_create(vdev_t *vd);
+uint64_t vdev_best_ashift(uint64_t logical, uint64_t a, uint64_t b);
 
 /*
  * Vdev ashift optimization tunables

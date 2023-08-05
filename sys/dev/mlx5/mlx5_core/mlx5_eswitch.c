@@ -25,14 +25,17 @@
  * $FreeBSD$
  */
 
+#include "opt_rss.h"
+#include "opt_ratelimit.h"
+
 #include <linux/etherdevice.h>
 #include <dev/mlx5/driver.h>
 #include <dev/mlx5/mlx5_ifc.h>
 #include <dev/mlx5/vport.h>
 #include <dev/mlx5/fs.h>
 #include <dev/mlx5/mpfs.h>
-#include "mlx5_core.h"
-#include "eswitch.h"
+#include <dev/mlx5/mlx5_core/mlx5_core.h>
+#include <dev/mlx5/mlx5_core/eswitch.h>
 
 #define UPLINK_VPORT 0xFFFF
 
@@ -395,9 +398,7 @@ static int esw_del_uc_addr(struct mlx5_eswitch *esw, struct vport_addr *vaddr)
 
 	mlx5_mpfs_del_mac(esw->dev, esw_uc->table_index);
 
-	if (vaddr->flow_rule)
-		mlx5_del_flow_rule(vaddr->flow_rule);
-	vaddr->flow_rule = NULL;
+	mlx5_del_flow_rule(&vaddr->flow_rule);
 
 	l2addr_hash_del(esw_uc);
 	return 0;
@@ -456,15 +457,12 @@ static int esw_del_mc_addr(struct mlx5_eswitch *esw, struct vport_addr *vaddr)
 		  vport, mac, vaddr->flow_rule, esw_mc->refcnt,
 		  esw_mc->uplink_rule);
 
-	if (vaddr->flow_rule)
-		mlx5_del_flow_rule(vaddr->flow_rule);
-	vaddr->flow_rule = NULL;
+	mlx5_del_flow_rule(&vaddr->flow_rule);
 
 	if (--esw_mc->refcnt)
 		return 0;
 
-	if (esw_mc->uplink_rule)
-		mlx5_del_flow_rule(esw_mc->uplink_rule);
+	mlx5_del_flow_rule(&esw_mc->uplink_rule);
 
 	l2addr_hash_del(esw_mc);
 	return 0;
@@ -681,14 +679,8 @@ out:
 static void esw_vport_cleanup_egress_rules(struct mlx5_eswitch *esw,
 					   struct mlx5_vport *vport)
 {
-	if (!IS_ERR_OR_NULL(vport->egress.allowed_vlan))
-		mlx5_del_flow_rule(vport->egress.allowed_vlan);
-
-	if (!IS_ERR_OR_NULL(vport->egress.drop_rule))
-		mlx5_del_flow_rule(vport->egress.drop_rule);
-
-	vport->egress.allowed_vlan = NULL;
-	vport->egress.drop_rule = NULL;
+	mlx5_del_flow_rule(&vport->egress.allowed_vlan);
+	mlx5_del_flow_rule(&vport->egress.drop_rule);
 }
 
 static void esw_vport_disable_egress_acl(struct mlx5_eswitch *esw,
@@ -772,9 +764,7 @@ out:
 static void esw_vport_cleanup_ingress_rules(struct mlx5_eswitch *esw,
 					    struct mlx5_vport *vport)
 {
-	if (!IS_ERR_OR_NULL(vport->ingress.drop_rule))
-		mlx5_del_flow_rule(vport->ingress.drop_rule);
-	vport->ingress.drop_rule = NULL;
+	mlx5_del_flow_rule(&vport->ingress.drop_rule);
 }
 
 static void esw_vport_disable_ingress_acl(struct mlx5_eswitch *esw,

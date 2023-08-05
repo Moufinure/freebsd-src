@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2008 Benno Rice.  All rights reserved.
  *
@@ -1175,9 +1175,9 @@ smc_reset(struct smc_softc *sc)
 	 * Set up the control register.
 	 */
 	smc_select_bank(sc, 1);
-	ctr = smc_read_2(sc, CTR);
-	ctr |= CTR_LE_ENABLE | CTR_AUTO_RELEASE;
-	smc_write_2(sc, CTR, ctr);
+	ctr = smc_read_2(sc, CTRL);
+	ctr |= CTRL_LE_ENABLE | CTRL_AUTO_RELEASE;
+	smc_write_2(sc, CTRL, ctr);
 
 	/*
 	 * Reset the MMU.

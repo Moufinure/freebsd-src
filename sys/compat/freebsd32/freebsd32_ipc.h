@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2002 Doug Rabson
  * All rights reserved.
@@ -104,10 +104,10 @@ struct shmid_ds32 {
 
 #ifdef _KERNEL
 struct shmid_kernel32 {
-	struct shmid_ds32	 u;
-	int32_t			*object;
-	int32_t			*label;
-	int32_t			*cred;
+	struct shmid_ds32	u;
+	int32_t			object;
+	int32_t			label;
+	int32_t			cred;
 };
 #endif
 

@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2018, Matthew Macy <mmacy@freebsd.org>
  *
@@ -400,6 +400,14 @@ ENTRY_DIRECT(suword)
 	EPILOGUE
 END_DIRECT(suword)
 #endif	
+
+ENTRY_DIRECT(suword16)
+	PROLOGUE
+	SET_FUSUFAULT(%r3, %r7)
+	sth  %r4, 0(%r3)
+	CLEAR_FAULT(%r7)
+	EPILOGUE
+END_DIRECT(suword16)
 
 ENTRY_DIRECT(suword32)
 	PROLOGUE

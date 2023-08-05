@@ -116,7 +116,7 @@ VNET_DEFINE_STATIC(bool,		frag6_on);
 
 /* System wide (global) maximum and count of packets in reassembly queues. */
 static int ip6_maxfrags;
-static volatile u_int frag6_nfrags = 0;
+static u_int __exclusive_cache_line frag6_nfrags;
 
 /* Maximum and current packets in per-VNET reassembly queue. */
 VNET_DEFINE_STATIC(int,			ip6_maxfragpackets);
@@ -164,7 +164,7 @@ VNET_DEFINE_STATIC(uint32_t,		ip6qb_hashseed);
 SYSCTL_DECL(_net_inet6_ip6);
 
 SYSCTL_UINT(_net_inet6_ip6, OID_AUTO, frag6_nfrags,
-	CTLFLAG_RD, __DEVOLATILE(u_int *, &frag6_nfrags), 0,
+	CTLFLAG_RD, &frag6_nfrags, 0,
 	"Global number of IPv6 fragments across all reassembly queues.");
 
 static void
@@ -179,7 +179,7 @@ frag6_set_bucketsize(void)
 SYSCTL_INT(_net_inet6_ip6, IPV6CTL_MAXFRAGS, maxfrags,
 	CTLFLAG_RW, &ip6_maxfrags, 0,
 	"Maximum allowed number of outstanding IPv6 packet fragments. "
-	"A value of 0 means no fragmented packets will be accepted, while a "
+	"A value of 0 means no fragmented packets will be accepted, while "
 	"a value of -1 means no limit");
 
 static int
@@ -554,8 +554,7 @@ frag6_input(struct mbuf **mp, int *offp, int proto)
 		q6->ip6q_ttl	= IPV6_FRAGTTL;
 		q6->ip6q_src	= ip6->ip6_src;
 		q6->ip6q_dst	= ip6->ip6_dst;
-		q6->ip6q_ecn	=
-		    (ntohl(ip6->ip6_flow) >> 20) & IPTOS_ECN_MASK;
+		q6->ip6q_ecn	= IPV6_ECN(ip6);
 		q6->ip6q_unfrglen = -1;	/* The 1st fragment has not arrived. */
 
 		/* Add the fragemented packet to the bucket. */
@@ -688,7 +687,7 @@ frag6_input(struct mbuf **mp, int *offp, int proto)
 	 * if CE is set, do not lose CE.
 	 * Drop if CE and not-ECT are mixed for the same packet.
 	 */
-	ecn = (ntohl(ip6->ip6_flow) >> 20) & IPTOS_ECN_MASK;
+	ecn = IPV6_ECN(ip6);
 	ecn0 = q6->ip6q_ecn;
 	if (ecn == IPTOS_ECN_CE) {
 		if (ecn0 == IPTOS_ECN_NOTECT) {
@@ -807,6 +806,11 @@ postinsert:
 	/* Adjust offset to point where the original next header starts. */
 	offset = ip6af->ip6af_offset - sizeof(struct ip6_frag);
 	free(ip6af, M_FRAG6);
+	if ((u_int)plen + (u_int)offset - sizeof(struct ip6_hdr) >
+	    IPV6_MAXPACKET) {
+		frag6_freef(q6, bucket);
+		goto dropfrag;
+	}
 	ip6 = mtod(m, struct ip6_hdr *);
 	ip6->ip6_plen = htons((u_short)plen + offset - sizeof(struct ip6_hdr));
 	if (q6->ip6q_ecn == IPTOS_ECN_CE)
@@ -892,10 +896,15 @@ frag6_slowtimo(void)
 	struct ip6q *q6, *q6tmp;
 	uint32_t bucket;
 
+	if (atomic_load_int(&frag6_nfrags) == 0)
+		return;
+
 	VNET_LIST_RLOCK_NOSLEEP();
 	VNET_FOREACH(vnet_iter) {
 		CURVNET_SET(vnet_iter);
 		for (bucket = 0; bucket < IP6REASS_NHASH; bucket++) {
+			if (V_ip6qb[bucket].count == 0)
+				continue;
 			IP6QB_LOCK(bucket);
 			head = IP6QB_HEAD(bucket);
 			TAILQ_FOREACH_SAFE(q6, head, ip6q_tq, q6tmp)

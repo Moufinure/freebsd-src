@@ -44,6 +44,9 @@
 #include <strings.h>
 #include <unistd.h>
 #include <math.h>
+#if LIBFETCH_DYNAMIC
+#include <dlfcn.h>
+#endif
 #include <sys/stat.h>
 #include <sys/mnttab.h>
 #include <sys/mntent.h>
@@ -167,6 +170,8 @@ libzfs_error_description(libzfs_handle_t *hdl)
 		return (dgettext(TEXT_DOMAIN, "I/O error"));
 	case EZFS_INTR:
 		return (dgettext(TEXT_DOMAIN, "signal received"));
+	case EZFS_CKSUM:
+		return (dgettext(TEXT_DOMAIN, "insufficient replicas"));
 	case EZFS_ISSPARE:
 		return (dgettext(TEXT_DOMAIN, "device is reserved as a hot "
 		    "spare"));
@@ -389,6 +394,10 @@ zfs_common_error(libzfs_handle_t *hdl, int error, const char *fmt,
 	case EINTR:
 		zfs_verror(hdl, EZFS_INTR, fmt, ap);
 		return (-1);
+
+	case ECKSUM:
+		zfs_verror(hdl, EZFS_CKSUM, fmt, ap);
+		return (-1);
 	}
 
 	return (0);
@@ -483,7 +492,7 @@ zfs_standard_error_fmt(libzfs_handle_t *hdl, int error, const char *fmt, ...)
 		zfs_verror(hdl, EZFS_BADPROP, fmt, ap);
 		break;
 	default:
-		zfs_error_aux(hdl, strerror(error));
+		zfs_error_aux(hdl, "%s", strerror(error));
 		zfs_verror(hdl, EZFS_UNKNOWN, fmt, ap);
 		break;
 	}
@@ -598,7 +607,7 @@ zfs_setprop_error(libzfs_handle_t *hdl, zfs_prop_t prop, int err,
 			break;
 		}
 #endif
-		/* FALLTHROUGH */
+		fallthrough;
 	default:
 		(void) zfs_standard_error(hdl, err, errbuf);
 	}
@@ -671,7 +680,7 @@ zpool_standard_error_fmt(libzfs_handle_t *hdl, int error, const char *fmt, ...)
 	case ENOSPC:
 	case EDQUOT:
 		zfs_verror(hdl, EZFS_NOSPC, fmt, ap);
-		return (-1);
+		break;
 
 	case EAGAIN:
 		zfs_error_aux(hdl, dgettext(TEXT_DOMAIN,
@@ -734,7 +743,7 @@ zpool_standard_error_fmt(libzfs_handle_t *hdl, int error, const char *fmt, ...)
 		zfs_verror(hdl, EZFS_IOC_NOTSUPPORTED, fmt, ap);
 		break;
 	default:
-		zfs_error_aux(hdl, strerror(error));
+		zfs_error_aux(hdl, "%s", strerror(error));
 		zfs_verror(hdl, EZFS_UNKNOWN, fmt, ap);
 	}
 
@@ -782,8 +791,10 @@ zfs_asprintf(libzfs_handle_t *hdl, const char *fmt, ...)
 
 	va_end(ap);
 
-	if (err < 0)
+	if (err < 0) {
 		(void) no_memory(hdl);
+		ret = NULL;
+	}
 
 	return (ret);
 }
@@ -884,13 +895,13 @@ libzfs_run_process_impl(const char *path, char *argv[], char *env[], int flags,
 	 * Setup a pipe between our child and parent process if we're
 	 * reading stdout.
 	 */
-	if ((lines != NULL) && pipe(link) == -1)
+	if ((lines != NULL) && pipe2(link, O_CLOEXEC) == -1)
 		return (-EPIPE);
 
 	pid = vfork();
 	if (pid == 0) {
 		/* Child process */
-		devnull_fd = open("/dev/null", O_WRONLY);
+		devnull_fd = open("/dev/null", O_WRONLY | O_CLOEXEC);
 
 		if (devnull_fd < 0)
 			_exit(-1);
@@ -900,14 +911,10 @@ libzfs_run_process_impl(const char *path, char *argv[], char *env[], int flags,
 		else if (lines != NULL) {
 			/* Save the output to lines[] */
 			dup2(link[1], STDOUT_FILENO);
-			close(link[0]);
-			close(link[1]);
 		}
 
 		if (!(flags & STDERR_VERBOSE))
 			(void) dup2(devnull_fd, STDERR_FILENO);
-
-		close(devnull_fd);
 
 		if (flags & NO_DEFAULT_PATH) {
 			if (env == NULL)
@@ -1024,15 +1031,15 @@ libzfs_init(void)
 		return (NULL);
 	}
 
-	if ((hdl->libzfs_fd = open(ZFS_DEV, O_RDWR|O_EXCL)) < 0) {
+	if ((hdl->libzfs_fd = open(ZFS_DEV, O_RDWR|O_EXCL|O_CLOEXEC)) < 0) {
 		free(hdl);
 		return (NULL);
 	}
 
 #ifdef HAVE_SETMNTENT
-	if ((hdl->libzfs_mnttab = setmntent(MNTTAB, "r")) == NULL) {
+	if ((hdl->libzfs_mnttab = setmntent(MNTTAB, "re")) == NULL) {
 #else
-	if ((hdl->libzfs_mnttab = fopen(MNTTAB, "r")) == NULL) {
+	if ((hdl->libzfs_mnttab = fopen(MNTTAB, "re")) == NULL) {
 #endif
 		(void) close(hdl->libzfs_fd);
 		free(hdl);
@@ -1103,6 +1110,11 @@ libzfs_fini(libzfs_handle_t *hdl)
 	libzfs_core_fini();
 	regfree(&hdl->libzfs_urire);
 	fletcher_4_fini();
+#if LIBFETCH_DYNAMIC
+	if (hdl->libfetch != (void *)-1 && hdl->libfetch != NULL)
+		(void) dlclose(hdl->libfetch);
+	free(hdl->libfetch_load_error);
+#endif
 	free(hdl);
 }
 
@@ -1144,7 +1156,7 @@ zfs_path_to_zhandle(libzfs_handle_t *hdl, const char *path, zfs_type_t argtype)
 	}
 
 	/* Reopen MNTTAB to prevent reading stale data from open file */
-	if (freopen(MNTTAB, "r", hdl->libzfs_mnttab) == NULL)
+	if (freopen(MNTTAB, "re", hdl->libzfs_mnttab) == NULL)
 		return (NULL);
 
 	if (getextmntent(path, &entry, &statbuf) != 0)
@@ -2015,7 +2027,7 @@ zfs_version_print(void)
  * Return 1 if the user requested ANSI color output, and our terminal supports
  * it.  Return 0 for no color.
  */
-static int
+int
 use_color(void)
 {
 	static int use_color = -1;
@@ -2061,31 +2073,38 @@ use_color(void)
 }
 
 /*
- * color_start() and color_end() are used for when you want to colorize a block
- * of text.  For example:
+ * The functions color_start() and color_end() are used for when you want
+ * to colorize a block of text.
  *
- * color_start(ANSI_RED_FG)
+ * For example:
+ * color_start(ANSI_RED)
  * printf("hello");
  * printf("world");
  * color_end();
  */
 void
-color_start(char *color)
+color_start(const char *color)
 {
-	if (use_color())
-		printf("%s", color);
+	if (color && use_color()) {
+		fputs(color, stdout);
+		fflush(stdout);
+	}
 }
 
 void
 color_end(void)
 {
-	if (use_color())
-		printf(ANSI_RESET);
+	if (use_color()) {
+		fputs(ANSI_RESET, stdout);
+		fflush(stdout);
+	}
 }
 
-/* printf() with a color.  If color is NULL, then do a normal printf. */
+/*
+ * printf() with a color. If color is NULL, then do a normal printf.
+ */
 int
-printf_color(char *color, char *format, ...)
+printf_color(const char *color, char *format, ...)
 {
 	va_list aptr;
 	int rc;

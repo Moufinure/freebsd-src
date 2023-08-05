@@ -136,12 +136,12 @@ zfs_uiomove_bvec(void *p, size_t n, zfs_uio_rw_t rw, zfs_uio_t *uio)
 		void *paddr;
 		cnt = MIN(bv->bv_len - skip, n);
 
-		paddr = zfs_kmap_atomic(bv->bv_page, KM_USER1);
+		paddr = zfs_kmap_atomic(bv->bv_page);
 		if (rw == UIO_READ)
 			bcopy(p, paddr + bv->bv_offset + skip, cnt);
 		else
 			bcopy(paddr + bv->bv_offset + skip, p, cnt);
-		zfs_kunmap_atomic(paddr, KM_USER1);
+		zfs_kunmap_atomic(paddr);
 
 		skip += cnt;
 		if (skip == bv->bv_len) {
@@ -248,7 +248,7 @@ zfs_uio_prefaultpages(ssize_t n, zfs_uio_t *uio)
 			/* touch each page in this segment. */
 			p = iov->iov_base + skip;
 			while (cnt) {
-				if (get_user(tmp, (uint8_t *)p))
+				if (copy_from_user(&tmp, p, 1))
 					return (EFAULT);
 				ulong_t incr = MIN(cnt, PAGESIZE);
 				p += incr;
@@ -256,14 +256,11 @@ zfs_uio_prefaultpages(ssize_t n, zfs_uio_t *uio)
 			}
 			/* touch the last byte in case it straddles a page. */
 			p--;
-			if (get_user(tmp, (uint8_t *)p))
+			if (copy_from_user(&tmp, p, 1))
 				return (EFAULT);
 		}
 	}
 
-	if (iterp && iov_iter_fault_in_readable(iterp, n))
-		return (EFAULT);
-#endif
 	return (0);
 }
 EXPORT_SYMBOL(zfs_uio_prefaultpages);

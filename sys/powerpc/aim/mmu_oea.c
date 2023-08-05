@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD AND BSD-4-Clause
+ * SPDX-License-Identifier: BSD-2-Clause AND BSD-4-Clause
  *
  * Copyright (c) 2001 The NetBSD Foundation, Inc.
  * All rights reserved.
@@ -320,13 +320,14 @@ vm_paddr_t moea_kextract(vm_offset_t);
 void moea_kenter_attr(vm_offset_t, vm_paddr_t, vm_memattr_t);
 void moea_kenter(vm_offset_t, vm_paddr_t);
 void moea_page_set_memattr(vm_page_t m, vm_memattr_t ma);
-boolean_t moea_dev_direct_mapped(vm_paddr_t, vm_size_t);
+int moea_dev_direct_mapped(vm_paddr_t, vm_size_t);
 static void moea_sync_icache(pmap_t, vm_offset_t, vm_size_t);
 void moea_dumpsys_map(vm_paddr_t pa, size_t sz, void **va);
 void moea_scan_init(void);
 vm_offset_t moea_quick_enter_page(vm_page_t m);
 void moea_quick_remove_page(vm_offset_t addr);
 boolean_t moea_page_is_mapped(vm_page_t m);
+bool moea_ps_enabled(pmap_t pmap);
 static int moea_map_user_ptr(pmap_t pm,
     volatile const void *uaddr, void **kaddr, size_t ulen, size_t *klen);
 static int moea_decode_kernel_ptr(vm_offset_t addr,
@@ -370,6 +371,7 @@ static struct pmap_funcs moea_methods = {
 	.quick_enter_page =  moea_quick_enter_page,
 	.quick_remove_page =  moea_quick_remove_page,
 	.page_is_mapped = moea_page_is_mapped,
+	.ps_enabled = moea_ps_enabled,
 
 	/* Internal interfaces */
 	.bootstrap =        	moea_bootstrap,
@@ -1122,6 +1124,12 @@ moea_page_is_mapped(vm_page_t m)
 	return (!LIST_EMPTY(&(m)->md.mdpg_pvoh));
 }
 
+bool
+moea_ps_enabled(pmap_t pmap __unused)
+{
+	return (false);
+}
+
 /*
  * Map the given physical page at the specified virtual address in the
  * target pmap with the protection requested.  If specified the page
@@ -1731,7 +1739,7 @@ moea_pinit(pmap_t pmap)
 		u_int	hash, n;
 
 		/*
-		 * Create a new value by mutiplying by a prime and adding in
+		 * Create a new value by multiplying by a prime and adding in
 		 * entropy from the timebase register.  This is to make the
 		 * VSID more random so that the PT hash function collides
 		 * less often.  (Note that the prime casues gcc to do shifts
@@ -2650,7 +2658,7 @@ moea_bat_mapped(int idx, vm_paddr_t pa, vm_size_t size)
 	return (0);
 }
 
-boolean_t
+int
 moea_dev_direct_mapped(vm_paddr_t pa, vm_size_t size)
 {
 	int i;

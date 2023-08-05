@@ -30,12 +30,16 @@
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 
-/* Grsecurity kernel API change */
-#ifdef MODULE_PARAM_CALL_CONST
+/*
+ * Despite constifying struct kernel_param_ops, some older kernels define a
+ * `__check_old_set_param()` function in their headers that checks for a
+ * non-constified `->set()`. This has long been fixed in Linux mainline, but
+ * since we support older kernels, we workaround it by using a preprocessor
+ * definition to disable it.
+ */
+#define	__check_old_set_param(_) (0)
+
 typedef const struct kernel_param zfs_kernel_param_t;
-#else
-typedef struct kernel_param zfs_kernel_param_t;
-#endif
 
 #define	ZMOD_RW 0644
 #define	ZMOD_RD 0444
@@ -83,7 +87,7 @@ enum scope_prefix_types {
 /*
  * Declare a module parameter / sysctl node
  *
- * "scope_prefix" the part of the the sysctl / sysfs tree the node resides under
+ * "scope_prefix" the part of the sysctl / sysfs tree the node resides under
  *   (currently a no-op on Linux)
  * "name_prefix" the part of the variable name that will be excluded from the
  *   exported names on platforms with a hierarchical namespace

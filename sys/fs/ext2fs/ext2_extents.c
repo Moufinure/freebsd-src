@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2010 Zheng Liu <lz@freebsd.org>
  * All rights reserved.
@@ -249,6 +249,10 @@ ext4_ext_check_header(struct inode *ip, struct ext4_extent_header *eh)
 	}
 	if (le16toh(eh->eh_ecount) > le16toh(eh->eh_max)) {
 		error_msg = "header: invalid eh_entries";
+		goto corrupted;
+	}
+	if (eh->eh_depth > 5) {
+		error_msg = "header: invalid eh_depth";
 		goto corrupted;
 	}
 

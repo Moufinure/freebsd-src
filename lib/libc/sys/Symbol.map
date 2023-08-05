@@ -260,7 +260,6 @@ FBSD_1.0 {
 	sigwaitinfo;
 	socket;
 	socketpair;
-	swapoff;
 	swapon;
 	symlink;
 	sync;
@@ -415,6 +414,12 @@ FBSD_1.6 {
 	memfd_create;
 	shm_create_largepage;
 	shm_rename;
+};
+
+FBSD_1.7 {
+	 _Fork;
+	kqueuex;
+	swapoff;
 };
 
 FBSDprivate_1.0 {
@@ -758,6 +763,8 @@ FBSDprivate_1.0 {
 	__sys_mlock;
 	_mlockall;
 	__sys_mlockall;
+	_mmap;
+	__sys_mmap;
 	_modfind;
 	__sys_modfind;
 	_modfnext;

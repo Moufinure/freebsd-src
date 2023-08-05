@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2005-2011 Pawel Jakub Dawidek <pawel@dawidek.net>
  * All rights reserved.
@@ -506,6 +506,17 @@ g_eli_auth_run(struct g_eli_worker *wr, struct bio *bp)
 			/*
 			 * Last encrypted sector of each decrypted sector is
 			 * only partially filled.
+			 */
+			if (bp->bio_cmd == BIO_WRITE)
+				memset(data + sc->sc_alen + data_secsize, 0,
+				    encr_secsize - sc->sc_alen - data_secsize);
+		} else if (data_secsize + sc->sc_alen != encr_secsize) {
+			/*
+			 * If the HMAC size is not a multiple of 128 bits, the
+			 * per-sector data size is rounded down to ensure that
+			 * encryption can be performed without requiring any
+			 * padding.  In this case, each sector contains unused
+			 * bytes.
 			 */
 			if (bp->bio_cmd == BIO_WRITE)
 				memset(data + sc->sc_alen + data_secsize, 0,

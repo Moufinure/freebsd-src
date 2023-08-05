@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2004-2005 Pawel Jakub Dawidek <pjd@FreeBSD.org>
  * All rights reserved.
@@ -310,6 +310,8 @@ g_label_read_metadata(struct g_consumer *cp, struct g_label_metadata *md)
 	int error;
 
 	pp = cp->provider;
+	if (pp->sectorsize < sizeof(*md))
+		return (EINVAL);
 	buf = g_read_data(cp, pp->mediasize - pp->sectorsize, pp->sectorsize,
 	    &error);
 	if (buf == NULL)
@@ -392,6 +394,10 @@ g_label_taste(struct g_class *mp, struct g_provider *pp, int flags __unused)
 	if (pp->acw > 0)
 		return (NULL);
 
+	/* Skip broken disks that don't set their sector size */
+	if (pp->sectorsize == 0)
+		return (NULL);
+
 	if (strcmp(pp->geom->class->name, mp->name) == 0)
 		return (NULL);
 
@@ -400,6 +406,7 @@ g_label_taste(struct g_class *mp, struct g_provider *pp, int flags __unused)
 	gp->access = g_label_access_taste;
 	gp->orphan = g_label_orphan_taste;
 	cp = g_new_consumer(gp);
+	cp->flags |= G_CF_DIRECT_SEND | G_CF_DIRECT_RECEIVE;
 	if (g_attach(cp, pp) != 0)
 		goto end2;
 	if (g_access(cp, 1, 0, 0) != 0)

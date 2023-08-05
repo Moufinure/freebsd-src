@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (C) 2007-2009 Semihalf, Rafal Jaworowski <raj@semihalf.com>
  * Copyright (C) 2006 Semihalf, Marian Balakowicz <m8@semihalf.com>
@@ -338,7 +338,7 @@ static vm_paddr_t	mmu_booke_kextract(vm_offset_t);
 static void		mmu_booke_kenter(vm_offset_t, vm_paddr_t);
 static void		mmu_booke_kenter_attr(vm_offset_t, vm_paddr_t, vm_memattr_t);
 static void		mmu_booke_kremove(vm_offset_t);
-static boolean_t	mmu_booke_dev_direct_mapped(vm_paddr_t, vm_size_t);
+static int		mmu_booke_dev_direct_mapped(vm_paddr_t, vm_size_t);
 static void		mmu_booke_sync_icache(pmap_t, vm_offset_t,
     vm_size_t);
 static void		mmu_booke_dumpsys_map(vm_paddr_t pa, size_t,
@@ -354,6 +354,7 @@ static int		mmu_booke_decode_kernel_ptr(vm_offset_t addr,
     int *is_user, vm_offset_t *decoded_addr);
 static void		mmu_booke_page_array_startup(long);
 static boolean_t mmu_booke_page_is_mapped(vm_page_t m);
+static bool mmu_booke_ps_enabled(pmap_t pmap);
 
 static struct pmap_funcs mmu_booke_methods = {
 	/* pmap dispatcher interface */
@@ -396,6 +397,7 @@ static struct pmap_funcs mmu_booke_methods = {
 	.quick_remove_page =  mmu_booke_quick_remove_page,
 	.page_array_startup = mmu_booke_page_array_startup,
 	.page_is_mapped = mmu_booke_page_is_mapped,
+	.ps_enabled = mmu_booke_ps_enabled,
 
 	/* Internal interfaces */
 	.bootstrap = mmu_booke_bootstrap,
@@ -1224,6 +1226,12 @@ mmu_booke_page_is_mapped(vm_page_t m)
 {
 
 	return (!TAILQ_EMPTY(&(m)->md.pv_list));
+}
+
+static bool
+mmu_booke_ps_enabled(pmap_t pmap __unused)
+{
+	return (false);
 }
 
 /*

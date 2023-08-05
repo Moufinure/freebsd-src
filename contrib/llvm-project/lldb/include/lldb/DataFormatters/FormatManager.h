@@ -34,7 +34,7 @@ namespace lldb_private {
 // this file's objects directly
 
 class FormatManager : public IFormatChangeListener {
-  typedef FormatMap<ConstString, TypeSummaryImpl> NamedSummariesMap;
+  typedef FormattersContainer<TypeSummaryImpl> NamedSummariesMap;
   typedef TypeCategoryMap::MapType::iterator CategoryMapIterator;
 
 public:
@@ -128,12 +128,12 @@ public:
   GetSyntheticChildren(ValueObject &valobj, lldb::DynamicValueType use_dynamic);
 
   bool
-  AnyMatches(ConstString type_name,
+  AnyMatches(const FormattersMatchCandidate &candidate_type,
              TypeCategoryImpl::FormatCategoryItems items =
                  TypeCategoryImpl::ALL_ITEM_TYPES,
              bool only_enabled = true, const char **matching_category = nullptr,
              TypeCategoryImpl::FormatCategoryItems *matching_type = nullptr) {
-    return m_categories_map.AnyMatches(type_name, items, only_enabled,
+    return m_categories_map.AnyMatches(candidate_type, items, only_enabled,
                                        matching_category, matching_type);
   }
 
@@ -143,13 +143,6 @@ public:
   static char GetFormatAsFormatChar(lldb::Format format);
 
   static const char *GetFormatAsCString(lldb::Format format);
-
-  // if the user tries to add formatters for, say, "struct Foo" those will not
-  // match any type because of the way we strip qualifiers from typenames this
-  // method looks for the case where the user is adding a
-  // "class","struct","enum" or "union" Foo and strips the unnecessary
-  // qualifier
-  static ConstString GetValidTypeName(ConstString type);
 
   // when DataExtractor dumps a vectorOfT, it uses a predefined format for each
   // item this method returns it, or eFormatInvalid if vector_format is not a
@@ -169,8 +162,8 @@ public:
   static FormattersMatchVector
   GetPossibleMatches(ValueObject &valobj, lldb::DynamicValueType use_dynamic) {
     FormattersMatchVector matches;
-    GetPossibleMatches(valobj, valobj.GetCompilerType(),
-                       use_dynamic, matches, false, false, false, true);
+    GetPossibleMatches(valobj, valobj.GetCompilerType(), use_dynamic, matches,
+                       FormattersMatchCandidate::Flags(), true);
     return matches;
   }
 
@@ -186,8 +179,7 @@ private:
                                  CompilerType compiler_type,
                                  lldb::DynamicValueType use_dynamic,
                                  FormattersMatchVector &entries,
-                                 bool did_strip_ptr, bool did_strip_ref,
-                                 bool did_strip_typedef,
+                                 FormattersMatchCandidate::Flags current_flags,
                                  bool root_level = false);
 
   std::atomic<uint32_t> m_last_revision;

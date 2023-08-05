@@ -438,6 +438,18 @@ dle_enqueue_subobj(dsl_deadlist_t *dl, dsl_deadlist_entry_t *dle,
 	}
 }
 
+/*
+ * Prefetch metadata required for dle_enqueue_subobj().
+ */
+static void
+dle_prefetch_subobj(dsl_deadlist_t *dl, dsl_deadlist_entry_t *dle,
+    uint64_t obj)
+{
+	if (dle->dle_bpobj.bpo_object !=
+	    dmu_objset_pool(dl->dl_os)->dp_empty_bpobj)
+		bpobj_prefetch_subobj(&dle->dle_bpobj, obj);
+}
+
 void
 dsl_deadlist_insert(dsl_deadlist_t *dl, const blkptr_t *bp, boolean_t bp_freed,
     dmu_tx_t *tx)
@@ -809,6 +821,27 @@ dsl_deadlist_insert_bpobj(dsl_deadlist_t *dl, uint64_t obj, uint64_t birth,
 	dle_enqueue_subobj(dl, dle, obj, tx);
 }
 
+/*
+ * Prefetch metadata required for dsl_deadlist_insert_bpobj().
+ */
+static void
+dsl_deadlist_prefetch_bpobj(dsl_deadlist_t *dl, uint64_t obj, uint64_t birth)
+{
+	dsl_deadlist_entry_t dle_tofind;
+	dsl_deadlist_entry_t *dle;
+	avl_index_t where;
+
+	ASSERT(MUTEX_HELD(&dl->dl_lock));
+
+	dsl_deadlist_load_tree(dl);
+
+	dle_tofind.dle_mintxg = birth;
+	dle = avl_find(&dl->dl_tree, &dle_tofind, &where);
+	if (dle == NULL)
+		dle = avl_nearest(&dl->dl_tree, where, AVL_BEFORE);
+	dle_prefetch_subobj(dl, dle, obj);
+}
+
 static int
 dsl_deadlist_insert_cb(void *arg, const blkptr_t *bp, boolean_t bp_freed,
     dmu_tx_t *tx)
@@ -825,12 +858,12 @@ dsl_deadlist_insert_cb(void *arg, const blkptr_t *bp, boolean_t bp_freed,
 void
 dsl_deadlist_merge(dsl_deadlist_t *dl, uint64_t obj, dmu_tx_t *tx)
 {
-	zap_cursor_t zc;
-	zap_attribute_t za;
+	zap_cursor_t zc, pzc;
+	zap_attribute_t *za, *pza;
 	dmu_buf_t *bonus;
 	dsl_deadlist_phys_t *dlp;
 	dmu_object_info_t doi;
-	int error;
+	int error, perror, i;
 
 	VERIFY0(dmu_object_info(dl->dl_os, obj, &doi));
 	if (doi.doi_type == DMU_OT_BPOBJ) {
@@ -841,16 +874,36 @@ dsl_deadlist_merge(dsl_deadlist_t *dl, uint64_t obj, dmu_tx_t *tx)
 		return;
 	}
 
+	za = kmem_alloc(sizeof (*za), KM_SLEEP);
+	pza = kmem_alloc(sizeof (*pza), KM_SLEEP);
+
 	mutex_enter(&dl->dl_lock);
+	/*
+	 * Prefetch up to 128 deadlists first and then more as we progress.
+	 * The limit is a balance between ARC use and diminishing returns.
+	 */
+	for (zap_cursor_init(&pzc, dl->dl_os, obj), i = 0;
+	    (perror = zap_cursor_retrieve(&pzc, pza)) == 0 && i < 128;
+	    zap_cursor_advance(&pzc), i++) {
+		dsl_deadlist_prefetch_bpobj(dl, pza->za_first_integer,
+		    zfs_strtonum(pza->za_name, NULL));
+	}
 	for (zap_cursor_init(&zc, dl->dl_os, obj);
-	    (error = zap_cursor_retrieve(&zc, &za)) == 0;
+	    (error = zap_cursor_retrieve(&zc, za)) == 0;
 	    zap_cursor_advance(&zc)) {
-		uint64_t mintxg = zfs_strtonum(za.za_name, NULL);
-		dsl_deadlist_insert_bpobj(dl, za.za_first_integer, mintxg, tx);
+		uint64_t mintxg = zfs_strtonum(za->za_name, NULL);
+		dsl_deadlist_insert_bpobj(dl, za->za_first_integer, mintxg, tx);
 		VERIFY0(zap_remove_int(dl->dl_os, obj, mintxg, tx));
+		if (perror == 0) {
+			dsl_deadlist_prefetch_bpobj(dl, pza->za_first_integer,
+			    zfs_strtonum(pza->za_name, NULL));
+			zap_cursor_advance(&pzc);
+			perror = zap_cursor_retrieve(&pzc, pza);
+		}
 	}
 	VERIFY3U(error, ==, ENOENT);
 	zap_cursor_fini(&zc);
+	zap_cursor_fini(&pzc);
 
 	VERIFY0(dmu_bonus_hold(dl->dl_os, obj, FTAG, &bonus));
 	dlp = bonus->db_data;
@@ -858,6 +911,9 @@ dsl_deadlist_merge(dsl_deadlist_t *dl, uint64_t obj, dmu_tx_t *tx)
 	bzero(dlp, sizeof (*dlp));
 	dmu_buf_rele(bonus, FTAG);
 	mutex_exit(&dl->dl_lock);
+
+	kmem_free(za, sizeof (*za));
+	kmem_free(pza, sizeof (*pza));
 }
 
 /*
@@ -868,8 +924,9 @@ dsl_deadlist_move_bpobj(dsl_deadlist_t *dl, bpobj_t *bpo, uint64_t mintxg,
     dmu_tx_t *tx)
 {
 	dsl_deadlist_entry_t dle_tofind;
-	dsl_deadlist_entry_t *dle;
+	dsl_deadlist_entry_t *dle, *pdle;
 	avl_index_t where;
+	int i;
 
 	ASSERT(!dl->dl_oldfmt);
 
@@ -881,11 +938,23 @@ dsl_deadlist_move_bpobj(dsl_deadlist_t *dl, bpobj_t *bpo, uint64_t mintxg,
 	dle = avl_find(&dl->dl_tree, &dle_tofind, &where);
 	if (dle == NULL)
 		dle = avl_nearest(&dl->dl_tree, where, AVL_AFTER);
+	/*
+	 * Prefetch up to 128 deadlists first and then more as we progress.
+	 * The limit is a balance between ARC use and diminishing returns.
+	 */
+	for (pdle = dle, i = 0; pdle && i < 128; i++) {
+		bpobj_prefetch_subobj(bpo, pdle->dle_bpobj.bpo_object);
+		pdle = AVL_NEXT(&dl->dl_tree, pdle);
+	}
 	while (dle) {
 		uint64_t used, comp, uncomp;
 		dsl_deadlist_entry_t *dle_next;
 
 		bpobj_enqueue_subobj(bpo, dle->dle_bpobj.bpo_object, tx);
+		if (pdle) {
+			bpobj_prefetch_subobj(bpo, pdle->dle_bpobj.bpo_object);
+			pdle = AVL_NEXT(&dl->dl_tree, pdle);
+		}
 
 		VERIFY0(bpobj_space(&dle->dle_bpobj,
 		    &used, &comp, &uncomp));
@@ -909,15 +978,16 @@ dsl_deadlist_move_bpobj(dsl_deadlist_t *dl, bpobj_t *bpo, uint64_t mintxg,
 }
 
 typedef struct livelist_entry {
-	const blkptr_t *le_bp;
+	blkptr_t le_bp;
+	uint32_t le_refcnt;
 	avl_node_t le_node;
 } livelist_entry_t;
 
 static int
 livelist_compare(const void *larg, const void *rarg)
 {
-	const blkptr_t *l = ((livelist_entry_t *)larg)->le_bp;
-	const blkptr_t *r = ((livelist_entry_t *)rarg)->le_bp;
+	const blkptr_t *l = &((livelist_entry_t *)larg)->le_bp;
+	const blkptr_t *r = &((livelist_entry_t *)rarg)->le_bp;
 
 	/* Sort them according to dva[0] */
 	uint64_t l_dva0_vdev = DVA_GET_VDEV(&l->blk_dva[0]);
@@ -944,6 +1014,11 @@ struct livelist_iter_arg {
  * Expects an AVL tree which is incrementally filled will FREE blkptrs
  * and used to match up ALLOC/FREE pairs. ALLOC'd blkptrs without a
  * corresponding FREE are stored in the supplied bplist.
+ *
+ * Note that multiple FREE and ALLOC entries for the same blkptr may
+ * be encountered when dedup is involved. For this reason we keep a
+ * refcount for all the FREE entries of each blkptr and ensure that
+ * each of those FREE entries has a corresponding ALLOC preceding it.
  */
 static int
 dsl_livelist_iterate(void *arg, const blkptr_t *bp, boolean_t bp_freed,
@@ -957,23 +1032,47 @@ dsl_livelist_iterate(void *arg, const blkptr_t *bp, boolean_t bp_freed,
 
 	if ((t != NULL) && (zthr_has_waiters(t) || zthr_iscancelled(t)))
 		return (SET_ERROR(EINTR));
+
+	livelist_entry_t node;
+	node.le_bp = *bp;
+	livelist_entry_t *found = avl_find(avl, &node, NULL);
 	if (bp_freed) {
-		livelist_entry_t *node = kmem_alloc(sizeof (livelist_entry_t),
-		    KM_SLEEP);
-		blkptr_t *temp_bp = kmem_alloc(sizeof (blkptr_t), KM_SLEEP);
-		*temp_bp = *bp;
-		node->le_bp = temp_bp;
-		avl_add(avl, node);
-	} else {
-		livelist_entry_t node;
-		node.le_bp = bp;
-		livelist_entry_t *found = avl_find(avl, &node, NULL);
-		if (found != NULL) {
-			avl_remove(avl, found);
-			kmem_free((blkptr_t *)found->le_bp, sizeof (blkptr_t));
-			kmem_free(found, sizeof (livelist_entry_t));
+		if (found == NULL) {
+			/* first free entry for this blkptr */
+			livelist_entry_t *e =
+			    kmem_alloc(sizeof (livelist_entry_t), KM_SLEEP);
+			e->le_bp = *bp;
+			e->le_refcnt = 1;
+			avl_add(avl, e);
 		} else {
+			/* dedup block free */
+			ASSERT(BP_GET_DEDUP(bp));
+			ASSERT3U(BP_GET_CHECKSUM(bp), ==,
+			    BP_GET_CHECKSUM(&found->le_bp));
+			ASSERT3U(found->le_refcnt + 1, >, found->le_refcnt);
+			found->le_refcnt++;
+		}
+	} else {
+		if (found == NULL) {
+			/* block is currently marked as allocated */
 			bplist_append(to_free, bp);
+		} else {
+			/* alloc matches a free entry */
+			ASSERT3U(found->le_refcnt, !=, 0);
+			found->le_refcnt--;
+			if (found->le_refcnt == 0) {
+				/* all tracked free pairs have been matched */
+				avl_remove(avl, found);
+				kmem_free(found, sizeof (livelist_entry_t));
+			} else {
+				/*
+				 * This is definitely a deduped blkptr so
+				 * let's validate it.
+				 */
+				ASSERT(BP_GET_DEDUP(bp));
+				ASSERT3U(BP_GET_CHECKSUM(bp), ==,
+				    BP_GET_CHECKSUM(&found->le_bp));
+			}
 		}
 	}
 	return (0);
@@ -998,7 +1097,13 @@ dsl_process_sub_livelist(bpobj_t *bpobj, bplist_t *to_free, zthr_t *t,
 	    .t = t
 	};
 	int err = bpobj_iterate_nofree(bpobj, dsl_livelist_iterate, &arg, size);
+	VERIFY(err != 0 || avl_numnodes(&avl) == 0);
 
+	void *cookie = NULL;
+	livelist_entry_t *le = NULL;
+	while ((le = avl_destroy_nodes(&avl, &cookie)) != NULL) {
+		kmem_free(le, sizeof (livelist_entry_t));
+	}
 	avl_destroy(&avl);
 	return (err);
 }

@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2003 Silicon Graphics International Corp.
  * Copyright (c) 2014-2017 Alexander Motin <mav@FreeBSD.org>
@@ -309,6 +309,13 @@ void ctl_port_offline(struct ctl_port *fe);
  * failure.
  */
 int ctl_queue(union ctl_io *io);
+
+/*
+ * This routine starts execution of I/O and task management requests from
+ * the FETD to the CTL layer.  May sleep.  Returns 0 for success, non-zero
+ * for failure.
+ */
+int ctl_run(union ctl_io *io);
 
 /*
  * This routine is used if the front end interface doesn't support

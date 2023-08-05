@@ -92,11 +92,12 @@ de_vncmpf(struct vnode *vp, void *arg)
  *	       diroffset is relative to the beginning of the root directory,
  *	       otherwise it is cluster relative.
  * diroffset - offset past begin of cluster of denode we want
+ * lkflags   - locking flags (LK_NOWAIT)
  * depp	     - returns the address of the gotten denode.
  */
 int
 deget(struct msdosfsmount *pmp, u_long dirclust, u_long diroffset,
-    struct denode **depp)
+    int lkflags, struct denode **depp)
 {
 	int error;
 	uint64_t inode;
@@ -107,9 +108,11 @@ deget(struct msdosfsmount *pmp, u_long dirclust, u_long diroffset,
 	struct buf *bp;
 
 #ifdef MSDOSFS_DEBUG
-	printf("deget(pmp %p, dirclust %lu, diroffset %lx, depp %p)\n",
-	    pmp, dirclust, diroffset, depp);
+	printf("deget(pmp %p, dirclust %lu, diroffset %lx, flags %#x, "
+	    "depp %p)\n",
+	    pmp, dirclust, diroffset, lkflags, depp);
 #endif
+	MPASS((lkflags & LK_TYPE_MASK) == LK_EXCLUSIVE);
 
 	/*
 	 * On FAT32 filesystems, root is a (more or less) normal
@@ -125,7 +128,7 @@ deget(struct msdosfsmount *pmp, u_long dirclust, u_long diroffset,
 	 * MSDOSFSROOT, offset MSDOSFSROOT_OFS
 	 *
 	 * NOTE: de_vncmpf will explicitly skip any denodes that do not have
-	 * a de_refcnt > 0.  This insures that that we do not attempt to use
+	 * a de_refcnt > 0.  This insures that we do not attempt to use
 	 * a denode that represents an unlinked but still open file.
 	 * These files are not to be accessible even when the directory
 	 * entry that represented the file happens to be reused while the
@@ -133,15 +136,30 @@ deget(struct msdosfsmount *pmp, u_long dirclust, u_long diroffset,
 	 */
 	inode = (uint64_t)pmp->pm_bpcluster * dirclust + diroffset;
 
-	error = vfs_hash_get(mntp, inode, LK_EXCLUSIVE, curthread, &nvp,
+	error = vfs_hash_get(mntp, inode, lkflags, curthread, &nvp,
 	    de_vncmpf, &inode);
 	if (error)
 		return (error);
 	if (nvp != NULL) {
 		*depp = VTODE(nvp);
-		KASSERT((*depp)->de_dirclust == dirclust, ("wrong dirclust"));
-		KASSERT((*depp)->de_diroffset == diroffset, ("wrong diroffset"));
+		if ((*depp)->de_dirclust != dirclust) {
+			printf("%s: wrong dir cluster %lu %lu\n",
+			    pmp->pm_mountp->mnt_stat.f_mntonname,
+			    (*depp)->de_dirclust, dirclust);
+			goto badoff;
+		}
+		if ((*depp)->de_diroffset != diroffset) {
+			printf("%s: wrong dir offset %lu %lu\n",
+			    pmp->pm_mountp->mnt_stat.f_mntonname,
+			    (*depp)->de_diroffset,  diroffset);
+			goto badoff;
+		}
 		return (0);
+badoff:
+		vgone(nvp);
+		vput(nvp);
+		msdosfs_integrity_error(pmp);
+		return (EBADF);
 	}
 	ldep = malloc(sizeof(struct denode), M_MSDOSFSNODE, M_WAITOK | M_ZERO);
 
@@ -162,7 +180,8 @@ deget(struct msdosfsmount *pmp, u_long dirclust, u_long diroffset,
 	ldep->de_dirclust = dirclust;
 	ldep->de_diroffset = diroffset;
 	ldep->de_inode = inode;
-	lockmgr(nvp->v_vnlock, LK_EXCLUSIVE, NULL);
+	lockmgr(nvp->v_vnlock, LK_EXCLUSIVE | LK_NOWITNESS, NULL);
+	VN_LOCK_AREC(nvp);	/* for doscheckpath */
 	fc_purge(ldep, 0);	/* init the FAT cache for this denode */
 	error = insmntque(nvp, mntp);
 	if (error != 0) {
@@ -170,7 +189,7 @@ deget(struct msdosfsmount *pmp, u_long dirclust, u_long diroffset,
 		*depp = NULL;
 		return (error);
 	}
-	error = vfs_hash_insert(nvp, inode, LK_EXCLUSIVE, curthread, &xvp,
+	error = vfs_hash_insert(nvp, inode, lkflags, curthread, &xvp,
 	    de_vncmpf, &inode);
 	if (error) {
 		*depp = NULL;
@@ -186,9 +205,9 @@ deget(struct msdosfsmount *pmp, u_long dirclust, u_long diroffset,
 	/*
 	 * Copy the directory entry into the denode area of the vnode.
 	 */
-	if ((dirclust == MSDOSFSROOT
-	     || (FAT32(pmp) && dirclust == pmp->pm_rootdirblk))
-	    && diroffset == MSDOSFSROOT_OFS) {
+	if ((dirclust == MSDOSFSROOT ||
+	    (FAT32(pmp) && dirclust == pmp->pm_rootdirblk)) &&
+	    diroffset == MSDOSFSROOT_OFS) {
 		/*
 		 * Directory entry for the root directory. There isn't one,
 		 * so we manufacture one. We should probably rummage
@@ -365,10 +384,8 @@ detrunc(struct denode *dep, u_long length, int flags, struct ucred *cred)
 		return (EINVAL);
 	}
 
-	if (dep->de_FileSize < length) {
-		vnode_pager_setsize(DETOV(dep), length);
-		return deextend(dep, length, cred);
-	}
+	if (dep->de_FileSize < length)
+		return (deextend(dep, length, cred));
 
 	/*
 	 * If the desired length is 0 then remember the starting cluster of
@@ -457,7 +474,7 @@ detrunc(struct denode *dep, u_long length, int flags, struct ucred *cred)
 			return (error);
 		}
 		fc_setcache(dep, FC_LASTFC, de_cluster(pmp, length - 1),
-			    eofentry);
+		    eofentry);
 	}
 
 	/*
@@ -477,13 +494,16 @@ int
 deextend(struct denode *dep, u_long length, struct ucred *cred)
 {
 	struct msdosfsmount *pmp = dep->de_pmp;
+	struct vnode *vp = DETOV(dep);
+	struct buf *bp;
+	off_t eof_clusteroff;
 	u_long count;
 	int error;
 
 	/*
 	 * The root of a DOS filesystem cannot be extended.
 	 */
-	if ((DETOV(dep)->v_vflag & VV_ROOT) && !FAT32(pmp))
+	if ((vp->v_vflag & VV_ROOT) != 0 && !FAT32(pmp))
 		return (EINVAL);
 
 	/*
@@ -503,15 +523,47 @@ deextend(struct denode *dep, u_long length, struct ucred *cred)
 		if (count > pmp->pm_freeclustercount)
 			return (ENOSPC);
 		error = extendfile(dep, count, NULL, NULL, DE_CLEAR);
-		if (error) {
-			/* truncate the added clusters away again */
-			(void) detrunc(dep, dep->de_FileSize, 0, cred);
-			return (error);
-		}
+		if (error != 0)
+			goto rewind;
 	}
+
+	/*
+	 * For the case of cluster size larger than the page size, we
+	 * need to ensure that the possibly dirty partial buffer at
+	 * the old end of file is not filled with invalid pages by
+	 * extension.  Otherwise it has a contradictory state of
+	 * B_CACHE | B_DELWRI but with invalid pages, and cannot be
+	 * neither written out nor validated.
+	 *
+	 * Fix it by proactively clearing extended pages.  Need to do
+	 * both vfs_bio_clrbuf() to mark pages valid, and to zero
+	 * actual buffer content which might exist in the tail of the
+	 * already valid cluster.
+	 */
+	error = bread(vp, de_cluster(pmp, dep->de_FileSize), pmp->pm_bpcluster,
+	    NOCRED, &bp);
+	if (error != 0)
+		goto rewind;
+	vfs_bio_clrbuf(bp);
+	eof_clusteroff = de_cn2off(pmp, de_cluster(pmp, dep->de_FileSize));
+	vfs_bio_bzero_buf(bp, dep->de_FileSize - eof_clusteroff,
+	    pmp->pm_bpcluster - dep->de_FileSize + eof_clusteroff);
+	if (!DOINGASYNC(vp))
+		(void)bwrite(bp);
+	else if (vm_page_count_severe() || buf_dirty_count_severe())
+		bawrite(bp);
+	else
+		bdwrite(bp);
+
+	vnode_pager_setsize(vp, length);
 	dep->de_FileSize = length;
 	dep->de_flag |= DE_UPDATE | DE_MODIFIED;
-	return (deupdat(dep, !DOINGASYNC(DETOV(dep))));
+	return (deupdat(dep, !DOINGASYNC(vp)));
+
+rewind:
+	/* truncate the added clusters away again */
+	(void)detrunc(dep, dep->de_FileSize, 0, cred);
+	return (error);
 }
 
 /*

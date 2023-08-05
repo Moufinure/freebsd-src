@@ -23,6 +23,9 @@
  * Use is subject to license terms.
  */
 
+/*
+ * Copyright 2022 MNX Cloud, Inc.
+ */
 
 
 
@@ -213,10 +216,10 @@ const int8_t u8_number_of_bytes[0x100] = {
 /*	80  81  82  83  84  85  86  87  88  89  8A  8B  8C  8D  8E  8F  */
 	I_, I_, I_, I_, I_, I_, I_, I_, I_, I_, I_, I_, I_, I_, I_, I_,
 
-/*  	90  91  92  93  94  95  96  97  98  99  9A  9B  9C  9D  9E  9F  */
+/*	90  91  92  93  94  95  96  97  98  99  9A  9B  9C  9D  9E  9F  */
 	I_, I_, I_, I_, I_, I_, I_, I_, I_, I_, I_, I_, I_, I_, I_, I_,
 
-/*  	A0  A1  A2  A3  A4  A5  A6  A7  A8  A9  AA  AB  AC  AD  AE  AF  */
+/*	A0  A1  A2  A3  A4  A5  A6  A7  A8  A9  AA  AB  AC  AD  AE  AF  */
 	I_, I_, I_, I_, I_, I_, I_, I_, I_, I_, I_, I_, I_, I_, I_, I_,
 
 /*	B0  B1  B2  B3  B4  B5  B6  B7  B8  B9  BA  BB  BC  BD  BE  BF  */
@@ -865,7 +868,9 @@ do_decomp(size_t uv, uchar_t *u8s, uchar_t *s, int sz,
 		start_id = u8_decomp_b4_16bit_tbl[uv][b3_tbl][b4];
 		end_id = u8_decomp_b4_16bit_tbl[uv][b3_tbl][b4 + 1];
 	} else {
+		// cppcheck-suppress arrayIndexOutOfBoundsCond
 		start_id = u8_decomp_b4_tbl[uv][b3_tbl][b4];
+		// cppcheck-suppress arrayIndexOutOfBoundsCond
 		end_id = u8_decomp_b4_tbl[uv][b3_tbl][b4 + 1];
 	}
 
@@ -884,7 +889,7 @@ do_decomp(size_t uv, uchar_t *u8s, uchar_t *s, int sz,
 	 *	| B0| B1| ... | Bm|
 	 *	+---+---+-...-+---+
 	 *
-	 *	The first byte, B0, is always less then 0xF5 (U8_DECOMP_BOTH).
+	 *	The first byte, B0, is always less than 0xF5 (U8_DECOMP_BOTH).
 	 *
 	 * (2) Canonical decomposition mappings:
 	 *
@@ -1012,7 +1017,9 @@ find_composition_start(size_t uv, uchar_t *s, size_t sz)
 		start_id = u8_composition_b4_16bit_tbl[uv][b3_tbl][b4];
 		end_id = u8_composition_b4_16bit_tbl[uv][b3_tbl][b4 + 1];
 	} else {
+		// cppcheck-suppress arrayIndexOutOfBoundsCond
 		start_id = u8_composition_b4_tbl[uv][b3_tbl][b4];
+		// cppcheck-suppress arrayIndexOutOfBoundsCond
 		end_id = u8_composition_b4_tbl[uv][b3_tbl][b4 + 1];
 	}
 
@@ -1282,8 +1289,12 @@ TRY_THE_NEXT_MARK:
 		saved_l = l - disp[last];
 
 		while (p < oslast) {
-			size = u8_number_of_bytes[*p];
-			if (size <= 1 || (p + size) > oslast)
+			int8_t number_of_bytes = u8_number_of_bytes[*p];
+
+			if (number_of_bytes <= 1)
+				break;
+			size = number_of_bytes;
+			if ((p + size) > oslast)
 				break;
 
 			saved_p = p;
@@ -1374,8 +1385,10 @@ SAFE_RETURN:
  */
 static size_t
 collect_a_seq(size_t uv, uchar_t *u8s, uchar_t **source, uchar_t *slast,
-    boolean_t is_it_toupper, boolean_t is_it_tolower,
-    boolean_t canonical_decomposition, boolean_t compatibility_decomposition,
+    boolean_t is_it_toupper,
+    boolean_t is_it_tolower,
+    boolean_t canonical_decomposition,
+    boolean_t compatibility_decomposition,
     boolean_t canonical_composition,
     int *errnum, u8_normalization_states_t *state)
 {

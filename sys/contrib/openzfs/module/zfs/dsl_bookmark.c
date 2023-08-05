@@ -236,7 +236,7 @@ dsl_bookmark_create_check_impl(dsl_pool_t *dp,
 		error = SET_ERROR(EEXIST);
 		goto eholdnewbmds;
 	default:
-		/* dsl_bookmark_lookup_impl already did SET_ERRROR */
+		/* dsl_bookmark_lookup_impl already did SET_ERROR */
 		goto eholdnewbmds;
 	}
 
@@ -271,7 +271,7 @@ dsl_bookmark_create_check_impl(dsl_pool_t *dp,
 			error = SET_ERROR(ZFS_ERR_BOOKMARK_SOURCE_NOT_ANCESTOR);
 			break;
 		default:
-			/* dsl_bookmark_lookup already did SET_ERRROR */
+			/* dsl_bookmark_lookup already did SET_ERROR */
 			break;
 		}
 	} else {
@@ -347,6 +347,8 @@ dsl_bookmark_set_phys(zfs_bookmark_phys_t *zbm, dsl_dataset_t *snap)
 	spa_t *spa = dsl_dataset_get_spa(snap);
 	objset_t *mos = spa_get_dsl(spa)->dp_meta_objset;
 	dsl_dataset_phys_t *dsp = dsl_dataset_phys(snap);
+
+	memset(zbm, 0, sizeof (zfs_bookmark_phys_t));
 	zbm->zbm_guid = dsp->ds_guid;
 	zbm->zbm_creation_txg = dsp->ds_creation_txg;
 	zbm->zbm_creation_time = dsp->ds_creation_time;
@@ -380,10 +382,6 @@ dsl_bookmark_set_phys(zfs_bookmark_phys_t *zbm, dsl_dataset_t *snap)
 		    &zbm->zbm_compressed_freed_before_next_snap,
 		    &zbm->zbm_uncompressed_freed_before_next_snap);
 		dsl_dataset_rele(nextds, FTAG);
-	} else {
-		bzero(&zbm->zbm_flags,
-		    sizeof (zfs_bookmark_phys_t) -
-		    offsetof(zfs_bookmark_phys_t, zbm_flags));
 	}
 }
 
@@ -536,7 +534,7 @@ dsl_bookmark_create_sync_impl_book(
 	 * Reasoning:
 	 * - The zbm_redaction_obj would be referred to by both source and new
 	 *   bookmark, but would be destroyed once either source or new is
-	 *   destroyed, resulting in use-after-free of the referrred object.
+	 *   destroyed, resulting in use-after-free of the referred object.
 	 * - User expectation when issuing the `zfs bookmark` command is that
 	 *   a normal bookmark of the source is created
 	 *
@@ -1203,7 +1201,6 @@ dsl_redaction_list_long_rele(redaction_list_t *rl, void *tag)
 	(void) zfs_refcount_remove(&rl->rl_longholds, tag);
 }
 
-/* ARGSUSED */
 static void
 redaction_list_evict_sync(void *rlu)
 {
@@ -1470,10 +1467,11 @@ dsl_bookmark_next_changed(dsl_dataset_t *head, dsl_dataset_t *origin,
  * Adjust the FBN of any bookmarks that reference this block, whose "next"
  * is the head dataset.
  */
-/* ARGSUSED */
 void
 dsl_bookmark_block_killed(dsl_dataset_t *ds, const blkptr_t *bp, dmu_tx_t *tx)
 {
+	(void) tx;
+
 	/*
 	 * Iterate over bookmarks whose "next" is the head dataset.
 	 */

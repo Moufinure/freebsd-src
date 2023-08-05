@@ -52,6 +52,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/sched.h>
 #include <sys/smp.h>
 #include <sys/timetc.h>
+#include <sys/uuid.h>
 
 #if defined(__i386__) || defined(__amd64__)
 #include <machine/clock.h>
@@ -143,14 +144,19 @@ static void	acpi_delete_resource(device_t bus, device_t child, int type,
 		    int rid);
 static uint32_t	acpi_isa_get_logicalid(device_t dev);
 static int	acpi_isa_get_compatid(device_t dev, uint32_t *cids, int count);
+static ssize_t acpi_bus_get_prop(device_t bus, device_t child, const char *propname,
+		    void *propvalue, size_t size, device_property_type_t type);
 static int	acpi_device_id_probe(device_t bus, device_t dev, char **ids, char **match);
 static ACPI_STATUS acpi_device_eval_obj(device_t bus, device_t dev,
 		    ACPI_STRING pathname, ACPI_OBJECT_LIST *parameters,
 		    ACPI_BUFFER *ret);
+static ACPI_STATUS acpi_device_get_prop(device_t bus, device_t dev,
+		    ACPI_STRING propname, const ACPI_OBJECT **value);
 static ACPI_STATUS acpi_device_scan_cb(ACPI_HANDLE h, UINT32 level,
 		    void *context, void **retval);
 static ACPI_STATUS acpi_device_scan_children(device_t bus, device_t dev,
 		    int max_depth, acpi_scan_cb_t user_fn, void *arg);
+static ACPI_STATUS acpi_find_dsd(struct acpi_device *ad);
 static int	acpi_isa_pnp_probe(device_t bus, device_t child,
 		    struct isa_pnp_id *ids);
 static void	acpi_platform_osc(device_t dev);
@@ -219,10 +225,12 @@ static device_method_t acpi_methods[] = {
     DEVMETHOD(bus_hint_device_unit,	acpi_hint_device_unit),
     DEVMETHOD(bus_get_cpus,		acpi_get_cpus),
     DEVMETHOD(bus_get_domain,		acpi_get_domain),
+    DEVMETHOD(bus_get_property,		acpi_bus_get_prop),
 
     /* ACPI bus */
     DEVMETHOD(acpi_id_probe,		acpi_device_id_probe),
     DEVMETHOD(acpi_evaluate_object,	acpi_device_eval_obj),
+    DEVMETHOD(acpi_get_property,	acpi_device_get_prop),
     DEVMETHOD(acpi_pwr_for_sleep,	acpi_device_pwr_for_sleep),
     DEVMETHOD(acpi_scan_children,	acpi_device_scan_children),
 
@@ -273,7 +281,7 @@ TUNABLE_STR("hw.acpi.remove_interface", acpi_remove_interface,
 static int acpi_debug_objects;
 TUNABLE_INT("debug.acpi.enable_debug_objects", &acpi_debug_objects);
 SYSCTL_PROC(_debug_acpi, OID_AUTO, enable_debug_objects,
-    CTLFLAG_RW | CTLTYPE_INT | CTLFLAG_NEEDGIANT, NULL, 0,
+    CTLFLAG_RW | CTLTYPE_INT | CTLFLAG_MPSAFE, NULL, 0,
     acpi_debug_objects_sysctl, "I",
     "Enable Debug objects");
 
@@ -295,6 +303,15 @@ TUNABLE_INT("debug.acpi.quirks", &acpi_quirks);
 int acpi_susp_bounce;
 SYSCTL_INT(_debug_acpi, OID_AUTO, suspend_bounce, CTLFLAG_RW,
     &acpi_susp_bounce, 0, "Don't actually suspend, just test devices.");
+
+/*
+ * ACPI standard UUID for Device Specific Data Package
+ * "Device Properties UUID for _DSD" Rev. 2.0
+ */
+static const struct uuid acpi_dsd_uuid = {
+	0xdaffd814, 0x6eba, 0x4d8c, 0x8a, 0x91,
+	{ 0xbc, 0x9b, 0xbf, 0x4a, 0xa3, 0x01 }
+};
 
 /*
  * ACPI can only be loaded as a module by the loader; activating it after
@@ -559,31 +576,31 @@ acpi_attach(device_t dev)
 	CTLFLAG_RD | CTLFLAG_MPSAFE, 0, "");
     SYSCTL_ADD_PROC(&sc->acpi_sysctl_ctx, SYSCTL_CHILDREN(sc->acpi_sysctl_tree),
 	OID_AUTO, "supported_sleep_state",
-	CTLTYPE_STRING | CTLFLAG_RD | CTLFLAG_NEEDGIANT,
+	CTLTYPE_STRING | CTLFLAG_RD | CTLFLAG_MPSAFE,
 	0, 0, acpi_supported_sleep_state_sysctl, "A",
 	"List supported ACPI sleep states.");
     SYSCTL_ADD_PROC(&sc->acpi_sysctl_ctx, SYSCTL_CHILDREN(sc->acpi_sysctl_tree),
 	OID_AUTO, "power_button_state",
-	CTLTYPE_STRING | CTLFLAG_RW | CTLFLAG_NEEDGIANT,
+	CTLTYPE_STRING | CTLFLAG_RW | CTLFLAG_MPSAFE,
 	&sc->acpi_power_button_sx, 0, acpi_sleep_state_sysctl, "A",
 	"Power button ACPI sleep state.");
     SYSCTL_ADD_PROC(&sc->acpi_sysctl_ctx, SYSCTL_CHILDREN(sc->acpi_sysctl_tree),
 	OID_AUTO, "sleep_button_state",
-	CTLTYPE_STRING | CTLFLAG_RW | CTLFLAG_NEEDGIANT,
+	CTLTYPE_STRING | CTLFLAG_RW | CTLFLAG_MPSAFE,
 	&sc->acpi_sleep_button_sx, 0, acpi_sleep_state_sysctl, "A",
 	"Sleep button ACPI sleep state.");
     SYSCTL_ADD_PROC(&sc->acpi_sysctl_ctx, SYSCTL_CHILDREN(sc->acpi_sysctl_tree),
 	OID_AUTO, "lid_switch_state",
-	CTLTYPE_STRING | CTLFLAG_RW | CTLFLAG_NEEDGIANT,
+	CTLTYPE_STRING | CTLFLAG_RW | CTLFLAG_MPSAFE,
 	&sc->acpi_lid_switch_sx, 0, acpi_sleep_state_sysctl, "A",
 	"Lid ACPI sleep state. Set to S3 if you want to suspend your laptop when close the Lid.");
     SYSCTL_ADD_PROC(&sc->acpi_sysctl_ctx, SYSCTL_CHILDREN(sc->acpi_sysctl_tree),
 	OID_AUTO, "standby_state",
-	CTLTYPE_STRING | CTLFLAG_RW | CTLFLAG_NEEDGIANT,
+	CTLTYPE_STRING | CTLFLAG_RW | CTLFLAG_MPSAFE,
 	&sc->acpi_standby_sx, 0, acpi_sleep_state_sysctl, "A", "");
     SYSCTL_ADD_PROC(&sc->acpi_sysctl_ctx, SYSCTL_CHILDREN(sc->acpi_sysctl_tree),
 	OID_AUTO, "suspend_state",
-	CTLTYPE_STRING | CTLFLAG_RW | CTLFLAG_NEEDGIANT,
+	CTLTYPE_STRING | CTLFLAG_RW | CTLFLAG_MPSAFE,
 	&sc->acpi_suspend_sx, 0, acpi_sleep_state_sysctl, "A", "");
     SYSCTL_ADD_INT(&sc->acpi_sysctl_ctx, SYSCTL_CHILDREN(sc->acpi_sysctl_tree),
 	OID_AUTO, "sleep_delay", CTLFLAG_RW, &sc->acpi_sleep_delay, 0,
@@ -1162,7 +1179,7 @@ acpi_get_cpus(device_t dev, device_t child, enum cpu_sets op, size_t setsize,
 			return (error);
 		if (setsize != sizeof(cpuset_t))
 			return (EINVAL);
-		CPU_AND(cpuset, &cpuset_domain[d]);
+		CPU_AND(cpuset, cpuset, &cpuset_domain[d]);
 		return (0);
 	default:
 		return (bus_generic_get_cpus(dev, child, op, setsize, cpuset));
@@ -1731,6 +1748,181 @@ acpi_device_eval_obj(device_t bus, device_t dev, ACPI_STRING pathname,
     else if ((h = acpi_get_handle(dev)) == NULL)
 	return (AE_BAD_PARAMETER);
     return (AcpiEvaluateObject(h, pathname, parameters, ret));
+}
+
+static ACPI_STATUS
+acpi_device_get_prop(device_t bus, device_t dev, ACPI_STRING propname,
+    const ACPI_OBJECT **value)
+{
+	const ACPI_OBJECT *pkg, *name, *val;
+	struct acpi_device *ad;
+	ACPI_STATUS status;
+	int i;
+
+	ad = device_get_ivars(dev);
+
+	if (ad == NULL || propname == NULL)
+		return (AE_BAD_PARAMETER);
+	if (ad->dsd_pkg == NULL) {
+		if (ad->dsd.Pointer == NULL) {
+			status = acpi_find_dsd(ad);
+			if (ACPI_FAILURE(status))
+				return (status);
+		} else {
+			return (AE_NOT_FOUND);
+		}
+	}
+
+	for (i = 0; i < ad->dsd_pkg->Package.Count; i ++) {
+		pkg = &ad->dsd_pkg->Package.Elements[i];
+		if (pkg->Type != ACPI_TYPE_PACKAGE || pkg->Package.Count != 2)
+			continue;
+
+		name = &pkg->Package.Elements[0];
+		val = &pkg->Package.Elements[1];
+		if (name->Type != ACPI_TYPE_STRING)
+			continue;
+		if (strncmp(propname, name->String.Pointer, name->String.Length) == 0) {
+			if (value != NULL)
+				*value = val;
+
+			return (AE_OK);
+		}
+	}
+
+	return (AE_NOT_FOUND);
+}
+
+static ACPI_STATUS
+acpi_find_dsd(struct acpi_device *ad)
+{
+	const ACPI_OBJECT *dsd, *guid, *pkg;
+	ACPI_STATUS status;
+
+	ad->dsd.Length = ACPI_ALLOCATE_BUFFER;
+	ad->dsd.Pointer = NULL;
+	ad->dsd_pkg = NULL;
+
+	status = AcpiEvaluateObject(ad->ad_handle, "_DSD", NULL, &ad->dsd);
+	if (ACPI_FAILURE(status))
+		return (status);
+
+	dsd = ad->dsd.Pointer;
+	guid = &dsd->Package.Elements[0];
+	pkg = &dsd->Package.Elements[1];
+
+	if (guid->Type != ACPI_TYPE_BUFFER || pkg->Type != ACPI_TYPE_PACKAGE ||
+		guid->Buffer.Length != sizeof(acpi_dsd_uuid))
+		return (AE_NOT_FOUND);
+	if (memcmp(guid->Buffer.Pointer, &acpi_dsd_uuid,
+		sizeof(acpi_dsd_uuid)) == 0) {
+
+		ad->dsd_pkg = pkg;
+		return (AE_OK);
+	}
+
+	return (AE_NOT_FOUND);
+}
+
+static ssize_t
+acpi_bus_get_prop_handle(const ACPI_OBJECT *hobj, void *propvalue, size_t size)
+{
+	ACPI_OBJECT *pobj;
+	ACPI_HANDLE h;
+
+	if (hobj->Type != ACPI_TYPE_PACKAGE)
+		goto err;
+	if (hobj->Package.Count != 1)
+		goto err;
+
+	pobj = &hobj->Package.Elements[0];
+	if (pobj == NULL)
+		goto err;
+	if (pobj->Type != ACPI_TYPE_LOCAL_REFERENCE)
+		goto err;
+
+	h = acpi_GetReference(NULL, pobj);
+	if (h == NULL)
+		goto err;
+
+	if (propvalue != NULL && size >= sizeof(ACPI_HANDLE))
+		*(ACPI_HANDLE *)propvalue = h;
+	return (sizeof(ACPI_HANDLE));
+
+err:
+	return (-1);
+}
+
+static ssize_t
+acpi_bus_get_prop(device_t bus, device_t child, const char *propname,
+    void *propvalue, size_t size, device_property_type_t type)
+{
+	ACPI_STATUS status;
+	const ACPI_OBJECT *obj;
+
+	status = acpi_device_get_prop(bus, child, __DECONST(char *, propname),
+		&obj);
+	if (ACPI_FAILURE(status))
+		return (-1);
+
+	switch (type) {
+	case DEVICE_PROP_ANY:
+	case DEVICE_PROP_BUFFER:
+	case DEVICE_PROP_UINT32:
+	case DEVICE_PROP_UINT64:
+		break;
+	case DEVICE_PROP_HANDLE:
+		return (acpi_bus_get_prop_handle(obj, propvalue, size));
+	default:
+		return (-1);
+	}
+
+	switch (obj->Type) {
+	case ACPI_TYPE_INTEGER:
+		if (type == DEVICE_PROP_UINT32) {
+			if (propvalue != NULL && size >= sizeof(uint32_t))
+				*((uint32_t *)propvalue) = obj->Integer.Value;
+			return (sizeof(uint32_t));
+		}
+		if (propvalue != NULL && size >= sizeof(uint64_t))
+			*((uint64_t *) propvalue) = obj->Integer.Value;
+		return (sizeof(uint64_t));
+
+	case ACPI_TYPE_STRING:
+		if (type != DEVICE_PROP_ANY &&
+		    type != DEVICE_PROP_BUFFER)
+			return (-1);
+
+		if (propvalue != NULL && size > 0)
+			memcpy(propvalue, obj->String.Pointer,
+			    MIN(size, obj->String.Length));
+		return (obj->String.Length);
+
+	case ACPI_TYPE_BUFFER:
+		if (propvalue != NULL && size > 0)
+			memcpy(propvalue, obj->Buffer.Pointer,
+			    MIN(size, obj->Buffer.Length));
+		return (obj->Buffer.Length);
+
+	case ACPI_TYPE_PACKAGE:
+		if (propvalue != NULL && size >= sizeof(ACPI_OBJECT *)) {
+			*((ACPI_OBJECT **) propvalue) =
+			    __DECONST(ACPI_OBJECT *, obj);
+		}
+		return (sizeof(ACPI_OBJECT *));
+
+	case ACPI_TYPE_LOCAL_REFERENCE:
+		if (propvalue != NULL && size >= sizeof(ACPI_HANDLE)) {
+			ACPI_HANDLE h;
+
+			h = acpi_GetReference(NULL,
+			    __DECONST(ACPI_OBJECT *, obj));
+			memcpy(propvalue, h, sizeof(ACPI_HANDLE));
+		}
+		return (sizeof(ACPI_HANDLE));
+	default:
+		return (0);
+	}
 }
 
 int
@@ -2403,6 +2595,15 @@ acpi_GetHandleInScope(ACPI_HANDLE parent, char *path, ACPI_HANDLE *result)
 	    return (AE_NOT_FOUND);
 	parent = r;
     }
+}
+
+ACPI_STATUS
+acpi_GetProperty(device_t dev, ACPI_STRING propname,
+    const ACPI_OBJECT **value)
+{
+	device_t bus = device_get_parent(dev);
+
+	return (ACPI_GET_PROPERTY(bus, dev, propname, value));
 }
 
 /*
@@ -3102,10 +3303,9 @@ acpi_EnterSleepState(struct acpi_softc *sc, int state)
 #endif
 
     /*
-     * Be sure to hold Giant across DEVICE_SUSPEND/RESUME since non-MPSAFE
-     * drivers need this.
+     * Be sure to hold Giant across DEVICE_SUSPEND/RESUME
      */
-    mtx_lock(&Giant);
+    bus_topo_lock();
 
     slp_state = ACPI_SS_NONE;
 
@@ -3231,7 +3431,7 @@ backout:
     }
     sc->acpi_next_sstate = 0;
 
-    mtx_unlock(&Giant);
+    bus_topo_unlock();
 
 #ifdef EARLY_AP_STARTUP
     thread_lock(curthread);
@@ -4199,11 +4399,11 @@ acpi_debug_sysctl(SYSCTL_HANDLER_ARGS)
 }
 
 SYSCTL_PROC(_debug_acpi, OID_AUTO, layer,
-    CTLFLAG_RW | CTLTYPE_STRING | CTLFLAG_NEEDGIANT, "debug.acpi.layer", 0,
+    CTLFLAG_RW | CTLTYPE_STRING | CTLFLAG_MPSAFE, "debug.acpi.layer", 0,
     acpi_debug_sysctl, "A",
     "");
 SYSCTL_PROC(_debug_acpi, OID_AUTO, level,
-    CTLFLAG_RW | CTLTYPE_STRING | CTLFLAG_NEEDGIANT, "debug.acpi.level", 0,
+    CTLFLAG_RW | CTLTYPE_STRING | CTLFLAG_MPSAFE, "debug.acpi.level", 0,
     acpi_debug_sysctl, "A",
     "");
 #endif /* ACPI_DEBUG */

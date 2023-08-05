@@ -12,7 +12,7 @@
 #include <memory>
 #include <string>
 
-#include "lldb/Breakpoint/StoppointLocation.h"
+#include "lldb/Breakpoint/StoppointSite.h"
 #include "lldb/Breakpoint/WatchpointOptions.h"
 #include "lldb/Symbol/CompilerType.h"
 #include "lldb/Target/Target.h"
@@ -22,7 +22,7 @@
 namespace lldb_private {
 
 class Watchpoint : public std::enable_shared_from_this<Watchpoint>,
-                   public StoppointLocation {
+                   public StoppointSite {
 public:
   class WatchpointEventData : public EventData {
   public:
@@ -75,7 +75,7 @@ public:
   bool IsHardware() const override;
 
   bool ShouldStop(StoppointCallbackContext *context) override;
-
+  
   bool WatchpointRead() const;
   bool WatchpointWrite() const;
   uint32_t GetIgnoreCount() const;
@@ -157,13 +157,14 @@ public:
 private:
   friend class Target;
   friend class WatchpointList;
-
-  void ResetHitCount() { m_hit_count = 0; }
+  friend class StopInfoWatchpoint; // This needs to call UndoHitCount()
 
   void ResetHistoricValues() {
     m_old_value_sp.reset();
     m_new_value_sp.reset();
   }
+
+  void UndoHitCount() { m_hit_counter.Decrement(); }
 
   Target &m_target;
   bool m_enabled;           // Is this watchpoint enabled
@@ -199,7 +200,7 @@ private:
 
   std::unique_ptr<UserExpression> m_condition_up; // The condition to test.
 
-  void SetID(lldb::watch_id_t id) { m_loc_id = id; }
+  void SetID(lldb::watch_id_t id) { m_id = id; }
 
   void SendWatchpointChangedEvent(lldb::WatchpointEventType eventKind);
 

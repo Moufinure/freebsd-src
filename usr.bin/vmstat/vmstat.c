@@ -604,18 +604,17 @@ fill_vmtotal(struct vmtotal *vmtp)
 }
 
 /* Determine how many cpu columns, and what index they are in kern.cp_times */
-static int
+static void
 getcpuinfo(u_long *maskp, int *maxidp)
 {
 	long *times;
 	u_long mask;
 	size_t size;
-	int empty, i, j, maxcpu, maxid, ncpus;
+	int empty, i, j, maxcpu, maxid;
 
 	if (kd != NULL)
 		xo_errx(1, "not implemented");
 	mask = 0;
-	ncpus = 0;
 	size = sizeof(maxcpu);
 	mysysctl("kern.smp.maxcpus", &maxcpu, &size);
 	if (size != sizeof(maxcpu))
@@ -632,16 +631,13 @@ getcpuinfo(u_long *maskp, int *maxidp)
 			if (times[i * CPUSTATES + j] != 0)
 				empty = 0;
 		}
-		if (!empty) {
+		if (!empty)
 			mask |= (1ul << i);
-			ncpus++;
-		}
 	}
 	if (maskp)
 		*maskp = mask;
 	if (maxidp)
 		*maxidp = maxid;
-	return (ncpus);
 }
 
 
@@ -670,12 +666,11 @@ dovmstat(unsigned int interval, int reps)
 	u_long cpumask;
 	size_t size;
 	time_t uptime, halfuptime;
-	int ncpus, maxid, rate_adj, retval;
+	int maxid, rate_adj, retval;
 
 	uptime = getuptime() / 1000000000LL;
 	halfuptime = uptime / 2;
 	rate_adj = 1;
-	ncpus = 1;
 	maxid = 0;
 	cpumask = 0;
 
@@ -714,7 +709,7 @@ dovmstat(unsigned int interval, int reps)
 	}
 
 	if (Pflag) {
-		ncpus = getcpuinfo(&cpumask, &maxid);
+		getcpuinfo(&cpumask, &maxid);
 		size_cp_times = sizeof(long) * (maxid + 1) * CPUSTATES;
 		cur_cp_times = calloc(1, size_cp_times);
 		last_cp_times = calloc(1, size_cp_times);
@@ -1289,29 +1284,26 @@ static void
 print_intrcnts(unsigned long *intrcnts, unsigned long *old_intrcnts,
     char *intrnames, unsigned int nintr, size_t istrnamlen, long long period_ms)
 {
-	unsigned long *intrcnt, *old_intrcnt;
-	char *intrname;
 	uint64_t inttotal, old_inttotal, total_count, total_rate;
 	unsigned long count, rate;
 	unsigned int i;
 
 	inttotal = 0;
 	old_inttotal = 0;
-	intrname = intrnames;
 	xo_open_list("interrupt");
-	for (i = 0, intrcnt=intrcnts, old_intrcnt=old_intrcnts; i < nintr; i++) {
-		if (intrname[0] != '\0' && (*intrcnt != 0 || aflag)) {
-			count = *intrcnt - *old_intrcnt;
+	for (i = 0; i < nintr; i++) {
+		if (intrnames[0] != '\0' && (*intrcnts != 0 || aflag)) {
+			count = *intrcnts - *old_intrcnts;
 			rate = ((uint64_t)count * 1000 + period_ms / 2) / period_ms;
 			xo_open_instance("interrupt");
 			xo_emit("{d:name/%-*s}{ket:name/%s} "
 			    "{:total/%20lu} {:rate/%10lu}\n",
-			    (int)istrnamlen, intrname, intrname, count, rate);
+			    (int)istrnamlen, intrnames, intrnames, count, rate);
 			xo_close_instance("interrupt");
 		}
-		intrname += strlen(intrname) + 1;
-		inttotal += *intrcnt++;
-		old_inttotal += *old_intrcnt++;
+		intrnames += strlen(intrnames) + 1;
+		inttotal += *intrcnts++;
+		old_inttotal += *old_intrcnts++;
 	}
 	total_count = inttotal - old_inttotal;
 	total_rate = (total_count * 1000 + period_ms / 2) / period_ms;
@@ -1357,7 +1349,7 @@ dointr(unsigned int interval, int reps)
 	/* Determine the length of the longest interrupt name */
 	intrname = intrnames;
 	istrnamlen = strlen("interrupt");
-	while(*intrname != '\0') {
+	while (intrname < intrnames + inamlen) {
 		clen = strlen(intrname);
 		if (clen > istrnamlen)
 			istrnamlen = clen;
@@ -1538,66 +1530,48 @@ display_object(struct kinfo_vmobject *kvo)
 	xo_emit("{:inactive/%5ju} ", (uintmax_t)kvo->kvo_inactive);
 	xo_emit("{:refcount/%3d} ", kvo->kvo_ref_count);
 	xo_emit("{:shadowcount/%3d} ", kvo->kvo_shadow_count);
-	switch (kvo->kvo_memattr) {
+
+#define	MEMATTR_STR(type, val)					\
+	if (kvo->kvo_memattr == (type)) {			\
+		str = (val);					\
+	} else
 #ifdef VM_MEMATTR_UNCACHEABLE
-	case VM_MEMATTR_UNCACHEABLE:
-		str = "UC";
-		break;
+	MEMATTR_STR(VM_MEMATTR_UNCACHEABLE, "UC")
 #endif
 #ifdef VM_MEMATTR_WRITE_COMBINING
-	case VM_MEMATTR_WRITE_COMBINING:
-		str = "WC";
-		break;
+	MEMATTR_STR(VM_MEMATTR_WRITE_COMBINING, "WC")
 #endif
 #ifdef VM_MEMATTR_WRITE_THROUGH
-	case VM_MEMATTR_WRITE_THROUGH:
-		str = "WT";
-		break;
+	MEMATTR_STR(VM_MEMATTR_WRITE_THROUGH, "WT")
 #endif
 #ifdef VM_MEMATTR_WRITE_PROTECTED
-	case VM_MEMATTR_WRITE_PROTECTED:
-		str = "WP";
-		break;
+	MEMATTR_STR(VM_MEMATTR_WRITE_PROTECTED, "WP")
 #endif
 #ifdef VM_MEMATTR_WRITE_BACK
-	case VM_MEMATTR_WRITE_BACK:
-		str = "WB";
-		break;
+	MEMATTR_STR(VM_MEMATTR_WRITE_BACK, "WB")
 #endif
 #ifdef VM_MEMATTR_WEAK_UNCACHEABLE
-	case VM_MEMATTR_WEAK_UNCACHEABLE:
-		str = "UC-";
-		break;
+	MEMATTR_STR(VM_MEMATTR_WEAK_UNCACHEABLE, "UC-")
 #endif
 #ifdef VM_MEMATTR_WB_WA
-	case VM_MEMATTR_WB_WA:
-		str = "WB";
-		break;
+	MEMATTR_STR(VM_MEMATTR_WB_WA, "WB")
 #endif
 #ifdef VM_MEMATTR_NOCACHE
-	case VM_MEMATTR_NOCACHE:
-		str = "NC";
-		break;
+	MEMATTR_STR(VM_MEMATTR_NOCACHE, "NC")
 #endif
 #ifdef VM_MEMATTR_DEVICE
-	case VM_MEMATTR_DEVICE:
-		str = "DEV";
-		break;
+	MEMATTR_STR(VM_MEMATTR_DEVICE, "DEV")
 #endif
 #ifdef VM_MEMATTR_CACHEABLE
-	case VM_MEMATTR_CACHEABLE:
-		str = "C";
-		break;
+	MEMATTR_STR(VM_MEMATTR_CACHEABLE, "C")
 #endif
 #ifdef VM_MEMATTR_PREFETCHABLE
-	case VM_MEMATTR_PREFETCHABLE:
-		str = "PRE";
-		break;
+	MEMATTR_STR(VM_MEMATTR_PREFETCHABLE, "PRE")
 #endif
-	default:
+	{
 		str = "??";
-		break;
 	}
+#undef MEMATTR_STR
 	xo_emit("{:attribute/%-3s} ", str);
 	switch (kvo->kvo_type) {
 	case KVME_TYPE_NONE:

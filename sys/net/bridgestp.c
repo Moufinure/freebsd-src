@@ -1,7 +1,7 @@
 /*	$NetBSD: bridgestp.c,v 1.5 2003/11/28 08:56:48 keihan Exp $	*/
 
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-NetBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2000 Jason L. Wright (jason@thought.net)
  * Copyright (c) 2006 Andrew Thompson (thompsa@FreeBSD.org)
@@ -595,6 +595,23 @@ bstp_received_bpdu(struct bstp_state *bs, struct bstp_port *bp,
 		case BSTP_INFO_DISABLED:
 		case BSTP_INFO_AGED:
 			return;
+	}
+
+	/* range checks */
+	if (cu->cu_message_age >= cu->cu_max_age) {
+		return;
+	}
+	if (cu->cu_max_age < BSTP_MIN_MAX_AGE ||
+	    cu->cu_max_age > BSTP_MAX_MAX_AGE) {
+		return;
+	}
+	if (cu->cu_forward_delay < BSTP_MIN_FORWARD_DELAY ||
+	    cu->cu_forward_delay > BSTP_MAX_FORWARD_DELAY) {
+		return;
+	}
+	if (cu->cu_hello_time < BSTP_MIN_HELLO_TIME ||
+	    cu->cu_hello_time > BSTP_MAX_HELLO_TIME) {
+		return;
 	}
 
 	type = bstp_pdu_rcvtype(bp, cu);

@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2012-2014 Baptiste Daroussin <bapt@FreeBSD.org>
  * Copyright (c) 2013 Bryan Drewery <bdrewery@FreeBSD.org>
@@ -33,7 +33,6 @@ __FBSDID("$FreeBSD$");
 #include <sys/param.h>
 #include <sys/queue.h>
 #include <sys/types.h>
-#include <sys/sbuf.h>
 #include <sys/wait.h>
 
 #include <archive.h>
@@ -57,6 +56,7 @@ __FBSDID("$FreeBSD$");
 
 #include "dns_utils.h"
 #include "config.h"
+#include "hash.h"
 
 struct sig_cert {
 	char *name;
@@ -82,6 +82,12 @@ struct fingerprint {
 	char *name;
 	char hash[BUFSIZ];
 	STAILQ_ENTRY(fingerprint) next;
+};
+
+static const char *bootstrap_names []  = {
+	"pkg.pkg",
+	"pkg.txz",
+	NULL
 };
 
 STAILQ_HEAD(fingerprint_list, fingerprint);
@@ -231,9 +237,7 @@ fetch_to_fd(const char *url, char *path, const char *fetchOpts)
 			--retry;
 			if (retry <= 0)
 				goto fetchfail;
-			if (mirrors == NULL) {
-				sleep(1);
-			} else {
+			if (mirrors != NULL) {
 				current = current->next;
 				if (current == NULL)
 					current = mirrors;
@@ -397,83 +401,6 @@ load_fingerprints(const char *path, int *count)
 	return (fingerprints);
 }
 
-static void
-sha256_hash(unsigned char hash[SHA256_DIGEST_LENGTH],
-    char out[SHA256_DIGEST_LENGTH * 2 + 1])
-{
-	int i;
-
-	for (i = 0; i < SHA256_DIGEST_LENGTH; i++)
-		sprintf(out + (i * 2), "%02x", hash[i]);
-
-	out[SHA256_DIGEST_LENGTH * 2] = '\0';
-}
-
-static void
-sha256_buf(char *buf, size_t len, char out[SHA256_DIGEST_LENGTH * 2 + 1])
-{
-	unsigned char hash[SHA256_DIGEST_LENGTH];
-	SHA256_CTX sha256;
-
-	out[0] = '\0';
-
-	SHA256_Init(&sha256);
-	SHA256_Update(&sha256, buf, len);
-	SHA256_Final(hash, &sha256);
-	sha256_hash(hash, out);
-}
-
-static int
-sha256_fd(int fd, char out[SHA256_DIGEST_LENGTH * 2 + 1])
-{
-	int my_fd;
-	FILE *fp;
-	char buffer[BUFSIZ];
-	unsigned char hash[SHA256_DIGEST_LENGTH];
-	size_t r;
-	int ret;
-	SHA256_CTX sha256;
-
-	fp = NULL;
-	ret = 1;
-
-	out[0] = '\0';
-
-	/* Duplicate the fd so that fclose(3) does not close it. */
-	if ((my_fd = dup(fd)) == -1) {
-		warnx("dup");
-		goto cleanup;
-	}
-
-	if ((fp = fdopen(my_fd, "rb")) == NULL) {
-		warnx("fdopen");
-		goto cleanup;
-	}
-
-	SHA256_Init(&sha256);
-
-	while ((r = fread(buffer, 1, BUFSIZ, fp)) > 0)
-		SHA256_Update(&sha256, buffer, r);
-
-	if (ferror(fp) != 0) {
-		warnx("fread");
-		goto cleanup;
-	}
-
-	SHA256_Final(hash, &sha256);
-	sha256_hash(hash, out);
-	ret = 0;
-
-cleanup:
-	if (fp != NULL)
-		fclose(fp);
-	else if (my_fd != -1)
-		close(my_fd);
-	(void)lseek(fd, 0, SEEK_SET);
-
-	return (ret);
-}
-
 static EVP_PKEY *
 load_public_key_file(const char *file)
 {
@@ -516,10 +443,11 @@ rsa_verify_cert(int fd, const char *sigfile, const unsigned char *key,
 {
 	EVP_MD_CTX *mdctx;
 	EVP_PKEY *pkey;
-	char sha256[(SHA256_DIGEST_LENGTH * 2) + 2];
+	char *sha256;
 	char errbuf[1024];
 	bool ret;
 
+	sha256 = NULL;
 	pkey = NULL;
 	mdctx = NULL;
 	ret = false;
@@ -531,7 +459,7 @@ rsa_verify_cert(int fd, const char *sigfile, const unsigned char *key,
 		warn("lseek");
 		goto cleanup;
 	}
-	if ((sha256_fd(fd, sha256)) == -1) {
+	if ((sha256 = sha256_fd(fd)) == NULL) {
 		warnx("Error creating SHA256 hash for package");
 		goto cleanup;
 	}
@@ -576,6 +504,7 @@ error:
 	printf("failed\n");
 
 cleanup:
+	free(sha256);
 	if (pkey)
 		EVP_PKEY_free(pkey);
 	if (mdctx)
@@ -589,7 +518,9 @@ static struct pubkey *
 read_pubkey(int fd)
 {
 	struct pubkey *pk;
-	struct sbuf *sig;
+	char *sigb;
+	size_t sigsz;
+	FILE *sig;
 	char buf[4096];
 	int r;
 
@@ -598,18 +529,22 @@ read_pubkey(int fd)
 		return (NULL);
 	}
 
-	sig = sbuf_new_auto();
+	sigsz = 0;
+	sigb = NULL;
+	sig = open_memstream(&sigb, &sigsz);
+	if (sig == NULL)
+		err(EXIT_FAILURE, "open_memstream()");
 
 	while ((r = read(fd, buf, sizeof(buf))) >0) {
-		sbuf_bcat(sig, buf, r);
+		fwrite(buf, 1, r, sig);
 	}
 
-	sbuf_finish(sig);
+	fclose(sig);
 	pk = calloc(1, sizeof(struct pubkey));
-	pk->siglen = sbuf_len(sig);
+	pk->siglen = sigsz;
 	pk->sig = calloc(1, pk->siglen);
-	memcpy(pk->sig, sbuf_data(sig), pk->siglen);
-	sbuf_delete(sig);
+	memcpy(pk->sig, sigb, pk->siglen);
+	free(sigb);
 
 	return (pk);
 }
@@ -618,16 +553,17 @@ static struct sig_cert *
 parse_cert(int fd) {
 	int my_fd;
 	struct sig_cert *sc;
-	FILE *fp;
-	struct sbuf *buf, *sig, *cert;
+	FILE *fp, *sigfp, *certfp, *tmpfp;
 	char *line;
-	size_t linecap;
+	char *sig, *cert;
+	size_t linecap, sigsz, certsz;
 	ssize_t linelen;
 
-	buf = NULL;
 	sc = NULL;
 	line = NULL;
 	linecap = 0;
+	sig = cert = NULL;
+	sigfp = certfp = tmpfp = NULL;
 
 	if (lseek(fd, 0, 0) == -1) {
 		warn("lseek");
@@ -646,41 +582,38 @@ parse_cert(int fd) {
 		return (NULL);
 	}
 
-	sig = sbuf_new_auto();
-	cert = sbuf_new_auto();
+	sigsz = certsz = 0;
+	sigfp = open_memstream(&sig, &sigsz);
+	if (sigfp == NULL)
+		err(EXIT_FAILURE, "open_memstream()");
+	certfp = open_memstream(&cert, &certsz);
+	if (certfp == NULL)
+		err(EXIT_FAILURE, "open_memstream()");
 
 	while ((linelen = getline(&line, &linecap, fp)) > 0) {
 		if (strcmp(line, "SIGNATURE\n") == 0) {
-			buf = sig;
+			tmpfp = sigfp;
 			continue;
 		} else if (strcmp(line, "CERT\n") == 0) {
-			buf = cert;
+			tmpfp = certfp;
 			continue;
 		} else if (strcmp(line, "END\n") == 0) {
 			break;
 		}
-		if (buf != NULL)
-			sbuf_bcat(buf, line, linelen);
+		if (tmpfp != NULL)
+			fwrite(line, 1, linelen, tmpfp);
 	}
 
 	fclose(fp);
-
-	/* Trim out unrelated trailing newline */
-	sbuf_setpos(sig, sbuf_len(sig) - 1);
-
-	sbuf_finish(sig);
-	sbuf_finish(cert);
+	fclose(sigfp);
+	fclose(certfp);
 
 	sc = calloc(1, sizeof(struct sig_cert));
-	sc->siglen = sbuf_len(sig);
-	sc->sig = calloc(1, sc->siglen);
-	memcpy(sc->sig, sbuf_data(sig), sc->siglen);
+	sc->siglen = sigsz -1; /* Trim out unrelated trailing newline */
+	sc->sig = sig;
 
-	sc->certlen = sbuf_len(cert);
-	sc->cert = strdup(sbuf_data(cert));
-
-	sbuf_delete(sig);
-	sbuf_delete(cert);
+	sc->certlen = certsz;
+	sc->cert = cert;
 
 	return (sc);
 }
@@ -734,8 +667,9 @@ verify_signature(int fd_pkg, int fd_sig)
 	int trusted_count, revoked_count;
 	const char *fingerprints;
 	char path[MAXPATHLEN];
-	char hash[SHA256_DIGEST_LENGTH * 2 + 1];
+	char *hash;
 
+	hash = NULL;
 	sc = NULL;
 	trusted = revoked = NULL;
 	ret = false;
@@ -772,7 +706,7 @@ verify_signature(int fd_pkg, int fd_sig)
 	sc->trusted = false;
 
 	/* Parse signature and pubkey out of the certificate */
-	sha256_buf(sc->cert, sc->certlen, hash);
+	hash = sha256_buf(sc->cert, sc->certlen);
 
 	/* Check if this hash is revoked */
 	if (revoked != NULL) {
@@ -811,6 +745,7 @@ verify_signature(int fd_pkg, int fd_sig)
 	ret = true;
 
 cleanup:
+	free(hash);
 	if (trusted)
 		free_fingerprint_list(trusted);
 	if (revoked)
@@ -836,6 +771,7 @@ bootstrap_pkg(bool force, const char *fetchOpts)
 	const char *packagesite;
 	const char *signature_type;
 	char pkgstatic[MAXPATHLEN];
+	const char *bootstrap_name;
 
 	fd_sig = -1;
 	ret = -1;
@@ -858,22 +794,29 @@ bootstrap_pkg(bool force, const char *fetchOpts)
 	if (strncmp(URL_SCHEME_PREFIX, packagesite,
 	    strlen(URL_SCHEME_PREFIX)) == 0)
 		packagesite += strlen(URL_SCHEME_PREFIX);
-	snprintf(url, MAXPATHLEN, "%s/Latest/pkg.txz", packagesite);
+	for (int j = 0; bootstrap_names[j] != NULL; j++) {
+		bootstrap_name = bootstrap_names[j];
 
-	snprintf(tmppkg, MAXPATHLEN, "%s/pkg.txz.XXXXXX",
-	    getenv("TMPDIR") ? getenv("TMPDIR") : _PATH_TMP);
-
-	if ((fd_pkg = fetch_to_fd(url, tmppkg, fetchOpts)) == -1)
+		snprintf(url, MAXPATHLEN, "%s/Latest/%s", packagesite, bootstrap_name);
+		snprintf(tmppkg, MAXPATHLEN, "%s/%s.XXXXXX",
+		    getenv("TMPDIR") ? getenv("TMPDIR") : _PATH_TMP,
+		    bootstrap_name);
+		if ((fd_pkg = fetch_to_fd(url, tmppkg, fetchOpts)) != -1)
+			break;
+		bootstrap_name = NULL;
+	}
+	if (bootstrap_name == NULL)
 		goto fetchfail;
 
 	if (signature_type != NULL &&
 	    strcasecmp(signature_type, "NONE") != 0) {
 		if (strcasecmp(signature_type, "FINGERPRINTS") == 0) {
 
-			snprintf(tmpsig, MAXPATHLEN, "%s/pkg.txz.sig.XXXXXX",
-			    getenv("TMPDIR") ? getenv("TMPDIR") : _PATH_TMP);
-			snprintf(url, MAXPATHLEN, "%s/Latest/pkg.txz.sig",
-			    packagesite);
+			snprintf(tmpsig, MAXPATHLEN, "%s/%s.sig.XXXXXX",
+			    getenv("TMPDIR") ? getenv("TMPDIR") : _PATH_TMP,
+			    bootstrap_name);
+			snprintf(url, MAXPATHLEN, "%s/Latest/%s.sig",
+			    packagesite, bootstrap_name);
 
 			if ((fd_sig = fetch_to_fd(url, tmpsig, fetchOpts)) == -1) {
 				fprintf(stderr, "Signature for pkg not "
@@ -886,10 +829,11 @@ bootstrap_pkg(bool force, const char *fetchOpts)
 		} else if (strcasecmp(signature_type, "PUBKEY") == 0) {
 
 			snprintf(tmpsig, MAXPATHLEN,
-			    "%s/pkg.txz.pubkeysig.XXXXXX",
-			    getenv("TMPDIR") ? getenv("TMPDIR") : _PATH_TMP);
-			snprintf(url, MAXPATHLEN, "%s/Latest/pkg.txz.pubkeysig",
-			    packagesite);
+			    "%s/%s.pubkeysig.XXXXXX",
+			    getenv("TMPDIR") ? getenv("TMPDIR") : _PATH_TMP,
+			    bootstrap_name);
+			snprintf(url, MAXPATHLEN, "%s/Latest/%s.pubkeysig",
+			    packagesite, bootstrap_name);
 
 			if ((fd_sig = fetch_to_fd(url, tmpsig, fetchOpts)) == -1) {
 				fprintf(stderr, "Signature for pkg not "
@@ -1038,6 +982,40 @@ cleanup:
 	return (ret);
 }
 
+#define	PKG_NAME	"pkg"
+#define	PKG_DEVEL_NAME	PKG_NAME "-devel"
+#define	PKG_PKG		PKG_NAME "."
+
+static bool
+pkg_is_pkg_pkg(const char *pkg)
+{
+	char *vstart;
+	size_t namelen;
+
+	/*
+	 * Chop off the final "-" (version delimiter) and check the name that
+	 * precedes it.  If we didn't have a version delimiter, it must be the
+	 * pkg.$archive short form but we'll check it anyways.  pkg-devel short
+	 * form will look like a pkg archive with 'devel' version, but that's
+	 * OK.  We otherwise assumed that non-pkg packages will always have a
+	 * version component.
+	 */
+	vstart = strrchr(pkg, '-');
+	if (vstart == NULL) {
+		return (strlen(pkg) > sizeof(PKG_PKG) - 1 &&
+		    strncmp(pkg, PKG_PKG, sizeof(PKG_PKG) - 1) == 0);
+	}
+
+	namelen = vstart - pkg;
+	if (namelen == sizeof(PKG_NAME) - 1 &&
+	    strncmp(pkg, PKG_NAME, sizeof(PKG_NAME) - 1) == 0)
+		return (true);
+	if (namelen == sizeof(PKG_DEVEL_NAME) - 1 &&
+	    strncmp(pkg, PKG_DEVEL_NAME, sizeof(PKG_DEVEL_NAME) - 1) == 0)
+		return (true);
+	return (false);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -1141,13 +1119,25 @@ main(int argc, char *argv[])
 				fprintf(stderr, args_bootstrap_message);
 				exit(EXIT_FAILURE);
 			}
-			// For add, we accept exactly one further argument
 			else if (add_pkg && pkgarg != NULL) {
-				fprintf(stderr, args_add_message);
-				exit(EXIT_FAILURE);
+				/*
+				 * Additional arguments also means it's not a
+				 * local bootstrap request.
+				 */
+				add_pkg = false;
 			}
 			else if (add_pkg) {
-				pkgarg = argv[optind-1];
+				/*
+				 * If it's not a request for pkg or pkg-devel,
+				 * then we must assume they were trying to
+				 * install some other local package and we
+				 * should try to bootstrap from the repo.
+				 */
+				if (!pkg_is_pkg_pkg(argv[optind-1])) {
+					add_pkg = false;
+				} else {
+					pkgarg = argv[optind-1];
+				}
 			}
 			break;
 		default:
@@ -1156,10 +1146,10 @@ main(int argc, char *argv[])
 	}
 
 	if ((bootstrap_only && force) || access(pkgpath, X_OK) == -1) {
-		/* 
+		/*
 		 * To allow 'pkg -N' to be used as a reliable test for whether
 		 * a system is configured to use pkg, don't bootstrap pkg
-		 * when that that option is passed.
+		 * when that option is passed.
 		 */
 		if (activation_test)
 			errx(EXIT_FAILURE, "pkg is not installed");

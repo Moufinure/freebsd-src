@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2018 Ruslan Bukin <br@bsdpad.com>
  * All rights reserved.
@@ -402,12 +402,6 @@ static int
 plic_setup_intr(device_t dev, struct intr_irqsrc *isrc,
     struct resource *res, struct intr_map_data *data)
 {
-	struct plic_softc *sc;
-	struct plic_irqsrc *src;
-
-	sc = device_get_softc(dev);
-	src = (struct plic_irqsrc *)isrc;
-
 	CPU_ZERO(&isrc->isrc_cpu);
 	plic_bind_intr(dev, isrc);
 

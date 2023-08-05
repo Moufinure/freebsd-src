@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2003,2004 Joseph Koshy
  * All rights reserved.
@@ -241,11 +241,6 @@ pmcc_do_list_state(void)
 	ncpu = pc->pm_ncpu;
 
 	for (c = cpu = 0; cpu < ncpu; cpu++) {
-#if	defined(__i386__) || defined(__amd64__)
-		if (pc->pm_cputype == PMC_CPU_INTEL_PIV &&
-		    CPU_ISSET(cpu, &logical_cpus_mask))
-			continue; /* skip P4-style 'logical' cpus */
-#endif
 		if (pmc_pmcinfo(cpu, &pi) < 0) {
 			if (errno == ENXIO)
 				continue;
@@ -282,14 +277,6 @@ pmcc_do_list_state(void)
 	return 0;
 }
 
-#if defined(__i386__) || defined(__amd64__)
-static int
-pmcc_do_list_events(void)
-{
-	pmc_pmu_print_counters(NULL);
-	return (0);
-}
-#else
 static int
 pmcc_do_list_events(void)
 {
@@ -298,6 +285,13 @@ pmcc_do_list_events(void)
 	const char **eventnamelist;
 	const struct pmc_cpuinfo *ci;
 
+	/* First, try pmu events. */
+	if (pmc_pmu_enabled()) {
+		pmc_pmu_print_counters(NULL);
+		return (0);
+	}
+
+	/* Otherwise, use the legacy pmc(3) interfaces. */
 	if (pmc_cpuinfo(&ci) != 0)
 		err(EX_OSERR, "Unable to determine CPU information");
 
@@ -319,7 +313,6 @@ pmcc_do_list_events(void)
 	}
 	return 0;
 }
-#endif
 
 static int
 pmcc_show_statistics(void)

@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright 2019 Michal Meloun <mmel@FreeBSD.org>
  *
@@ -179,9 +179,6 @@ rk_clk_fract_set_gate(struct clknode *clk, bool enable)
 	return (0);
 }
 
-static int
-rk_clk_fract_set_freq(struct clknode *clk, uint64_t fin, uint64_t *fout,
-    int flags, int *stop);
 static int
 rk_clk_fract_recalc(struct clknode *clk, uint64_t *freq)
 {

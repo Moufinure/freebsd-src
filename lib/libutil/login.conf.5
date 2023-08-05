@@ -19,7 +19,7 @@
 .\"
 .\" $FreeBSD$
 .\"
-.Dd May 10, 2020
+.Dd June 28, 2023
 .Dt LOGIN.CONF 5
 .Os
 .Sh NAME
@@ -247,6 +247,7 @@ the login session will be terminated.
 .It "requirehome 	bool	false	Require a valid home directory to login."
 .It "setenv	list		A comma-separated list of environment variables and"
 values to which they are to be set.
+Values containing commas must be quoted.
 .It "shell	prog		Session shell to execute rather than the"
 shell specified in the passwd file.
 The SHELL environment variable will
@@ -287,6 +288,9 @@ NIS clients using a
 NIS server should probably use "des".
 .It "passwd_prompt	string		The password prompt presented by"
 .Xr login 1
+.It "passwordtime	time		Used by"
+.Xr passwd 1
+to set next password expiry date.
 .It "times.allow 	list		List of time periods during which"
 logins are allowed.
 .It "times.deny	list		List of time periods during which logins are"
@@ -427,9 +431,6 @@ password may be.
 .Xr passwd 1
 will warn the user if an all lower case password is entered.
 .It "monthtime 	time		Maximum login time per month."
-.It "passwordtime	time		Used by"
-.Xr passwd 1
-to set next password expiry date.
 .It "refreshtime 	time		New time allowed on account refresh."
 .It "refreshperiod	str		How often account time is refreshed."
 .It "sessiontime 	time		Maximum login time per session."

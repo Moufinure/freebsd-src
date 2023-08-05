@@ -1,7 +1,7 @@
 /*-
  * Common functions for CAM "type" (peripheral) drivers.
  *
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 1997, 1998 Justin T. Gibbs.
  * Copyright (c) 1997, 1998, 1999, 2000 Kenneth D. Merry.
@@ -52,8 +52,10 @@ __FBSDID("$FreeBSD$");
 
 #include <cam/cam.h>
 #include <cam/cam_ccb.h>
+#include <cam/cam_compat.h>
 #include <cam/cam_queue.h>
 #include <cam/cam_xpt_periph.h>
+#include <cam/cam_xpt_internal.h>
 #include <cam/cam_periph.h>
 #include <cam/cam_debug.h>
 #include <cam/cam_sim.h>
@@ -278,7 +280,8 @@ cam_periph_alloc(periph_ctor_t *periph_ctor,
 	    && cur_periph->unit_number < periph->unit_number)
 		cur_periph = TAILQ_NEXT(cur_periph, unit_links);
 	if (cur_periph != NULL) {
-		KASSERT(cur_periph->unit_number != periph->unit_number, ("duplicate units on periph list"));
+		KASSERT(cur_periph->unit_number != periph->unit_number,
+		    ("duplicate units on periph list"));
 		TAILQ_INSERT_BEFORE(cur_periph, periph, unit_links);
 	} else {
 		TAILQ_INSERT_TAIL(&(*p_drv)->units, periph, unit_links);
@@ -524,6 +527,20 @@ cam_periph_unhold(struct cam_periph *periph)
 	}
 
 	cam_periph_release_locked(periph);
+}
+
+void
+cam_periph_hold_boot(struct cam_periph *periph)
+{
+
+	root_mount_hold_token(periph->periph_name, &periph->periph_rootmount);
+}
+
+void
+cam_periph_release_boot(struct cam_periph *periph)
+{
+
+	root_mount_rel(&periph->periph_rootmount);
 }
 
 /*
@@ -1104,6 +1121,7 @@ cam_periph_ioctl(struct cam_periph *periph, u_long cmd, caddr_t addr,
 	error = found = 0;
 
 	switch(cmd){
+	case CAMGETPASSTHRU_0x19:
 	case CAMGETPASSTHRU:
 		ccb = cam_periph_getccb(periph, CAM_PRIORITY_NORMAL);
 		xpt_setup_ccb(&ccb->ccb_h,
@@ -1247,7 +1265,10 @@ cam_periph_runccb(union ccb *ccb,
 	 * in the do loop below.
 	 */
 	if (must_poll) {
-		timeout = xpt_poll_setup(ccb);
+		if (cam_sim_pollable(ccb->ccb_h.path->bus->sim))
+			timeout = xpt_poll_setup(ccb);
+		else
+			timeout = 0;
 	}
 
 	if (timeout == 0) {
@@ -1416,6 +1437,7 @@ camperiphdone(struct cam_periph *periph, union ccb *done_ccb)
 	 * and the result will be the final one returned to the CCB owher.
 	 */
 	saved_ccb = (union ccb *)done_ccb->ccb_h.saved_ccb_ptr;
+	saved_ccb->ccb_h.periph_links = done_ccb->ccb_h.periph_links;
 	bcopy(saved_ccb, done_ccb, sizeof(*done_ccb));
 	xpt_free_ccb(saved_ccb);
 	if (done_ccb->ccb_h.cbfcnp != camperiphdone)

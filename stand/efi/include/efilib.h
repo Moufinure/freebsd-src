@@ -69,13 +69,22 @@ pdinfo_t *efiblk_get_pdinfo(struct devdesc *dev);
 pdinfo_t *efiblk_get_pdinfo_by_handle(EFI_HANDLE h);
 pdinfo_t *efiblk_get_pdinfo_by_device_path(EFI_DEVICE_PATH *path);
 
+/* libefi.c */
 void *efi_get_table(EFI_GUID *tbl);
 EFI_STATUS OpenProtocolByHandle(EFI_HANDLE, EFI_GUID *, void **);
 
-int efi_getdev(void **vdev, const char *devspec, const char **path);
-char *efi_fmtdev(void *vdev);
-int efi_setcurrdev(struct env_var *ev, int flags, const void *value);
+static inline EFI_STATUS
+efi_exit_boot_services(UINTN key)
+{
+	EFI_STATUS status;
 
+	status = BS->ExitBootServices(IH, key);
+	if (!EFI_ERROR(status))
+		boot_services_active = false;
+	return (status);
+}
+
+int efi_getdev(void **vdev, const char *devspec, const char **path);
 
 int efi_register_handles(struct devsw *, EFI_HANDLE *, EFI_HANDLE *, int);
 EFI_HANDLE efi_find_handle(struct devsw *, int);

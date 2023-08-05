@@ -1,6 +1,6 @@
 /* $FreeBSD$ */
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  *  Copyright (c) 2009-2020 Alexander Motin <mav@FreeBSD.org>
  *  Copyright (c) 1997-2009 by Matthew Jacob
@@ -213,8 +213,7 @@ typedef struct {
 /*
  * Qlogic 2400 NVRAM is an array of 512 bytes with a 32 bit checksum.
  */
-#define	ISP2400_NVRAM_PORT0_ADDR	0x80
-#define	ISP2400_NVRAM_PORT1_ADDR	0x180
+#define	ISP2400_NVRAM_PORT_ADDR(c)	(0x100 * (c) + 0x80)
 #define	ISP2400_NVRAM_SIZE		512
 
 #define	ISP2400_NVRAM_VERSION(c)		((c)[4] | ((c)[5] << 8))

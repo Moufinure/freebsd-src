@@ -1,7 +1,7 @@
 /*-
  * Implementation of SCSI Direct Access Peripheral driver for CAM.
  *
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 1997 Justin T. Gibbs.
  * All rights reserved.
@@ -49,6 +49,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/cons.h>
 #include <sys/endian.h>
 #include <sys/proc.h>
+#include <sys/reboot.h>
 #include <sys/sbuf.h>
 #include <geom/geom.h>
 #include <geom/geom_disk.h>
@@ -328,7 +329,6 @@ typedef enum {
 	DA_REF_OPEN = 1,
 	DA_REF_OPEN_HOLD,
 	DA_REF_CLOSE_HOLD,
-	DA_REF_PROBE_HOLD,
 	DA_REF_TUR,
 	DA_REF_GEOM,
 	DA_REF_SYSCTL,
@@ -345,6 +345,7 @@ struct da_softc {
 	da_flags flags;
 	da_quirks quirks;
 	int	 minimum_cmd_size;
+	int	 mode_page;
 	int	 error_inject;
 	int	 trim_max_ranges;
 	int	 delete_available;	/* Delete methods possibly available */
@@ -1575,7 +1576,7 @@ SYSCTL_INT(_kern_cam_da, OID_AUTO, enable_biospeedup, CTLFLAG_RDTUN,
 	    &da_enable_biospeedup, 0, "Enable BIO_SPEEDUP processing");
 
 SYSCTL_PROC(_kern_cam_da, OID_AUTO, default_softtimeout,
-    CTLTYPE_UINT | CTLFLAG_RW | CTLFLAG_NEEDGIANT, NULL, 0,
+    CTLTYPE_UINT | CTLFLAG_RW | CTLFLAG_MPSAFE, NULL, 0,
     dasysctlsofttimeout, "I",
     "Soft I/O timeout (ms)");
 TUNABLE_INT64("kern.cam.da.default_softtimeout", &da_default_softtimeout);
@@ -1909,7 +1910,7 @@ dastrategy(struct bio *bp)
 }
 
 static int
-dadump(void *arg, void *virtual, vm_offset_t physical, off_t offset, size_t length)
+dadump(void *arg, void *virtual, off_t offset, size_t length)
 {
 	struct	    cam_periph *periph;
 	struct	    da_softc *softc;
@@ -2149,7 +2150,7 @@ daasync(void *callback_arg, u_int32_t code,
 		}
 		break;
 	}
-	case AC_UNIT_ATTENTION:
+	case AC_UNIT_ATTENTION:		/* Called for this path: periph locked */
 	{
 		union ccb *ccb;
 		int error_code, sense_key, asc, ascq;
@@ -2159,9 +2160,7 @@ daasync(void *callback_arg, u_int32_t code,
 
 		/*
 		 * Handle all UNIT ATTENTIONs except our own, as they will be
-		 * handled by daerror(). Since this comes from a different periph,
-		 * that periph's lock is held, not ours, so we have to take it ours
-		 * out to touch softc flags.
+		 * handled by daerror().
 		 */
 		if (xpt_path_periph(ccb->ccb_h.path) != periph &&
 		    scsi_extract_sense_ccb(ccb,
@@ -2169,22 +2168,19 @@ daasync(void *callback_arg, u_int32_t code,
 			if (asc == 0x2A && ascq == 0x09) {
 				xpt_print(ccb->ccb_h.path,
 				    "Capacity data has changed\n");
-				cam_periph_lock(periph);
+				cam_periph_assert(periph, MA_OWNED);
 				softc->flags &= ~DA_FLAG_PROBED;
 				dareprobe(periph);
-				cam_periph_unlock(periph);
 			} else if (asc == 0x28 && ascq == 0x00) {
-				cam_periph_lock(periph);
+				cam_periph_assert(periph, MA_OWNED);
 				softc->flags &= ~DA_FLAG_PROBED;
-				cam_periph_unlock(periph);
 				disk_media_changed(softc->disk, M_NOWAIT);
 			} else if (asc == 0x3F && ascq == 0x03) {
 				xpt_print(ccb->ccb_h.path,
 				    "INQUIRY data has changed\n");
-				cam_periph_lock(periph);
+				cam_periph_assert(periph, MA_OWNED);
 				softc->flags &= ~DA_FLAG_PROBED;
 				dareprobe(periph);
-				cam_periph_unlock(periph);
 			}
 		}
 		break;
@@ -2272,17 +2268,17 @@ dasysctlinit(void *context, int pending)
 	 */
 	SYSCTL_ADD_PROC(&softc->sysctl_ctx, SYSCTL_CHILDREN(softc->sysctl_tree),
 		OID_AUTO, "delete_method",
-		CTLTYPE_STRING | CTLFLAG_RWTUN | CTLFLAG_NEEDGIANT,
+		CTLTYPE_STRING | CTLFLAG_RWTUN | CTLFLAG_MPSAFE,
 		softc, 0, dadeletemethodsysctl, "A",
 		"BIO_DELETE execution method");
 	SYSCTL_ADD_PROC(&softc->sysctl_ctx, SYSCTL_CHILDREN(softc->sysctl_tree),
 		OID_AUTO, "delete_max",
-		CTLTYPE_U64 | CTLFLAG_RW | CTLFLAG_NEEDGIANT,
+		CTLTYPE_U64 | CTLFLAG_RW | CTLFLAG_MPSAFE,
 		softc, 0, dadeletemaxsysctl, "Q",
 		"Maximum BIO_DELETE size");
 	SYSCTL_ADD_PROC(&softc->sysctl_ctx, SYSCTL_CHILDREN(softc->sysctl_tree),
 		OID_AUTO, "minimum_cmd_size",
-		CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_NEEDGIANT,
+		CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_MPSAFE,
 		&softc->minimum_cmd_size, 0, dacmdsizesysctl, "I",
 		"Minimum CDB size");
 	SYSCTL_ADD_UQUAD(&softc->sysctl_ctx,
@@ -2300,12 +2296,12 @@ dasysctlinit(void *context, int pending)
 
 	SYSCTL_ADD_PROC(&softc->sysctl_ctx, SYSCTL_CHILDREN(softc->sysctl_tree),
 		OID_AUTO, "zone_mode",
-		CTLTYPE_STRING | CTLFLAG_RD | CTLFLAG_NEEDGIANT,
+		CTLTYPE_STRING | CTLFLAG_RD | CTLFLAG_MPSAFE,
 		softc, 0, dazonemodesysctl, "A",
 		"Zone Mode");
 	SYSCTL_ADD_PROC(&softc->sysctl_ctx, SYSCTL_CHILDREN(softc->sysctl_tree),
 		OID_AUTO, "zone_support",
-		CTLTYPE_STRING | CTLFLAG_RD | CTLFLAG_NEEDGIANT,
+		CTLTYPE_STRING | CTLFLAG_RD | CTLFLAG_MPSAFE,
 		softc, 0, dazonesupsysctl, "A",
 		"Zone Support");
 	SYSCTL_ADD_UQUAD(&softc->sysctl_ctx,
@@ -2596,9 +2592,17 @@ daprobedone(struct cam_periph *periph, union ccb *ccb)
 	wakeup(&softc->disk->d_mediasize);
 	if ((softc->flags & DA_FLAG_ANNOUNCED) == 0) {
 		softc->flags |= DA_FLAG_ANNOUNCED;
-		da_periph_unhold(periph, DA_REF_PROBE_HOLD);
-	} else
-		da_periph_release_locked(periph, DA_REF_REPROBE);
+
+		/*
+		 * We'll release this reference once GEOM calls us back via
+		 * dadiskgonecb(), telling us that our provider has been freed.
+		 */
+		if (da_periph_acquire(periph, DA_REF_GEOM) == 0)
+			disk_create(softc->disk, DISK_VERSION);
+
+		cam_periph_release_boot(periph);
+	}
+	da_periph_release_locked(periph, DA_REF_REPROBE);
 }
 
 static void
@@ -2849,23 +2853,19 @@ daregister(struct cam_periph *periph, void *arg)
 	TASK_INIT(&softc->sysctl_task, 0, dasysctlinit, periph);
 
 	/*
-	 * Take an exclusive section lock qon the periph while dastart is called
-	 * to finish the probe.  The lock will be dropped in dadone at the end
-	 * of probe. This locks out daopen and daclose from racing with the
-	 * probe.
-	 *
-	 * XXX if cam_periph_hold returns an error, we don't hold a refcount.
+	 * Take a reference on the periph while dastart is called to finish the
+	 * probe.  The reference will be dropped in dadone at the end of probe.
 	 */
-	(void)da_periph_hold(periph, PRIBIO, DA_REF_PROBE_HOLD);
+	(void)da_periph_acquire(periph, DA_REF_REPROBE);
 
 	/*
 	 * Schedule a periodic event to occasionally send an
 	 * ordered tag to a device.
 	 */
 	callout_init_mtx(&softc->sendordered_c, cam_periph_mtx(periph), 0);
-	callout_reset(&softc->sendordered_c,
-	    (da_default_timeout * hz) / DA_ORDEREDTAG_INTERVAL,
-	    dasendorderedtag, periph);
+	callout_reset_sbt(&softc->sendordered_c,
+	    SBT_1S / DA_ORDEREDTAG_INTERVAL * da_default_timeout, 0,
+	    dasendorderedtag, periph, C_PREL(1));
 
 	cam_periph_unlock(periph);
 	/*
@@ -2895,6 +2895,9 @@ daregister(struct cam_periph *periph, void *arg)
 	else
 		softc->minimum_cmd_size = 6;
 
+	/* On first PROBE_WP request all more pages, then adjust. */
+	softc->mode_page = SMS_ALL_PAGES_PAGE;
+
 	/* Predict whether device may support READ CAPACITY(16). */
 	if (SID_ANSI_REV(&cgd->inq_data) >= SCSI_REV_SPC3 &&
 	    (softc->quirks & DA_Q_NO_RC16) == 0) {
@@ -2914,7 +2917,8 @@ daregister(struct cam_periph *periph, void *arg)
 	softc->disk->d_open = daopen;
 	softc->disk->d_close = daclose;
 	softc->disk->d_strategy = dastrategy;
-	softc->disk->d_dump = dadump;
+	if (cam_sim_pollable(periph->sim))
+		softc->disk->d_dump = dadump;
 	softc->disk->d_getattr = dagetattr;
 	softc->disk->d_gone = dadiskgonecb;
 	softc->disk->d_name = "da";
@@ -2948,20 +2952,6 @@ daregister(struct cam_periph *periph, void *arg)
 	softc->disk->d_hba_subdevice = cpi.hba_subdevice;
 	snprintf(softc->disk->d_attachment, sizeof(softc->disk->d_attachment),
 	    "%s%d", cpi.dev_name, cpi.unit_number);
-
-	/*
-	 * Acquire a reference to the periph before we register with GEOM.
-	 * We'll release this reference once GEOM calls us back (via
-	 * dadiskgonecb()) telling us that our provider has been freed.
-	 */
-	if (da_periph_acquire(periph, DA_REF_GEOM) != 0) {
-		xpt_print(periph->path, "%s: lost periph during "
-			  "registration!\n", __func__);
-		cam_periph_lock(periph);
-		return (CAM_REQ_CMP_ERR);
-	}
-
-	disk_create(softc->disk, DISK_VERSION);
 	cam_periph_lock(periph);
 
 	/*
@@ -2976,25 +2966,20 @@ daregister(struct cam_periph *periph, void *arg)
 	    AC_INQ_CHANGED, daasync, periph, periph->path);
 
 	/*
-	 * Emit an attribute changed notification just in case
-	 * physical path information arrived before our async
-	 * event handler was registered, but after anyone attaching
-	 * to our disk device polled it.
-	 */
-	disk_attr_changed(softc->disk, "GEOM::physpath", M_NOWAIT);
-
-	/*
 	 * Schedule a periodic media polling events.
 	 */
 	callout_init_mtx(&softc->mediapoll_c, cam_periph_mtx(periph), 0);
 	if ((softc->flags & DA_FLAG_PACK_REMOVABLE) &&
 	    (cgd->inq_flags & SID_AEN) == 0 &&
-	    da_poll_period != 0)
-		callout_reset(&softc->mediapoll_c, da_poll_period * hz,
-		    damediapoll, periph);
+	    da_poll_period != 0) {
+		callout_reset_sbt(&softc->mediapoll_c, da_poll_period * SBT_1S,
+		    0, damediapoll, periph, C_PREL(1));
+	}
+
+	/* Released after probe when disk_create() call pass it to GEOM. */
+	cam_periph_hold_boot(periph);
 
 	xpt_schedule(periph, CAM_PRIORITY_DEV);
-
 	return(CAM_REQ_CMP);
 }
 
@@ -3486,7 +3471,7 @@ out:
 		void  *mode_buf;
 		int    mode_buf_len;
 
-		if (da_disable_wp_detection) {
+		if (da_disable_wp_detection || softc->mode_page < 0) {
 			if ((softc->flags & DA_FLAG_CAN_RC16) != 0)
 				softc->state = DA_STATE_PROBE_RC16;
 			else
@@ -3510,7 +3495,7 @@ out:
 				    /*tag_action*/ MSG_SIMPLE_Q_TAG,
 				    /*dbd*/ FALSE,
 				    /*pc*/ SMS_PAGE_CTRL_CURRENT,
-				    /*page*/ SMS_ALL_PAGES_PAGE,
+				    /*page*/ softc->mode_page,
 				    /*param_buf*/ mode_buf,
 				    /*param_len*/ mode_buf_len,
 				    /*minimum_cmd_size*/ softc->minimum_cmd_size,
@@ -4468,7 +4453,7 @@ dazonedone(struct cam_periph *periph, union ccb *ccb)
 			/*
 			 * NOTE: we're mapping the values here directly
 			 * from the SCSI/ATA bit definitions to the bio.h
-			 * definitons.  There is also a warning in
+			 * definitions. There is also a warning in
 			 * disk_zone.h, but the impact is that if
 			 * additional values are added in the SCSI/ATA
 			 * specs these will be visible to consumers of
@@ -4515,13 +4500,11 @@ dadone(struct cam_periph *periph, union ccb *done_ccb)
 	struct bio *bp, *bp1;
 	struct da_softc *softc;
 	struct ccb_scsiio *csio;
-	u_int32_t  priority;
 	da_ccb_state state;
 
 	CAM_DEBUG(periph->path, CAM_DEBUG_TRACE, ("dadone\n"));
 
 	softc = (struct da_softc *)periph->softc;
-	priority = done_ccb->ccb_h.pinfo.priority;
 	csio = &done_ccb->csio;
 
 #if defined(BUF_TRACKING) || defined(FULL_BUF_TRACKING)
@@ -4672,12 +4655,9 @@ dadone(struct cam_periph *periph, union ccb *done_ccb)
 static void
 dadone_probewp(struct cam_periph *periph, union ccb *done_ccb)
 {
-	struct scsi_mode_header_6 *mode_hdr6;
-	struct scsi_mode_header_10 *mode_hdr10;
 	struct da_softc *softc;
 	struct ccb_scsiio *csio;
 	u_int32_t  priority;
-	uint8_t dev_spec;
 
 	CAM_DEBUG(periph->path, CAM_DEBUG_TRACE, ("dadone_probewp\n"));
 
@@ -4695,18 +4675,31 @@ dadone_probewp(struct cam_periph *periph, union ccb *done_ccb)
 		(unsigned long)csio->ccb_h.ccb_state & DA_CCB_TYPE_MASK, periph,
 		done_ccb));
 
-	if (softc->minimum_cmd_size > 6) {
-		mode_hdr10 = (struct scsi_mode_header_10 *)csio->data_ptr;
-		dev_spec = mode_hdr10->dev_spec;
-	} else {
-		mode_hdr6 = (struct scsi_mode_header_6 *)csio->data_ptr;
-		dev_spec = mode_hdr6->dev_spec;
-	}
 	if (cam_ccb_status(done_ccb) == CAM_REQ_CMP) {
+		int len, off;
+		uint8_t dev_spec;
+
+		if (csio->cdb_len > 6) {
+			struct scsi_mode_header_10 *mh =
+			    (struct scsi_mode_header_10 *)csio->data_ptr;
+			len = 2 + scsi_2btoul(mh->data_length);
+			off = sizeof(*mh) + scsi_2btoul(mh->blk_desc_len);
+			dev_spec = mh->dev_spec;
+		} else {
+			struct scsi_mode_header_6 *mh =
+			    (struct scsi_mode_header_6 *)csio->data_ptr;
+			len = 1 + mh->data_length;
+			off = sizeof(*mh) + mh->blk_desc_len;
+			dev_spec = mh->dev_spec;
+		}
 		if ((dev_spec & 0x80) != 0)
 			softc->disk->d_flags |= DISKFLAG_WRITE_PROTECT;
 		else
 			softc->disk->d_flags &= ~DISKFLAG_WRITE_PROTECT;
+
+		/* Next time request only the first of returned mode pages. */
+		if (off < len && off < csio->dxfer_len - csio->resid)
+			softc->mode_page = csio->data_ptr[off] & SMPH_PC_MASK;
 	} else {
 		int error;
 
@@ -4723,6 +4716,9 @@ dadone_probewp(struct cam_periph *periph, union ccb *done_ccb)
 						 /*timeout*/0,
 						 /*getcount_only*/0);
 			}
+
+			/* We don't depend on it, so don't try again. */
+			softc->mode_page = -1;
 		}
 	}
 
@@ -5285,7 +5281,6 @@ dadone_probeata(struct cam_periph *periph, union ccb *done_ccb)
 	u_int32_t  priority;
 	int continue_probe;
 	int error;
-	int16_t *ptr;
 
 	CAM_DEBUG(periph->path, CAM_DEBUG_TRACE, ("dadone_probeata\n"));
 
@@ -5293,7 +5288,6 @@ dadone_probeata(struct cam_periph *periph, union ccb *done_ccb)
 	priority = done_ccb->ccb_h.pinfo.priority;
 	csio = &done_ccb->csio;
 	ata_params = (struct ata_params *)csio->data_ptr;
-	ptr = (uint16_t *)ata_params;
 	continue_probe = 0;
 	error = 0;
 
@@ -5878,12 +5872,10 @@ static void
 dadone_tur(struct cam_periph *periph, union ccb *done_ccb)
 {
 	struct da_softc *softc;
-	struct ccb_scsiio *csio;
 
 	CAM_DEBUG(periph->path, CAM_DEBUG_TRACE, ("dadone_tur\n"));
 
 	softc = (struct da_softc *)periph->softc;
-	csio = &done_ccb->csio;
 
 	cam_periph_assert(periph, MA_OWNED);
 
@@ -6026,9 +6018,12 @@ damediapoll(void *arg)
 			daschedule(periph);
 		}
 	}
+
 	/* Queue us up again */
-	if (da_poll_period != 0)
-		callout_schedule(&softc->mediapoll_c, da_poll_period * hz);
+	if (da_poll_period != 0) {
+		callout_schedule_sbt(&softc->mediapoll_c,
+		    da_poll_period * SBT_1S, 0, C_PREL(1));
+	}
 }
 
 static void
@@ -6213,9 +6208,9 @@ dasendorderedtag(void *arg)
 	}
 
 	/* Queue us up again */
-	callout_reset(&softc->sendordered_c,
-	    (da_default_timeout * hz) / DA_ORDEREDTAG_INTERVAL,
-	    dasendorderedtag, periph);
+	callout_schedule_sbt(&softc->sendordered_c,
+	    SBT_1S / DA_ORDEREDTAG_INTERVAL * da_default_timeout, 0,
+	    C_PREL(1));
 }
 
 /*
@@ -6230,13 +6225,16 @@ dashutdown(void * arg, int howto)
 	union ccb *ccb;
 	int error;
 
+	if ((howto & RB_NOSYNC) != 0)
+		return;
+
 	CAM_PERIPH_FOREACH(periph, &dadriver) {
 		softc = (struct da_softc *)periph->softc;
 		if (SCHEDULER_STOPPED()) {
 			/* If we paniced with the lock held, do not recurse. */
 			if (!cam_periph_owned(periph) &&
 			    (softc->flags & DA_FLAG_OPEN)) {
-				dadump(softc->disk, NULL, 0, 0, 0);
+				dadump(softc->disk, NULL, 0, 0);
 			}
 			continue;
 		}

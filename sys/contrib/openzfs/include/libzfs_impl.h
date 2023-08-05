@@ -72,6 +72,8 @@ struct libzfs_handle {
 	boolean_t libzfs_prop_debug;
 	regex_t libzfs_urire;
 	uint64_t libzfs_max_nvlist;
+	void *libfetch;
+	char *libfetch_load_error;
 };
 
 struct zfs_handle {
@@ -232,6 +234,7 @@ typedef struct differ_info {
 	boolean_t scripted;
 	boolean_t classify;
 	boolean_t timestamped;
+	boolean_t no_mangle;
 	uint64_t shares;
 	int zerr;
 	int cleanupfd;

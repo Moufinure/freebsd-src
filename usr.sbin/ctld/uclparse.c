@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2015 iXsystems Inc.
  * All rights reserved.
@@ -847,7 +847,7 @@ uclparse_target(const char *name, const ucl_object_t *top)
 					return (1);
 				}
 
-				return (0);
+				continue;
 			}
 
 			pp = pport_find(conf, value);

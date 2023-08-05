@@ -195,6 +195,8 @@ struct iflib_ctx {
 	uint16_t ifc_sysctl_core_offset;
 #define	CORE_OFFSET_UNSPECIFIED	0xffff
 	uint8_t  ifc_sysctl_separate_txrx;
+	uint8_t  ifc_sysctl_use_logical_cores;
+	bool	 ifc_cpus_are_physical_cores;
 
 	qidx_t ifc_sysctl_ntxds[8];
 	qidx_t ifc_sysctl_nrxds[8];
@@ -207,6 +209,8 @@ struct iflib_ctx {
 #define isc_rxd_refill ifc_txrx.ift_rxd_refill
 #define isc_rxd_flush ifc_txrx.ift_rxd_flush
 #define isc_legacy_intr ifc_txrx.ift_legacy_intr
+#define isc_txq_select ifc_txrx.ift_txq_select
+#define isc_txq_select_v2 ifc_txrx.ift_txq_select_v2
 	eventhandler_tag ifc_vlan_attach_event;
 	eventhandler_tag ifc_vlan_detach_event;
 	struct ether_addr ifc_mac;
@@ -725,7 +729,7 @@ struct cpu_offset {
 	SLIST_ENTRY(cpu_offset) entries;
 	cpuset_t	set;
 	unsigned int	refcount;
-	uint16_t	offset;
+	uint16_t	next_cpuid;
 };
 static struct mtx cpu_offset_mtx;
 MTX_SYSINIT(iflib_cpu_offset, &cpu_offset_mtx, "iflib_cpu_offset lock",
@@ -827,6 +831,26 @@ iflib_netmap_register(struct netmap_adapter *na, int onoff)
 		nm_clear_native_flags(na);
 	CTX_UNLOCK(ctx);
 	return (status);
+}
+
+static int
+iflib_netmap_config(struct netmap_adapter *na, struct nm_config_info *info)
+{
+	if_t ifp = na->ifp;
+	if_ctx_t ctx = ifp->if_softc;
+	iflib_rxq_t rxq = &ctx->ifc_rxqs[0];
+	iflib_fl_t fl = &rxq->ifr_fl[0];
+
+	info->num_tx_rings = ctx->ifc_softc_ctx.isc_ntxqsets;
+	info->num_rx_rings = ctx->ifc_softc_ctx.isc_nrxqsets;
+	info->num_tx_descs = iflib_num_tx_descs(ctx);
+	info->num_rx_descs = iflib_num_rx_descs(ctx);
+	info->rx_buf_maxsize = fl->ifl_buf_size;
+	nm_prinf("txr %u rxr %u txd %u rxd %u rbufsz %u",
+		info->num_tx_rings, info->num_rx_rings, info->num_tx_descs,
+		info->num_rx_descs, info->rx_buf_maxsize);
+
+	return 0;
 }
 
 static int
@@ -964,10 +988,10 @@ iflib_netmap_txsync(struct netmap_kring *kring, int flags)
 	struct netmap_ring *ring = kring->ring;
 	u_int nm_i;	/* index into the netmap kring */
 	u_int nic_i;	/* index into the NIC ring */
-	u_int n;
 	u_int const lim = kring->nkr_num_slots - 1;
 	u_int const head = kring->rhead;
 	struct if_pkt_info pi;
+	int tx_pkts = 0, tx_bytes = 0;
 
 	/*
 	 * interrupts on every tx packet are expensive so request
@@ -1016,7 +1040,7 @@ iflib_netmap_txsync(struct netmap_kring *kring, int flags)
 		__builtin_prefetch(&txq->ift_sds.ifsd_m[nic_i]);
 		__builtin_prefetch(&txq->ift_sds.ifsd_map[nic_i]);
 
-		for (n = 0; nm_i != head; n++) {
+		while (nm_i != head) {
 			struct netmap_slot *slot = &ring->slot[nm_i];
 			u_int len = slot->len;
 			uint64_t paddr;
@@ -1050,6 +1074,10 @@ iflib_netmap_txsync(struct netmap_kring *kring, int flags)
 				/* Prepare the NIC TX ring. */
 				ctx->isc_txd_encap(ctx->ifc_softc, &pi);
 				DBG_COUNTER_INC(tx_encap);
+
+				/* Update transmit counters */
+				tx_bytes += pi.ipi_len;
+				tx_pkts++;
 
 				/* Reinit per-packet info for the next one. */
 				flags = seg_idx = pkt_len = 0;
@@ -1109,6 +1137,10 @@ iflib_netmap_txsync(struct netmap_kring *kring, int flags)
 			    iflib_netmap_timer, txq,
 			    txq->ift_netmap_timer.c_cpu, 0);
 		}
+
+	if_inc_counter(ifp, IFCOUNTER_OBYTES, tx_bytes);
+	if_inc_counter(ifp, IFCOUNTER_OPACKETS, tx_pkts);
+
 	return (0);
 }
 
@@ -1136,7 +1168,7 @@ iflib_netmap_rxsync(struct netmap_kring *kring, int flags)
 	u_int n;
 	u_int const lim = kring->nkr_num_slots - 1;
 	int force_update = (flags & NAF_FORCE_READ) || kring->nr_kflags & NKR_PENDINTR;
-	int i = 0;
+	int i = 0, rx_bytes = 0, rx_pkts = 0;
 
 	if_ctx_t ctx = ifp->if_softc;
 	if_shared_ctx_t sctx = ctx->ifc_sctx;
@@ -1207,6 +1239,10 @@ iflib_netmap_rxsync(struct netmap_kring *kring, int flags)
 					if (i == (ri.iri_nfrags - 1)) {
 						ring->slot[nm_i].len -= crclen;
 						ring->slot[nm_i].flags = 0;
+
+						/* Update receive counters */
+						rx_bytes += ri.iri_len;
+						rx_pkts++;
 					} else
 						ring->slot[nm_i].flags = NS_MOREFRAG;
 				}
@@ -1244,6 +1280,9 @@ iflib_netmap_rxsync(struct netmap_kring *kring, int flags)
 	 */
 	netmap_fl_refill(rxq, kring, false);
 
+	if_inc_counter(ifp, IFCOUNTER_IBYTES, rx_bytes);
+	if_inc_counter(ifp, IFCOUNTER_IPACKETS, rx_pkts);
+
 	return (0);
 }
 
@@ -1279,6 +1318,7 @@ iflib_netmap_attach(if_ctx_t ctx)
 	na.nm_rxsync = iflib_netmap_rxsync;
 	na.nm_register = iflib_netmap_register;
 	na.nm_intr = iflib_netmap_intr;
+	na.nm_config = iflib_netmap_config;
 	na.num_tx_rings = ctx->ifc_softc_ctx.isc_ntxqsets;
 	na.num_rx_rings = ctx->ifc_softc_ctx.isc_nrxqsets;
 	return (netmap_attach(&na));
@@ -2198,7 +2238,7 @@ iflib_fl_bufs_free(iflib_fl_t fl)
 			*sd_cl = NULL;
 			if (*sd_m != NULL) {
 				m_init(*sd_m, M_NOWAIT, MT_DATA, 0);
-				uma_zfree(zone_mbuf, *sd_m);
+				m_free_raw(*sd_m);
 				*sd_m = NULL;
 			}
 		} else {
@@ -2454,7 +2494,7 @@ iflib_init_locked(if_ctx_t ctx)
 		callout_stop(&txq->ift_netmap_timer);
 #endif /* DEV_NETMAP */
 		CALLOUT_UNLOCK(txq);
-		iflib_netmap_txq_init(ctx, txq);
+		(void)iflib_netmap_txq_init(ctx, txq);
 	}
 
 	/*
@@ -2573,7 +2613,9 @@ iflib_stop(if_ctx_t ctx)
 			bzero((void *)di->idi_vaddr, di->idi_size);
 	}
 	for (i = 0; i < scctx->isc_nrxqsets; i++, rxq++) {
-		/* make sure all transmitters have completed before proceeding XXX */
+		if (rxq->ifr_task.gt_taskqueue != NULL)
+			gtaskqueue_drain(rxq->ifr_task.gt_taskqueue,
+				 &rxq->ifr_task.gt_task);
 
 		rxq->ifr_cq_cidx = 0;
 		for (j = 0, di = rxq->ifr_ifdi; j < sctx->isc_nrxqs; j++, di++)
@@ -3123,12 +3165,154 @@ print_pkt(if_pkt_info_t pi)
 #define IS_TSO6(pi) ((pi)->ipi_csum_flags & CSUM_IP6_TSO)
 #define IS_TX_OFFLOAD6(pi) ((pi)->ipi_csum_flags & (CSUM_IP6_TCP | CSUM_IP6_TSO))
 
+/**
+ * Parses out ethernet header information in the given mbuf.
+ * Returns in pi: ipi_etype (EtherType) and ipi_ehdrlen (Ethernet header length)
+ *
+ * This will account for the VLAN header if present.
+ *
+ * XXX: This doesn't handle QinQ, which could prevent TX offloads for those
+ * types of packets.
+ */
+static int
+iflib_parse_ether_header(if_pkt_info_t pi, struct mbuf **mp, uint64_t *pullups)
+{
+	struct ether_vlan_header *eh;
+	struct mbuf *m;
+
+	m = *mp;
+	if (__predict_false(m->m_len < sizeof(*eh))) {
+		(*pullups)++;
+		if (__predict_false((m = m_pullup(m, sizeof(*eh))) == NULL))
+			return (ENOMEM);
+	}
+	eh = mtod(m, struct ether_vlan_header *);
+	if (eh->evl_encap_proto == htons(ETHERTYPE_VLAN)) {
+		pi->ipi_etype = ntohs(eh->evl_proto);
+		pi->ipi_ehdrlen = ETHER_HDR_LEN + ETHER_VLAN_ENCAP_LEN;
+	} else {
+		pi->ipi_etype = ntohs(eh->evl_encap_proto);
+		pi->ipi_ehdrlen = ETHER_HDR_LEN;
+	}
+	*mp = m;
+
+	return (0);
+}
+
+/**
+ * Parse up to the L3 header and extract IPv4/IPv6 header information into pi.
+ * Currently this information includes: IP ToS value, IP header version/presence
+ *
+ * This is missing some checks and doesn't edit the packet content as it goes,
+ * unlike iflib_parse_header(), in order to keep the amount of code here minimal.
+ */
+static int
+iflib_parse_header_partial(if_pkt_info_t pi, struct mbuf **mp, uint64_t *pullups)
+{
+	struct mbuf *m;
+	int err;
+
+	*pullups = 0;
+	m = *mp;
+	if (!M_WRITABLE(m)) {
+		if ((m = m_dup(m, M_NOWAIT)) == NULL) {
+			return (ENOMEM);
+		} else {
+			m_freem(*mp);
+			DBG_COUNTER_INC(tx_frees);
+			*mp = m;
+		}
+	}
+
+	/* Fills out pi->ipi_etype */
+	err = iflib_parse_ether_header(pi, mp, pullups);
+	if (err)
+		return (err);
+	m = *mp;
+
+	switch (pi->ipi_etype) {
+#ifdef INET
+	case ETHERTYPE_IP:
+	{
+		struct mbuf *n;
+		struct ip *ip = NULL;
+		int miniplen;
+
+		miniplen = min(m->m_pkthdr.len, pi->ipi_ehdrlen + sizeof(*ip));
+		if (__predict_false(m->m_len < miniplen)) {
+			/*
+			 * Check for common case where the first mbuf only contains
+			 * the Ethernet header
+			 */
+			if (m->m_len == pi->ipi_ehdrlen) {
+				n = m->m_next;
+				MPASS(n);
+				/* If next mbuf contains at least the minimal IP header, then stop */
+				if (n->m_len >= sizeof(*ip)) {
+					ip = (struct ip *)n->m_data;
+				} else {
+					(*pullups)++;
+					if (__predict_false((m = m_pullup(m, miniplen)) == NULL))
+						return (ENOMEM);
+					ip = (struct ip *)(m->m_data + pi->ipi_ehdrlen);
+				}
+			} else {
+				(*pullups)++;
+				if (__predict_false((m = m_pullup(m, miniplen)) == NULL))
+					return (ENOMEM);
+				ip = (struct ip *)(m->m_data + pi->ipi_ehdrlen);
+			}
+		} else {
+			ip = (struct ip *)(m->m_data + pi->ipi_ehdrlen);
+		}
+
+		/* Have the IPv4 header w/ no options here */
+		pi->ipi_ip_hlen = ip->ip_hl << 2;
+		pi->ipi_ipproto = ip->ip_p;
+		pi->ipi_ip_tos = ip->ip_tos;
+		pi->ipi_flags |= IPI_TX_IPV4;
+
+		break;
+	}
+#endif
+#ifdef INET6
+	case ETHERTYPE_IPV6:
+	{
+		struct ip6_hdr *ip6;
+
+		if (__predict_false(m->m_len < pi->ipi_ehdrlen + sizeof(struct ip6_hdr))) {
+			(*pullups)++;
+			if (__predict_false((m = m_pullup(m, pi->ipi_ehdrlen + sizeof(struct ip6_hdr))) == NULL))
+				return (ENOMEM);
+		}
+		ip6 = (struct ip6_hdr *)(m->m_data + pi->ipi_ehdrlen);
+
+		/* Have the IPv6 fixed header here */
+		pi->ipi_ip_hlen = sizeof(struct ip6_hdr);
+		pi->ipi_ipproto = ip6->ip6_nxt;
+		pi->ipi_ip_tos = IPV6_TRAFFIC_CLASS(ip6);
+		pi->ipi_flags |= IPI_TX_IPV6;
+
+		break;
+	}
+#endif
+	default:
+		pi->ipi_csum_flags &= ~CSUM_OFFLOAD;
+		pi->ipi_ip_hlen = 0;
+		break;
+	}
+	*mp = m;
+
+	return (0);
+
+}
+
 static int
 iflib_parse_header(iflib_txq_t txq, if_pkt_info_t pi, struct mbuf **mp)
 {
 	if_shared_ctx_t sctx = txq->ift_ctx->ifc_sctx;
-	struct ether_vlan_header *eh;
 	struct mbuf *m;
+	int err;
 
 	m = *mp;
 	if ((sctx->isc_flags & IFLIB_NEED_SCRATCH) &&
@@ -3142,24 +3326,11 @@ iflib_parse_header(iflib_txq_t txq, if_pkt_info_t pi, struct mbuf **mp)
 		}
 	}
 
-	/*
-	 * Determine where frame payload starts.
-	 * Jump over vlan headers if already present,
-	 * helpful for QinQ too.
-	 */
-	if (__predict_false(m->m_len < sizeof(*eh))) {
-		txq->ift_pullups++;
-		if (__predict_false((m = m_pullup(m, sizeof(*eh))) == NULL))
-			return (ENOMEM);
-	}
-	eh = mtod(m, struct ether_vlan_header *);
-	if (eh->evl_encap_proto == htons(ETHERTYPE_VLAN)) {
-		pi->ipi_etype = ntohs(eh->evl_proto);
-		pi->ipi_ehdrlen = ETHER_HDR_LEN + ETHER_VLAN_ENCAP_LEN;
-	} else {
-		pi->ipi_etype = ntohs(eh->evl_encap_proto);
-		pi->ipi_ehdrlen = ETHER_HDR_LEN;
-	}
+	/* Fills out pi->ipi_etype */
+	err = iflib_parse_ether_header(pi, mp, &txq->ift_pullups);
+	if (__predict_false(err))
+		return (err);
+	m = *mp;
 
 	switch (pi->ipi_etype) {
 #ifdef INET
@@ -3204,6 +3375,7 @@ iflib_parse_header(iflib_txq_t txq, if_pkt_info_t pi, struct mbuf **mp)
 		}
 		pi->ipi_ip_hlen = ip->ip_hl << 2;
 		pi->ipi_ipproto = ip->ip_p;
+		pi->ipi_ip_tos = ip->ip_tos;
 		pi->ipi_flags |= IPI_TX_IPV4;
 
 		/* TCP checksum offload may require TCP header length */
@@ -3257,6 +3429,7 @@ iflib_parse_header(iflib_txq_t txq, if_pkt_info_t pi, struct mbuf **mp)
 
 		/* XXX-BZ this will go badly in case of ext hdrs. */
 		pi->ipi_ipproto = ip6->ip6_nxt;
+		pi->ipi_ip_tos = IPV6_TRAFFIC_CLASS(ip6);
 		pi->ipi_flags |= IPI_TX_IPV6;
 
 		/* TCP checksum offload may require TCP header length */
@@ -4072,11 +4245,10 @@ iflib_if_init(void *arg)
 static int
 iflib_if_transmit(if_t ifp, struct mbuf *m)
 {
-	if_ctx_t	ctx = if_getsoftc(ifp);
-
+	if_ctx_t ctx = if_getsoftc(ifp);
 	iflib_txq_t txq;
 	int err, qidx;
-	int abdicate = ctx->ifc_sysctl_tx_abdicate;
+	int abdicate;
 
 	if (__predict_false((ifp->if_drv_flags & IFF_DRV_RUNNING) == 0 || !LINK_ACTIVE(ctx))) {
 		DBG_COUNTER_INC(tx_frees);
@@ -4087,11 +4259,31 @@ iflib_if_transmit(if_t ifp, struct mbuf *m)
 	MPASS(m->m_nextpkt == NULL);
 	/* ALTQ-enabled interfaces always use queue 0. */
 	qidx = 0;
-	if ((NTXQSETS(ctx) > 1) && M_HASHTYPE_GET(m) && !ALTQ_IS_ENABLED(&ifp->if_snd))
+	/* Use driver-supplied queue selection method if it exists */
+	if (ctx->isc_txq_select_v2) {
+		struct if_pkt_info pi;
+		uint64_t early_pullups = 0;
+		pkt_info_zero(&pi);
+
+		err = iflib_parse_header_partial(&pi, &m, &early_pullups);
+		if (__predict_false(err != 0)) {
+			/* Assign pullups for bad pkts to default queue */
+			ctx->ifc_txqs[0].ift_pullups += early_pullups;
+			DBG_COUNTER_INC(encap_txd_encap_fail);
+			return (err);
+		}
+		/* Let driver make queueing decision */
+		qidx = ctx->isc_txq_select_v2(ctx->ifc_softc, m, &pi);
+		ctx->ifc_txqs[qidx].ift_pullups += early_pullups;
+	}
+	/* Backwards compatibility w/ simpler queue select */
+	else if (ctx->isc_txq_select)
+		qidx = ctx->isc_txq_select(ctx->ifc_softc, m);
+	/* If not, use iflib's standard method */
+	else if ((NTXQSETS(ctx) > 1) && M_HASHTYPE_GET(m) && !ALTQ_IS_ENABLED(&ifp->if_snd))
 		qidx = QIDX(ctx, m);
-	/*
-	 * XXX calculate buf_ring based on flowid (divvy up bits?)
-	 */
+
+	/* Set TX queue */
 	txq = &ctx->ifc_txqs[qidx];
 
 #ifdef DRIVER_BACKPRESSURE
@@ -4130,6 +4322,8 @@ iflib_if_transmit(if_t ifp, struct mbuf *m)
 	}
 #endif
 	DBG_COUNTER_INC(tx_seen);
+	abdicate = ctx->ifc_sysctl_tx_abdicate;
+
 	err = ifmp_ring_enqueue(txq->ift_br, (void **)&m, 1, TX_BATCH_SIZE, abdicate);
 
 	if (abdicate)
@@ -4383,6 +4577,7 @@ iflib_if_ioctl(if_t ifp, u_long command, caddr_t data)
 				iflib_stop(ctx);
 			STATE_LOCK(ctx);
 			if_togglecapenable(ifp, setmask);
+			ctx->ifc_softc_ctx.isc_capenable ^= setmask;
 			STATE_UNLOCK(ctx);
 			if (bits & IFF_DRV_RUNNING && setmask & ~IFCAP_WOL)
 				iflib_init_locked(ctx);
@@ -4642,41 +4837,291 @@ iflib_rem_pfil(if_ctx_t ctx)
 	pfil_head_unregister(pfil);
 }
 
+
+/*
+ * Advance forward by n members of the cpuset ctx->ifc_cpus starting from
+ * cpuid and wrapping as necessary.
+ */
+static unsigned int
+cpuid_advance(if_ctx_t ctx, unsigned int cpuid, unsigned int n)
+{
+	unsigned int first_valid;
+	unsigned int last_valid;
+
+	/* cpuid should always be in the valid set */
+	MPASS(CPU_ISSET(cpuid, &ctx->ifc_cpus));
+
+	/* valid set should never be empty */
+	MPASS(!CPU_EMPTY(&ctx->ifc_cpus));
+
+	first_valid = CPU_FFS(&ctx->ifc_cpus) - 1;
+	last_valid = CPU_FLS(&ctx->ifc_cpus) - 1;
+	n = n % CPU_COUNT(&ctx->ifc_cpus);
+	while (n > 0) {
+		do {
+			cpuid++;
+			if (cpuid > last_valid)
+				cpuid = first_valid;
+		} while (!CPU_ISSET(cpuid, &ctx->ifc_cpus));
+		n--;
+	}
+
+	return (cpuid);
+}
+
+#if defined(SMP) && defined(SCHED_ULE)
+extern struct cpu_group *cpu_top;              /* CPU topology */
+
+static int
+find_child_with_core(int cpu, struct cpu_group *grp)
+{
+	int i;
+
+	if (grp->cg_children == 0)
+		return -1;
+
+	MPASS(grp->cg_child);
+	for (i = 0; i < grp->cg_children; i++) {
+		if (CPU_ISSET(cpu, &grp->cg_child[i].cg_mask))
+			return i;
+	}
+
+	return -1;
+}
+
+
+/*
+ * Find an L2 neighbor of the given CPU or return -1 if none found.  This
+ * does not distinguish among multiple L2 neighbors if the given CPU has
+ * more than one (it will always return the same result in that case).
+ */
+static int
+find_l2_neighbor(int cpu)
+{
+	struct cpu_group *grp;
+	int i;
+
+	grp = cpu_top;
+	if (grp == NULL)
+		return -1;
+
+	/*
+	 * Find the smallest CPU group that contains the given core.
+	 */
+	i = 0;
+	while ((i = find_child_with_core(cpu, grp)) != -1) {
+		/*
+		 * If the smallest group containing the given CPU has less
+		 * than two members, we conclude the given CPU has no
+		 * L2 neighbor.
+		 */
+		if (grp->cg_child[i].cg_count <= 1)
+			return (-1);
+		grp = &grp->cg_child[i];
+	}
+
+	/* Must share L2. */
+	if (grp->cg_level > CG_SHARE_L2 || grp->cg_level == CG_SHARE_NONE)
+		return -1;
+
+	/*
+	 * Select the first member of the set that isn't the reference
+	 * CPU, which at this point is guaranteed to exist.
+	 */
+	for (i = 0; i < CPU_SETSIZE; i++) {
+		if (CPU_ISSET(i, &grp->cg_mask) && i != cpu)
+			return (i);
+	}
+
+	/* Should never be reached */
+	return (-1);
+}
+
+#else
+static int
+find_l2_neighbor(int cpu)
+{
+
+	return (-1);
+}
+#endif
+
+/*
+ * CPU mapping behaviors
+ * ---------------------
+ * 'separate txrx' refers to the separate_txrx sysctl
+ * 'use logical' refers to the use_logical_cores sysctl
+ * 'INTR CPUS' indicates whether bus_get_cpus(INTR_CPUS) succeeded
+ *
+ *  separate     use     INTR
+ *    txrx     logical   CPUS   result
+ * ---------- --------- ------ ------------------------------------------------
+ *     -          -       X     RX and TX queues mapped to consecutive physical
+ *                              cores with RX/TX pairs on same core and excess
+ *                              of either following
+ *     -          X       X     RX and TX queues mapped to consecutive cores
+ *                              of any type with RX/TX pairs on same core and
+ *                              excess of either following
+ *     X          -       X     RX and TX queues mapped to consecutive physical
+ *                              cores; all RX then all TX
+ *     X          X       X     RX queues mapped to consecutive physical cores
+ *                              first, then TX queues mapped to L2 neighbor of
+ *                              the corresponding RX queue if one exists,
+ *                              otherwise to consecutive physical cores
+ *     -         n/a      -     RX and TX queues mapped to consecutive cores of
+ *                              any type with RX/TX pairs on same core and excess
+ *                              of either following
+ *     X         n/a      -     RX and TX queues mapped to consecutive cores of
+ *                              any type; all RX then all TX
+ */
+static unsigned int
+get_cpuid_for_queue(if_ctx_t ctx, unsigned int base_cpuid, unsigned int qid,
+    bool is_tx)
+{
+	if_softc_ctx_t scctx = &ctx->ifc_softc_ctx;
+	unsigned int core_index;
+
+	if (ctx->ifc_sysctl_separate_txrx) {
+		/*
+		 * When using separate CPUs for TX and RX, the assignment
+		 * will always be of a consecutive CPU out of the set of
+		 * context CPUs, except for the specific case where the
+		 * context CPUs are phsyical cores, the use of logical cores
+		 * has been enabled, the assignment is for TX, the TX qid
+		 * corresponds to an RX qid, and the CPU assigned to the
+		 * corresponding RX queue has an L2 neighbor.
+		 */
+		if (ctx->ifc_sysctl_use_logical_cores &&
+		    ctx->ifc_cpus_are_physical_cores &&
+		    is_tx && qid < scctx->isc_nrxqsets) {
+			int l2_neighbor;
+			unsigned int rx_cpuid;
+
+			rx_cpuid = cpuid_advance(ctx, base_cpuid, qid);
+			l2_neighbor = find_l2_neighbor(rx_cpuid);
+			if (l2_neighbor != -1) {
+				return (l2_neighbor);
+			}
+			/*
+			 * ... else fall through to the normal
+			 * consecutive-after-RX assignment scheme.
+			 *
+			 * Note that we are assuming that all RX queue CPUs
+			 * have an L2 neighbor, or all do not.  If a mixed
+			 * scenario is possible, we will have to keep track
+			 * separately of how many queues prior to this one
+			 * were not able to be assigned to an L2 neighbor.
+			 */
+		}
+		if (is_tx)
+			core_index = scctx->isc_nrxqsets + qid;
+		else
+			core_index = qid;
+	} else {
+		core_index = qid;
+	}
+
+	return (cpuid_advance(ctx, base_cpuid, core_index));
+}
+
 static uint16_t
 get_ctx_core_offset(if_ctx_t ctx)
 {
 	if_softc_ctx_t scctx = &ctx->ifc_softc_ctx;
 	struct cpu_offset *op;
-	uint16_t qc;
-	uint16_t ret = ctx->ifc_sysctl_core_offset;
+	cpuset_t assigned_cpus;
+	unsigned int cores_consumed;
+	unsigned int base_cpuid = ctx->ifc_sysctl_core_offset;
+	unsigned int first_valid;
+	unsigned int last_valid;
+	unsigned int i;
 
-	if (ret != CORE_OFFSET_UNSPECIFIED)
-		return (ret);
+	first_valid = CPU_FFS(&ctx->ifc_cpus) - 1;
+	last_valid = CPU_FLS(&ctx->ifc_cpus) - 1;
 
-	if (ctx->ifc_sysctl_separate_txrx)
-		qc = scctx->isc_ntxqsets + scctx->isc_nrxqsets;
-	else
-		qc = max(scctx->isc_ntxqsets, scctx->isc_nrxqsets);
+	if (base_cpuid != CORE_OFFSET_UNSPECIFIED) {
+		/*
+		 * Align the user-chosen base CPU ID to the next valid CPU
+		 * for this device.  If the chosen base CPU ID is smaller
+		 * than the first valid CPU or larger than the last valid
+		 * CPU, we assume the user does not know what the valid
+		 * range is for this device and is thinking in terms of a
+		 * zero-based reference frame, and so we shift the given
+		 * value into the valid range (and wrap accordingly) so the
+		 * intent is translated to the proper frame of reference.
+		 * If the base CPU ID is within the valid first/last, but
+		 * does not correspond to a valid CPU, it is advanced to the
+		 * next valid CPU (wrapping if necessary).
+		 */
+		if (base_cpuid < first_valid || base_cpuid > last_valid) {
+			/* shift from zero-based to first_valid-based */
+			base_cpuid += first_valid;
+			/* wrap to range [first_valid, last_valid] */
+			base_cpuid = (base_cpuid - first_valid) %
+			    (last_valid - first_valid + 1);
+		}
+		if (!CPU_ISSET(base_cpuid, &ctx->ifc_cpus)) {
+			/*
+			 * base_cpuid is in [first_valid, last_valid], but
+			 * not a member of the valid set.  In this case,
+			 * there will always be a member of the valid set
+			 * with a CPU ID that is greater than base_cpuid,
+			 * and we simply advance to it.
+			 */
+			while (!CPU_ISSET(base_cpuid, &ctx->ifc_cpus))
+				base_cpuid++;
+		}
+		return (base_cpuid);
+	}
+
+	/*
+	 * Determine how many cores will be consumed by performing the CPU
+	 * assignments and counting how many of the assigned CPUs correspond
+	 * to CPUs in the set of context CPUs.  This is done using the CPU
+	 * ID first_valid as the base CPU ID, as the base CPU must be within
+	 * the set of context CPUs.
+	 *
+	 * Note not all assigned CPUs will be in the set of context CPUs
+	 * when separate CPUs are being allocated to TX and RX queues,
+	 * assignment to logical cores has been enabled, the set of context
+	 * CPUs contains only physical CPUs, and TX queues are mapped to L2
+	 * neighbors of CPUs that RX queues have been mapped to - in this
+	 * case we do only want to count how many CPUs in the set of context
+	 * CPUs have been consumed, as that determines the next CPU in that
+	 * set to start allocating at for the next device for which
+	 * core_offset is not set.
+	 */
+	CPU_ZERO(&assigned_cpus);
+	for (i = 0; i < scctx->isc_ntxqsets; i++)
+		CPU_SET(get_cpuid_for_queue(ctx, first_valid, i, true),
+		    &assigned_cpus);
+	for (i = 0; i < scctx->isc_nrxqsets; i++)
+		CPU_SET(get_cpuid_for_queue(ctx, first_valid, i, false),
+		    &assigned_cpus);
+	CPU_AND(&assigned_cpus, &assigned_cpus, &ctx->ifc_cpus);
+	cores_consumed = CPU_COUNT(&assigned_cpus);
 
 	mtx_lock(&cpu_offset_mtx);
 	SLIST_FOREACH(op, &cpu_offsets, entries) {
 		if (CPU_CMP(&ctx->ifc_cpus, &op->set) == 0) {
-			ret = op->offset;
-			op->offset += qc;
+			base_cpuid = op->next_cpuid;
+			op->next_cpuid = cpuid_advance(ctx, op->next_cpuid,
+			    cores_consumed);
 			MPASS(op->refcount < UINT_MAX);
 			op->refcount++;
 			break;
 		}
 	}
-	if (ret == CORE_OFFSET_UNSPECIFIED) {
-		ret = 0;
+	if (base_cpuid == CORE_OFFSET_UNSPECIFIED) {
+		base_cpuid = first_valid;
 		op = malloc(sizeof(struct cpu_offset), M_IFLIB,
 		    M_NOWAIT | M_ZERO);
 		if (op == NULL) {
 			device_printf(ctx->ifc_dev,
 			    "allocation for cpu offset failed.\n");
 		} else {
-			op->offset = qc;
+			op->next_cpuid = cpuid_advance(ctx, base_cpuid,
+			    cores_consumed);
 			op->refcount = 1;
 			CPU_COPY(&ctx->ifc_cpus, &op->set);
 			SLIST_INSERT_HEAD(&cpu_offsets, op, entries);
@@ -4684,7 +5129,7 @@ get_ctx_core_offset(if_ctx_t ctx)
 	}
 	mtx_unlock(&cpu_offset_mtx);
 
-	return (ret);
+	return (base_cpuid);
 }
 
 static void
@@ -4740,6 +5185,7 @@ iflib_device_register(device_t dev, void *sc, if_shared_ctx_t sctx, if_ctx_t *ct
 	ifp = ctx->ifc_ifp;
 
 	iflib_reset_qvalues(ctx);
+	IFNET_WLOCK();
 	CTX_LOCK(ctx);
 	if ((err = IFDI_ATTACH_PRE(ctx)) != 0) {
 		device_printf(dev, "IFDI_ATTACH_PRE failed %d\n", err);
@@ -4813,7 +5259,9 @@ iflib_device_register(device_t dev, void *sc, if_shared_ctx_t sctx, if_ctx_t *ct
 	if (bus_get_cpus(dev, INTR_CPUS, sizeof(ctx->ifc_cpus), &ctx->ifc_cpus) != 0) {
 		device_printf(dev, "Unable to fetch CPU list\n");
 		CPU_COPY(&all_cpus, &ctx->ifc_cpus);
-	}
+		ctx->ifc_cpus_are_physical_cores = false;
+	} else
+		ctx->ifc_cpus_are_physical_cores = true;
 	MPASS(CPU_COUNT(&ctx->ifc_cpus) > 0);
 
 	/*
@@ -4901,7 +5349,13 @@ iflib_device_register(device_t dev, void *sc, if_shared_ctx_t sctx, if_ctx_t *ct
 		goto fail_queues;
 	}
 
+	/*
+	 * It prevents a double-locking panic with iflib_media_status when
+	 * the driver loads.
+	 */
+	CTX_UNLOCK(ctx);
 	ether_ifattach(ctx->ifc_ifp, ctx->ifc_mac.octet);
+	CTX_LOCK(ctx);
 
 	if ((err = IFDI_ATTACH_POST(ctx)) != 0) {
 		device_printf(dev, "IFDI_ATTACH_POST failed %d\n", err);
@@ -4929,6 +5383,7 @@ iflib_device_register(device_t dev, void *sc, if_shared_ctx_t sctx, if_ctx_t *ct
 	iflib_add_pfil(ctx);
 	ctx->ifc_flags |= IFC_INIT_DONE;
 	CTX_UNLOCK(ctx);
+	IFNET_WUNLOCK();
 
 	return (0);
 
@@ -4944,6 +5399,7 @@ fail_intr_free:
 	iflib_free_intr_mem(ctx);
 fail_unlock:
 	CTX_UNLOCK(ctx);
+	IFNET_WUNLOCK();
 	iflib_deregister(ctx);
 fail_ctx_free:
 	device_set_softc(ctx->ifc_dev, NULL);
@@ -5932,128 +6388,6 @@ iflib_irq_alloc(if_ctx_t ctx, if_irq_t irq, int rid,
 	return (_iflib_irq_alloc(ctx, irq, rid, filter, handler, arg, name));
 }
 
-#ifdef SMP
-static int
-find_nth(if_ctx_t ctx, int qid)
-{
-	cpuset_t cpus;
-	int i, cpuid, eqid, count;
-
-	CPU_COPY(&ctx->ifc_cpus, &cpus);
-	count = CPU_COUNT(&cpus);
-	eqid = qid % count;
-	/* clear up to the qid'th bit */
-	for (i = 0; i < eqid; i++) {
-		cpuid = CPU_FFS(&cpus);
-		MPASS(cpuid != 0);
-		CPU_CLR(cpuid-1, &cpus);
-	}
-	cpuid = CPU_FFS(&cpus);
-	MPASS(cpuid != 0);
-	return (cpuid-1);
-}
-
-#ifdef SCHED_ULE
-extern struct cpu_group *cpu_top;              /* CPU topology */
-
-static int
-find_child_with_core(int cpu, struct cpu_group *grp)
-{
-	int i;
-
-	if (grp->cg_children == 0)
-		return -1;
-
-	MPASS(grp->cg_child);
-	for (i = 0; i < grp->cg_children; i++) {
-		if (CPU_ISSET(cpu, &grp->cg_child[i].cg_mask))
-			return i;
-	}
-
-	return -1;
-}
-
-/*
- * Find the nth "close" core to the specified core
- * "close" is defined as the deepest level that shares
- * at least an L2 cache.  With threads, this will be
- * threads on the same core.  If the shared cache is L3
- * or higher, simply returns the same core.
- */
-static int
-find_close_core(int cpu, int core_offset)
-{
-	struct cpu_group *grp;
-	int i;
-	int fcpu;
-	cpuset_t cs;
-
-	grp = cpu_top;
-	if (grp == NULL)
-		return cpu;
-	i = 0;
-	while ((i = find_child_with_core(cpu, grp)) != -1) {
-		/* If the child only has one cpu, don't descend */
-		if (grp->cg_child[i].cg_count <= 1)
-			break;
-		grp = &grp->cg_child[i];
-	}
-
-	/* If they don't share at least an L2 cache, use the same CPU */
-	if (grp->cg_level > CG_SHARE_L2 || grp->cg_level == CG_SHARE_NONE)
-		return cpu;
-
-	/* Now pick one */
-	CPU_COPY(&grp->cg_mask, &cs);
-
-	/* Add the selected CPU offset to core offset. */
-	for (i = 0; (fcpu = CPU_FFS(&cs)) != 0; i++) {
-		if (fcpu - 1 == cpu)
-			break;
-		CPU_CLR(fcpu - 1, &cs);
-	}
-	MPASS(fcpu);
-
-	core_offset += i;
-
-	CPU_COPY(&grp->cg_mask, &cs);
-	for (i = core_offset % grp->cg_count; i > 0; i--) {
-		MPASS(CPU_FFS(&cs));
-		CPU_CLR(CPU_FFS(&cs) - 1, &cs);
-	}
-	MPASS(CPU_FFS(&cs));
-	return CPU_FFS(&cs) - 1;
-}
-#else
-static int
-find_close_core(int cpu, int core_offset __unused)
-{
-	return cpu;
-}
-#endif
-
-static int
-get_core_offset(if_ctx_t ctx, iflib_intr_type_t type, int qid)
-{
-	switch (type) {
-	case IFLIB_INTR_TX:
-		/* TX queues get cores which share at least an L2 cache with the corresponding RX queue */
-		/* XXX handle multiple RX threads per core and more than two core per L2 group */
-		return qid / CPU_COUNT(&ctx->ifc_cpus) + 1;
-	case IFLIB_INTR_RX:
-	case IFLIB_INTR_RXTX:
-		/* RX queues get the specified core */
-		return qid / CPU_COUNT(&ctx->ifc_cpus);
-	default:
-		return -1;
-	}
-}
-#else
-#define get_core_offset(ctx, type, qid)	CPU_FIRST()
-#define find_close_core(cpuid, tid)	CPU_FIRST()
-#define find_nth(ctx, gid)		CPU_FIRST()
-#endif
-
 /* Just to avoid copy/paste */
 static inline int
 iflib_irq_set_affinity(if_ctx_t ctx, if_irq_t irq, iflib_intr_type_t type,
@@ -6061,21 +6395,14 @@ iflib_irq_set_affinity(if_ctx_t ctx, if_irq_t irq, iflib_intr_type_t type,
     const char *name)
 {
 	device_t dev;
-	int co, cpuid, err, tid;
+	unsigned int base_cpuid, cpuid;
+	int err;
 
 	dev = ctx->ifc_dev;
-	co = ctx->ifc_sysctl_core_offset;
-	if (ctx->ifc_sysctl_separate_txrx && type == IFLIB_INTR_TX)
-		co += ctx->ifc_softc_ctx.isc_nrxqsets;
-	cpuid = find_nth(ctx, qid + co);
-	tid = get_core_offset(ctx, type, qid);
-	if (tid < 0) {
-		device_printf(dev, "get_core_offset failed\n");
-		return (EOPNOTSUPP);
-	}
-	cpuid = find_close_core(cpuid, tid);
-	err = taskqgroup_attach_cpu(tqg, gtask, uniq, cpuid, dev, irq->ii_res,
-	    name);
+	base_cpuid = ctx->ifc_sysctl_core_offset;
+	cpuid = get_cpuid_for_queue(ctx, base_cpuid, qid, type == IFLIB_INTR_TX);
+	err = taskqgroup_attach_cpu(tqg, gtask, uniq, cpuid, dev,
+	    irq ? irq->ii_res : NULL, name);
 	if (err) {
 		device_printf(dev, "taskqgroup_attach_cpu failed %d\n", err);
 		return (err);
@@ -6164,8 +6491,8 @@ iflib_irq_alloc_generic(if_ctx_t ctx, if_irq_t irq, int rid,
 		return (0);
 
 	if (tqrid != -1) {
-		err = iflib_irq_set_affinity(ctx, irq, type, qid, gtask, tqg,
-		    q, name);
+		err = iflib_irq_set_affinity(ctx, irq, type, qid, gtask, tqg, q,
+		    name);
 		if (err)
 			return (err);
 	} else {
@@ -6178,6 +6505,7 @@ iflib_irq_alloc_generic(if_ctx_t ctx, if_irq_t irq, int rid,
 void
 iflib_softirq_alloc_generic(if_ctx_t ctx, if_irq_t irq, iflib_intr_type_t type, void *arg, int qid, const char *name)
 {
+	device_t dev;
 	struct grouptask *gtask;
 	struct taskqgroup *tqg;
 	gtask_fn_t *fn;
@@ -6209,14 +6537,11 @@ iflib_softirq_alloc_generic(if_ctx_t ctx, if_irq_t irq, iflib_intr_type_t type, 
 	default:
 		panic("unknown net intr type");
 	}
-	if (irq != NULL) {
-		err = iflib_irq_set_affinity(ctx, irq, type, qid, gtask, tqg,
-		    q, name);
-		if (err)
-			taskqgroup_attach(tqg, gtask, q, ctx->ifc_dev,
-			    irq->ii_res, name);
-	} else {
-		taskqgroup_attach(tqg, gtask, q, NULL, NULL, name);
+	err = iflib_irq_set_affinity(ctx, irq, type, qid, gtask, tqg, q, name);
+	if (err) {
+		dev = ctx->ifc_dev;
+		taskqgroup_attach(tqg, gtask, q, dev, irq ? irq->ii_res : NULL,
+		    name);
 	}
 }
 
@@ -6698,6 +7023,9 @@ iflib_add_device_sysctl_pre(if_ctx_t ctx)
 	SYSCTL_ADD_U8(ctx_list, oid_list, OID_AUTO, "separate_txrx",
 		       CTLFLAG_RDTUN, &ctx->ifc_sysctl_separate_txrx, 0,
 		       "use separate cores for TX and RX");
+	SYSCTL_ADD_U8(ctx_list, oid_list, OID_AUTO, "use_logical_cores",
+		      CTLFLAG_RDTUN, &ctx->ifc_sysctl_use_logical_cores, 0,
+		      "try to make use of logical cores for TX and RX");
 
 	/* XXX change for per-queue sizes */
 	SYSCTL_ADD_PROC(ctx_list, oid_list, OID_AUTO, "override_ntxds",
@@ -6742,6 +7070,9 @@ iflib_add_device_sysctl_post(if_ctx_t ctx)
 		queue_node = SYSCTL_ADD_NODE(ctx_list, child, OID_AUTO, namebuf,
 		    CTLFLAG_RD | CTLFLAG_MPSAFE, NULL, "Queue Name");
 		queue_list = SYSCTL_CHILDREN(queue_node);
+		SYSCTL_ADD_INT(ctx_list, queue_list, OID_AUTO, "cpu",
+			       CTLFLAG_RD,
+			       &txq->ift_task.gt_cpu, 0, "cpu this queue is bound to");
 #if MEMORY_LOGGING
 		SYSCTL_ADD_QUAD(ctx_list, queue_list, OID_AUTO, "txq_dequeued",
 				CTLFLAG_RD,
@@ -6824,6 +7155,9 @@ iflib_add_device_sysctl_post(if_ctx_t ctx)
 		queue_node = SYSCTL_ADD_NODE(ctx_list, child, OID_AUTO, namebuf,
 		    CTLFLAG_RD | CTLFLAG_MPSAFE, NULL, "Queue Name");
 		queue_list = SYSCTL_CHILDREN(queue_node);
+		SYSCTL_ADD_INT(ctx_list, queue_list, OID_AUTO, "cpu",
+			       CTLFLAG_RD,
+			       &rxq->ifr_task.gt_cpu, 0, "cpu this queue is bound to");
 		if (sctx->isc_flags & IFLIB_HAS_RXCQ) {
 			SYSCTL_ADD_U16(ctx_list, queue_list, OID_AUTO, "rxq_cq_cidx",
 				       CTLFLAG_RD,

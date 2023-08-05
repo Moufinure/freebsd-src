@@ -30,9 +30,16 @@ clean_dep()
 {
 	if [ -e "$OBJTOP"/$1/.depend.$2.pico ] && \
 	    egrep -qw "$2\.$3" "$OBJTOP"/$1/.depend.$2.pico; then \
-		echo "Removing stale dependencies for $2.$3"; \
-		rm -f "$OBJTOP"/$1/.depend.$2.* \
-		    "$OBJTOP"/obj-lib32/$1/.depend.$2.*
+		echo "Removing stale dependencies and objects for $2.$3"; \
+		rm -f \
+		    "$OBJTOP"/$1/.depend.$2.* \
+		    "$OBJTOP"/$1/$2.*o
+	fi
+	if egrep -qw "$2\.$3" "$OBJTOP"/obj-lib32/$1/.depend.$2.*o 2>/dev/null; then
+		echo "Removing 32-bit stale dependencies and objects for $2.$3"
+		rm -f \
+		    "$OBJTOP"/obj-lib32/$1/.depend.$2.* \
+		    "$OBJTOP"/obj-lib32/$1/$2.*o
 	fi
 }
 
@@ -69,4 +76,23 @@ fi
 if [ -e "$OBJTOP"/lib/ncurses/ncursesw ]; then
 	echo "Removing stale ncurses objects"
 	rm -rf "$OBJTOP"/lib/ncurses "$OBJTOP"/obj-lib32/lib/ncurses
+fi
+
+# 20210608  f20893853e8e    move from atomic.S to atomic.c
+clean_dep   cddl/lib/libspl atomic S
+# 20211207  cbdec8db18b5    switch to libthr-friendly pdfork
+clean_dep   lib/libc        pdfork S
+
+# 20220524  68fe988a40ca    kqueue_test binary replaced shell script
+if stat "$OBJTOP"/tests/sys/kqueue/libkqueue/*kqtest* \
+    "$OBJTOP"/tests/sys/kqueue/libkqueue/.depend.kqtest* >/dev/null 2>&1; then
+	echo "Removing old kqtest"
+	rm -f "$OBJTOP"/tests/sys/kqueue/libkqueue/.depend.* \
+	   "$OBJTOP"/tests/sys/kqueue/libkqueue/*
+fi
+
+# 20230110  bc42155199b5    usr.sbin/zic/zic -> usr.sbin/zic
+if [ -d "$OBJTOP"/usr.sbin/zic/zic ] ; then
+	echo "Removing old zic directory"
+	rm -rf "$OBJTOP"/usr.sbin/zic/zic
 fi

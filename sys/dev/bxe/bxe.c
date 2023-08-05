@@ -285,12 +285,12 @@ SYSCTL_INT(_hw_bxe, OID_AUTO, hc_tx_ticks, CTLFLAG_RDTUN,
 
 /* Maximum number of Rx packets to process at a time */
 static int bxe_rx_budget = 0xffffffff;
-SYSCTL_INT(_hw_bxe, OID_AUTO, rx_budget, CTLFLAG_TUN,
+SYSCTL_INT(_hw_bxe, OID_AUTO, rx_budget, CTLFLAG_RDTUN,
            &bxe_rx_budget, 0, "Rx processing budget");
 
 /* Maximum LRO aggregation size */
 static int bxe_max_aggregation_size = 0;
-SYSCTL_INT(_hw_bxe, OID_AUTO, max_aggregation_size, CTLFLAG_TUN,
+SYSCTL_INT(_hw_bxe, OID_AUTO, max_aggregation_size, CTLFLAG_RDTUN,
            &bxe_max_aggregation_size, 0, "max aggregation size");
 
 /* PCI MRRS: -1 (Auto), 0 (128B), 1 (256B), 2 (512B), 3 (1KB) */
@@ -4163,7 +4163,7 @@ bxe_disable_close_the_gate(struct bxe_softc *sc)
 
 /*
  * Cleans the object that have internal lists without sending
- * ramrods. Should be run when interrutps are disabled.
+ * ramrods. Should be run when interrupts are disabled.
  */
 static void
 bxe_squeeze_objects(struct bxe_softc *sc)
@@ -4438,7 +4438,7 @@ bxe_ifmedia_status(struct ifnet *ifp, struct ifmediareq *ifmr)
     /* Bug 165447: the 'ifconfig' tool skips printing of the "status: ..."
        line if the IFM_AVALID flag is *NOT* set. So we need to set this
        flag unconditionally (irrespective of the admininistrative
-       'up/down' state of the interface) to ensure that that line is always
+       'up/down' state of the interface) to ensure that the line is always
        displayed.
     */
     ifmr->ifm_status = IFM_AVALID;
@@ -15952,7 +15952,7 @@ bxe_sysctl_pauseparam(SYSCTL_HANDLER_ARGS)
                 return (error);
         }
         if ((sc->bxe_pause_param < 0) ||  (sc->bxe_pause_param > 8)) {
-                BLOGW(sc, "invalid pause param (%d) - use intergers between 1 & 8\n",sc->bxe_pause_param);
+                BLOGW(sc, "invalid pause param (%d) - use integers between 1 & 8\n",sc->bxe_pause_param);
                 sc->bxe_pause_param = 8;
         }
 
@@ -16088,19 +16088,19 @@ bxe_add_sysctls(struct bxe_softc *sc)
                     "rx processing budget");
 
     SYSCTL_ADD_PROC(ctx, children, OID_AUTO, "pause_param",
-        CTLTYPE_UINT | CTLFLAG_RW | CTLFLAG_NEEDGIANT, sc, 0,
+        CTLTYPE_UINT | CTLFLAG_RW | CTLFLAG_MPSAFE, sc, 0,
         bxe_sysctl_pauseparam, "IU",
         "need pause frames- DEF:0/TX:1/RX:2/BOTH:3/AUTO:4/AUTOTX:5/AUTORX:6/AUTORXTX:7/NONE:8");
 
 
     SYSCTL_ADD_PROC(ctx, children, OID_AUTO, "state",
-        CTLTYPE_UINT | CTLFLAG_RW | CTLFLAG_NEEDGIANT, sc, 0,
+        CTLTYPE_UINT | CTLFLAG_RW | CTLFLAG_MPSAFE, sc, 0,
         bxe_sysctl_state, "IU", "dump driver state");
 
     for (i = 0; i < BXE_NUM_ETH_STATS; i++) {
         SYSCTL_ADD_PROC(ctx, children, OID_AUTO,
             bxe_eth_stats_arr[i].string,
-            CTLTYPE_U64 | CTLFLAG_RD | CTLFLAG_NEEDGIANT, sc, i,
+            CTLTYPE_U64 | CTLFLAG_RD | CTLFLAG_MPSAFE, sc, i,
             bxe_sysctl_eth_stat, "LU", bxe_eth_stats_arr[i].string);
     }
 
@@ -16120,7 +16120,7 @@ bxe_add_sysctls(struct bxe_softc *sc)
             q_stat = ((i << 16) | j);
             SYSCTL_ADD_PROC(ctx, queue_children, OID_AUTO,
                  bxe_eth_q_stats_arr[j].string,
-                 CTLTYPE_U64 | CTLFLAG_RD | CTLFLAG_NEEDGIANT, sc, q_stat,
+                 CTLTYPE_U64 | CTLFLAG_RD | CTLFLAG_MPSAFE, sc, q_stat,
                  bxe_sysctl_eth_q_stat, "LU", bxe_eth_q_stats_arr[j].string);
         }
     }
@@ -16245,7 +16245,7 @@ bxe_attach(device_t dev)
     bxe_init_mutexes(sc);
 
     /* prepare the periodic callout */
-    callout_init(&sc->periodic_callout, 0);
+    callout_init(&sc->periodic_callout, 1);
 
     /* prepare the chip taskqueue */
     sc->chip_tq_flags = CHIP_TQ_NONE;
@@ -17179,7 +17179,7 @@ bxe_init_hw_common(struct bxe_softc *sc)
  *          stay set)
  *      f.  If this is VNIC 3 of a port then also init
  *          first_timers_ilt_entry to zero and last_timers_ilt_entry
- *          to the last enrty in the ILT.
+ *          to the last entry in the ILT.
  *
  *      Notes:
  *      Currently the PF error in the PGLC is non recoverable.

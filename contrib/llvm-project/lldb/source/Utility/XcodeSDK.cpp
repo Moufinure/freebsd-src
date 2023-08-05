@@ -54,12 +54,9 @@ XcodeSDK::XcodeSDK(XcodeSDK::Info info) : m_name(GetName(info.type).str()) {
   }
 }
 
-XcodeSDK &XcodeSDK::operator=(XcodeSDK other) {
-  m_name = other.m_name;
-  return *this;
-}
+XcodeSDK &XcodeSDK::operator=(const XcodeSDK &other) = default;
 
-bool XcodeSDK::operator==(XcodeSDK other) {
+bool XcodeSDK::operator==(const XcodeSDK &other) {
   return m_name == other.m_name;
 }
 
@@ -147,7 +144,7 @@ bool XcodeSDK::Info::operator==(const Info &other) const {
          std::tie(other.type, other.version, other.internal);
 }
 
-void XcodeSDK::Merge(XcodeSDK other) {
+void XcodeSDK::Merge(const XcodeSDK &other) {
   // The "bigger" SDK always wins.
   auto l = Parse();
   auto r = other.Parse();

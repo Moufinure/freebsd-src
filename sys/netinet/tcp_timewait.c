@@ -36,6 +36,7 @@ __FBSDID("$FreeBSD$");
 
 #include "opt_inet.h"
 #include "opt_inet6.h"
+#include "opt_ipsec.h"
 #include "opt_tcpdebug.h"
 
 #include <sys/param.h>
@@ -49,9 +50,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/proc.h>
 #include <sys/socket.h>
 #include <sys/socketvar.h>
-#ifndef INVARIANTS
 #include <sys/syslog.h>
-#endif
 #include <sys/protosw.h>
 #include <sys/random.h>
 
@@ -92,6 +91,11 @@ __FBSDID("$FreeBSD$");
 #ifdef INET6
 #include <netinet6/ip6protosw.h>
 #endif
+
+#include <netinet/udp.h>
+#include <netinet/udp_var.h>
+
+#include <netipsec/ipsec_support.h>
 
 #include <machine/in_cksum.h>
 
@@ -318,11 +322,13 @@ tcp_twstart(struct tcpcb *tp)
 	}
 
 	tw->snd_nxt = tp->snd_nxt;
+	tw->t_port = tp->t_port;
 	tw->rcv_nxt = tp->rcv_nxt;
 	tw->iss     = tp->iss;
 	tw->irs     = tp->irs;
 	tw->t_starttime = tp->t_starttime;
 	tw->tw_time = 0;
+	tw->tw_flags = tp->t_flags;
 
 /* XXX
  * If this code will
@@ -381,6 +387,7 @@ tcp_twcheck(struct inpcb *inp, struct tcpopt *to, struct tcphdr *th,
     struct mbuf *m, int tlen)
 {
 	struct tcptw *tw;
+	char *s;
 	int thflags;
 	tcp_seq seq;
 
@@ -431,15 +438,49 @@ tcp_twcheck(struct inpcb *inp, struct tcpopt *to, struct tcphdr *th,
 	 */
 #endif
 
+	/* Honor the drop_synfin sysctl variable. */
+	if ((thflags & TH_SYN) && (thflags & TH_FIN) && V_drop_synfin) {
+		if ((s = tcp_log_addrs(&inp->inp_inc, th, NULL, NULL))) {
+			log(LOG_DEBUG, "%s; %s: "
+			    "SYN|FIN segment ignored (based on "
+			    "sysctl setting)\n", s, __func__);
+			free(s, M_TCPLOG);
+		}
+		goto drop;
+	}
+
 	/*
 	 * If a new connection request is received
 	 * while in TIME_WAIT, drop the old connection
 	 * and start over if the sequence numbers
 	 * are above the previous ones.
+	 * Allow UDP port number changes in this case.
 	 */
-	if ((thflags & TH_SYN) && SEQ_GT(th->th_seq, tw->rcv_nxt)) {
+	if (((thflags & (TH_SYN | TH_ACK)) == TH_SYN) &&
+	    SEQ_GT(th->th_seq, tw->rcv_nxt)) {
 		tcp_twclose(tw, 0);
+		TCPSTAT_INC(tcps_tw_recycles);
 		return (1);
+	}
+
+	/*
+	 * Send RST if UDP port numbers don't match
+	 */
+	if (tw->t_port != m->m_pkthdr.tcp_tun_port) {
+		if (th->th_flags & TH_ACK) {
+			tcp_respond(NULL, mtod(m, void *), th, m,
+			    (tcp_seq)0, th->th_ack, TH_RST);
+		} else {
+			if (th->th_flags & TH_SYN)
+				tlen++;
+			if (th->th_flags & TH_FIN)
+				tlen++;
+			tcp_respond(NULL, mtod(m, void *), th, m,
+			    th->th_seq+tlen, (tcp_seq)0, TH_RST|TH_ACK);
+		}
+		INP_WUNLOCK(inp);
+		TCPSTAT_INC(tcps_tw_resets);
+		return (0);
 	}
 
 	/*
@@ -475,6 +516,7 @@ tcp_twcheck(struct inpcb *inp, struct tcpopt *to, struct tcphdr *th,
 	    th->th_seq != tw->rcv_nxt || th->th_ack != tw->snd_nxt) {
 		TCP_PROBE5(receive, NULL, NULL, m, NULL, th);
 		tcp_twrespond(tw, TH_ACK);
+		TCPSTAT_INC(tcps_tw_responds);
 		goto dropnoprobe;
 	}
 drop:
@@ -555,13 +597,14 @@ tcp_twrespond(struct tcptw *tw, int flags)
 #ifdef INET
 	struct ip *ip = NULL;
 #endif
-	u_int hdrlen, optlen;
+	u_int hdrlen, optlen, ulen;
 	int error = 0;			/* Keep compiler happy */
 	struct tcpopt to;
 #ifdef INET6
 	struct ip6_hdr *ip6 = NULL;
 	int isipv6 = inp->inp_inc.inc_flags & INC_ISIPV6;
 #endif
+	struct udphdr *udp = NULL;
 	hdrlen = 0;                     /* Keep compiler happy */
 
 	INP_WLOCK_ASSERT(inp);
@@ -579,8 +622,16 @@ tcp_twrespond(struct tcptw *tw, int flags)
 	if (isipv6) {
 		hdrlen = sizeof(struct ip6_hdr) + sizeof(struct tcphdr);
 		ip6 = mtod(m, struct ip6_hdr *);
-		th = (struct tcphdr *)(ip6 + 1);
-		tcpip_fillheaders(inp, ip6, th);
+		if (tw->t_port) {
+			udp = (struct udphdr *)(ip6 + 1);
+			hdrlen += sizeof(struct udphdr);
+			udp->uh_sport = htons(V_tcp_udp_tunneling_port);
+			udp->uh_dport = tw->t_port;
+			ulen = (hdrlen - sizeof(struct ip6_hdr));
+			th = (struct tcphdr *)(udp + 1);
+		} else
+			th = (struct tcphdr *)(ip6 + 1);
+		tcpip_fillheaders(inp, tw->t_port, ip6, th);
 	}
 #endif
 #if defined(INET6) && defined(INET)
@@ -590,8 +641,16 @@ tcp_twrespond(struct tcptw *tw, int flags)
 	{
 		hdrlen = sizeof(struct tcpiphdr);
 		ip = mtod(m, struct ip *);
-		th = (struct tcphdr *)(ip + 1);
-		tcpip_fillheaders(inp, ip, th);
+		if (tw->t_port) {
+			udp = (struct udphdr *)(ip + 1);
+			hdrlen += sizeof(struct udphdr);
+			udp->uh_sport = htons(V_tcp_udp_tunneling_port);
+			udp->uh_dport = tw->t_port;
+			ulen = (hdrlen - sizeof(struct ip));
+			th = (struct tcphdr *)(udp + 1);
+		} else
+			th = (struct tcphdr *)(ip + 1);
+		tcpip_fillheaders(inp, tw->t_port, ip, th);
 	}
 #endif
 	to.to_flags = 0;
@@ -605,8 +664,16 @@ tcp_twrespond(struct tcptw *tw, int flags)
 		to.to_tsval = tcp_ts_getticks() + tw->ts_offset;
 		to.to_tsecr = tw->t_recent;
 	}
+#if defined(IPSEC_SUPPORT) || defined(TCP_SIGNATURE)
+	if (tw->tw_flags & TF_SIGNATURE)
+		to.to_flags |= TOF_SIGNATURE;
+#endif
 	optlen = tcp_addoptions(&to, (u_char *)(th + 1));
 
+	if (udp) {
+		ulen += optlen;
+		udp->uh_ulen = htons(ulen);
+	}
 	m->m_len = hdrlen + optlen;
 	m->m_pkthdr.len = m->m_len;
 
@@ -618,12 +685,26 @@ tcp_twrespond(struct tcptw *tw, int flags)
 	th->th_flags = flags;
 	th->th_win = htons(tw->last_win);
 
-	m->m_pkthdr.csum_data = offsetof(struct tcphdr, th_sum);
+#if defined(IPSEC_SUPPORT) || defined(TCP_SIGNATURE)
+	if (tw->tw_flags & TF_SIGNATURE) {
+		if (!TCPMD5_ENABLED() ||
+		    TCPMD5_OUTPUT(m, th, to.to_signature) != 0)
+			return (-1);
+	}
+#endif
 #ifdef INET6
 	if (isipv6) {
-		m->m_pkthdr.csum_flags = CSUM_TCP_IPV6;
-		th->th_sum = in6_cksum_pseudo(ip6,
-		    sizeof(struct tcphdr) + optlen, IPPROTO_TCP, 0);
+		if (tw->t_port) {
+			m->m_pkthdr.csum_flags = CSUM_UDP_IPV6;
+			m->m_pkthdr.csum_data = offsetof(struct udphdr, uh_sum);
+			udp->uh_sum = in6_cksum_pseudo(ip6, ulen, IPPROTO_UDP, 0);
+			th->th_sum = htons(0);
+		} else {
+			m->m_pkthdr.csum_flags = CSUM_TCP_IPV6;
+			m->m_pkthdr.csum_data = offsetof(struct tcphdr, th_sum);
+			th->th_sum = in6_cksum_pseudo(ip6,
+			    sizeof(struct tcphdr) + optlen, IPPROTO_TCP, 0);
+		}
 		ip6->ip6_hlim = in6_selecthlim(inp, NULL);
 		TCP_PROBE5(send, NULL, NULL, ip6, NULL, th);
 		error = ip6_output(m, inp->in6p_outputopts, NULL,
@@ -635,9 +716,18 @@ tcp_twrespond(struct tcptw *tw, int flags)
 #endif
 #ifdef INET
 	{
-		m->m_pkthdr.csum_flags = CSUM_TCP;
-		th->th_sum = in_pseudo(ip->ip_src.s_addr, ip->ip_dst.s_addr,
-		    htons(sizeof(struct tcphdr) + optlen + IPPROTO_TCP));
+		if (tw->t_port) {
+			m->m_pkthdr.csum_flags = CSUM_UDP;
+			m->m_pkthdr.csum_data = offsetof(struct udphdr, uh_sum);
+			udp->uh_sum = in_pseudo(ip->ip_src.s_addr,
+			    ip->ip_dst.s_addr, htons(ulen + IPPROTO_UDP));
+			th->th_sum = htons(0);
+		} else {
+			m->m_pkthdr.csum_flags = CSUM_TCP;
+			m->m_pkthdr.csum_data = offsetof(struct tcphdr, th_sum);
+			th->th_sum = in_pseudo(ip->ip_src.s_addr, ip->ip_dst.s_addr,
+			    htons(sizeof(struct tcphdr) + optlen + IPPROTO_TCP));
+		}
 		ip->ip_len = htons(m->m_pkthdr.len);
 		if (V_path_mtu_discovery)
 			ip->ip_off |= htons(IP_DF);
@@ -665,7 +755,7 @@ tcp_tw_2msl_reset(struct tcptw *tw, int rearm)
 	TW_WLOCK(V_tw_lock);
 	if (rearm)
 		TAILQ_REMOVE(&V_twq_2msl, tw, tw_2msl);
-	tw->tw_time = ticks + 2 * tcp_msl;
+	tw->tw_time = ticks + 2 * V_tcp_msl;
 	TAILQ_INSERT_TAIL(&V_twq_2msl, tw, tw_2msl);
 	TW_WUNLOCK(V_tw_lock);
 }

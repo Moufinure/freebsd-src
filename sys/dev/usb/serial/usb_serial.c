@@ -1,7 +1,7 @@
 /*	$NetBSD: ucom.c,v 1.40 2001/11/13 06:24:54 lukem Exp $	*/
 
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD AND BSD-2-Clause-NetBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2001-2003, 2005, 2008
  *	Shunsuke Akiyama <akiyama@jp.FreeBSD.org>.
@@ -628,9 +628,9 @@ ucom_queue_command(struct ucom_softc *sc,
 		task->termios_copy = *pt;
 
 	/*
-	 * Closing the device should be synchronous.
+	 * Closing or opening the device should be synchronous.
 	 */
-	if (fn == ucom_cfg_close)
+	if (fn == ucom_cfg_close || fn == ucom_cfg_open)
 		usb_proc_mwait(&ssc->sc_tq, t0, t1);
 
 	/*
@@ -1752,7 +1752,7 @@ static gdb_term_f ucom_gdbterm;
 static gdb_getc_f ucom_gdbgetc;
 static gdb_putc_f ucom_gdbputc;
 
-GDB_DBGPORT(sio, ucom_gdbprobe, ucom_gdbinit, ucom_gdbterm, ucom_gdbgetc, ucom_gdbputc);
+GDB_DBGPORT(ucom, ucom_gdbprobe, ucom_gdbinit, ucom_gdbterm, ucom_gdbgetc, ucom_gdbputc);
 
 static int
 ucom_gdbprobe(void)

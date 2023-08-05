@@ -1,6 +1,6 @@
 #! /bin/sh
 #
-# SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+# SPDX-License-Identifier: BSD-2-Clause
 #
 #  Copyright (c) 2010 Gordon Tetlow
 #  All rights reserved.
@@ -243,6 +243,7 @@ is_newer() {
 manpath_parse_args() {
 	local cmd_arg
 
+	OPTIND=1
 	while getopts 'Ldq' cmd_arg; do
 		case "${cmd_arg}" in
 		L)	Lflag=Lflag ;;
@@ -426,6 +427,7 @@ man_display_page_groff() {
 
 	if [ -n "$MANROFFSEQ" ]; then
 		set -- -$MANROFFSEQ
+		OPTIND=1
 		while getopts 'egprtv' preproc_arg; do
 			case "${preproc_arg}" in
 			e)	pipeline="$pipeline | $EQN" ;;
@@ -545,6 +547,7 @@ man_find_and_display() {
 man_parse_args() {
 	local IFS cmd_arg
 
+	OPTIND=1
 	while getopts 'M:P:S:adfhkm:op:tw' cmd_arg; do
 		case "${cmd_arg}" in
 		M)	MANPATH=$OPTARG ;;
@@ -891,9 +894,10 @@ setup_cattool() {
 	case "$1" in
 	*.bz)	cattool='/usr/bin/bzcat' ;;
 	*.bz2)	cattool='/usr/bin/bzcat' ;;
-	*.gz)	cattool='/usr/bin/zcat' ;;
+	*.gz)	cattool='/usr/bin/gzcat' ;;
 	*.lzma)	cattool='/usr/bin/lzcat' ;;
 	*.xz)	cattool='/usr/bin/xzcat' ;;
+	*.zst)	cattool='/usr/bin/zstdcat' ;;
 	*)	cattool='/usr/bin/zcat -f' ;;
 	esac
 }
@@ -933,6 +937,7 @@ trim() {
 # Parse commandline args for whatis and apropos.
 whatis_parse_args() {
 	local cmd_arg
+	OPTIND=1
 	while getopts 'd' cmd_arg; do
 		case "${cmd_arg}" in
 		d)	debug=$(( $debug + 1 )) ;;

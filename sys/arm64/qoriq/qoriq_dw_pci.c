@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright 2020 Michal Meloun <mmel@FreeBSD.org>
  *
@@ -150,7 +150,7 @@ qorif_dw_pci_get_link(device_t dev, bool *status)
 	reg = pci_dw_dbi_rd4(sc->dev, sc->soc_cfg->pex_pf0_dgb);
 	reg >>=  sc->soc_cfg->ltssm_bit;
 	reg &= 0x3F;
-	*status = (reg = 0x11) ? true: false;
+	*status = (reg == 0x11) ? true : false;
 	return (0);
 }
 

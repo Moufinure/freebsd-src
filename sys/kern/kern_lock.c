@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2008 Attilio Rao <attilio@FreeBSD.org>
  * All rights reserved.
@@ -595,7 +595,7 @@ lockmgr_slock_hard(struct lock *lk, u_int flags, struct lock_object *ilk,
 #endif
 	struct lock_delay_arg lda;
 
-	if (KERNEL_PANICKED())
+	if (SCHEDULER_STOPPED())
 		goto out;
 
 	tid = (uintptr_t)curthread;
@@ -623,6 +623,9 @@ lockmgr_slock_hard(struct lock *lk, u_int flags, struct lock_object *ilk,
 		if (lockmgr_slock_try(lk, &x, flags, false))
 			break;
 
+		lock_profile_obtain_lock_failed(&lk->lock_object, false,
+		    &contested, &waittime);
+
 		if ((flags & (LK_ADAPTIVE | LK_INTERLOCK)) == LK_ADAPTIVE) {
 			if (lockmgr_slock_adaptive(&lda, lk, &x, flags))
 				continue;
@@ -631,8 +634,6 @@ lockmgr_slock_hard(struct lock *lk, u_int flags, struct lock_object *ilk,
 #ifdef HWPMC_HOOKS
 		PMC_SOFT_CALL( , , lock, failed);
 #endif
-		lock_profile_obtain_lock_failed(&lk->lock_object,
-		    &contested, &waittime);
 
 		/*
 		 * If the lock is expected to not sleep just give up
@@ -780,7 +781,7 @@ lockmgr_xlock_hard(struct lock *lk, u_int flags, struct lock_object *ilk,
 #endif
 	struct lock_delay_arg lda;
 
-	if (KERNEL_PANICKED())
+	if (SCHEDULER_STOPPED())
 		goto out;
 
 	tid = (uintptr_t)curthread;
@@ -837,6 +838,10 @@ lockmgr_xlock_hard(struct lock *lk, u_int flags, struct lock_object *ilk,
 				break;
 			continue;
 		}
+
+		lock_profile_obtain_lock_failed(&lk->lock_object, false,
+		    &contested, &waittime);
+
 		if ((flags & (LK_ADAPTIVE | LK_INTERLOCK)) == LK_ADAPTIVE) {
 			if (lockmgr_xlock_adaptive(&lda, lk, &x))
 				continue;
@@ -844,8 +849,6 @@ lockmgr_xlock_hard(struct lock *lk, u_int flags, struct lock_object *ilk,
 #ifdef HWPMC_HOOKS
 		PMC_SOFT_CALL( , , lock, failed);
 #endif
-		lock_profile_obtain_lock_failed(&lk->lock_object,
-		    &contested, &waittime);
 
 		/*
 		 * If the lock is expected to not sleep just give up
@@ -974,7 +977,7 @@ lockmgr_upgrade(struct lock *lk, u_int flags, struct lock_object *ilk,
 	int error = 0;
 	int op;
 
-	if (KERNEL_PANICKED())
+	if (SCHEDULER_STOPPED())
 		goto out;
 
 	tid = (uintptr_t)curthread;
@@ -1035,7 +1038,7 @@ lockmgr_lock_flags(struct lock *lk, u_int flags, struct lock_object *ilk,
 	u_int op;
 	bool locked;
 
-	if (KERNEL_PANICKED())
+	if (SCHEDULER_STOPPED())
 		return (0);
 
 	op = flags & LK_TYPE_MASK;
@@ -1098,7 +1101,7 @@ lockmgr_sunlock_hard(struct lock *lk, uintptr_t x, u_int flags, struct lock_obje
 {
 	int wakeup_swapper = 0;
 
-	if (KERNEL_PANICKED())
+	if (SCHEDULER_STOPPED())
 		goto out;
 
 	wakeup_swapper = wakeupshlk(lk, file, line);
@@ -1117,7 +1120,7 @@ lockmgr_xunlock_hard(struct lock *lk, uintptr_t x, u_int flags, struct lock_obje
 	u_int realexslp;
 	int queue;
 
-	if (KERNEL_PANICKED())
+	if (SCHEDULER_STOPPED())
 		goto out;
 
 	tid = (uintptr_t)curthread;
@@ -1309,7 +1312,7 @@ __lockmgr_args(struct lock *lk, u_int flags, struct lock_object *ilk,
 	int contested = 0;
 #endif
 
-	if (KERNEL_PANICKED())
+	if (SCHEDULER_STOPPED())
 		return (0);
 
 	error = 0;
@@ -1434,7 +1437,7 @@ __lockmgr_args(struct lock *lk, u_int flags, struct lock_object *ilk,
 #ifdef HWPMC_HOOKS
 			PMC_SOFT_CALL( , , lock, failed);
 #endif
-			lock_profile_obtain_lock_failed(&lk->lock_object,
+			lock_profile_obtain_lock_failed(&lk->lock_object, false,
 			    &contested, &waittime);
 
 			/*
@@ -1581,7 +1584,7 @@ __lockmgr_args(struct lock *lk, u_int flags, struct lock_object *ilk,
 
 		if (error == 0) {
 			lock_profile_obtain_lock_success(&lk->lock_object,
-			    contested, waittime, file, line);
+			    false, contested, waittime, file, line);
 			LOCK_LOG_LOCK("DRAIN", &lk->lock_object, 0,
 			    lk->lk_recurse, file, line);
 			WITNESS_LOCK(&lk->lock_object, LOP_EXCLUSIVE |
@@ -1627,7 +1630,7 @@ _lockmgr_disown(struct lock *lk, const char *file, int line)
 	 */
 	if (LK_HOLDER(lk->lk_lock) != tid)
 		return;
-	lock_profile_release_lock(&lk->lock_object);
+	lock_profile_release_lock(&lk->lock_object, false);
 	LOCKSTAT_RECORD1(lockmgr__disown, lk, LOCKSTAT_WRITER);
 	LOCK_LOG_LOCK("XDISOWN", &lk->lock_object, 0, 0, file, line);
 	WITNESS_UNLOCK(&lk->lock_object, LOP_EXCLUSIVE, file, line);
@@ -1718,7 +1721,7 @@ _lockmgr_assert(const struct lock *lk, int what, const char *file, int line)
 {
 	int slocked = 0;
 
-	if (KERNEL_PANICKED())
+	if (SCHEDULER_STOPPED())
 		return;
 	switch (what) {
 	case KA_SLOCKED:

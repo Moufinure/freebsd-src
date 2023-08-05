@@ -1,7 +1,7 @@
 /* $FreeBSD$ */
 /*	$NetBSD: hid.c,v 1.17 2001/11/13 06:24:53 lukem Exp $	*/
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-NetBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 1998 The NetBSD Foundation, Inc.
  * All rights reserved.
@@ -856,6 +856,7 @@ hid_item_resolution(struct hid_item *hi)
 		divisor = 10;
 		break;
 	case HUM_INCH:
+	case HUM_INCH_EGALAX:
 		multiplier = 10;
 		divisor = 254;
 		break;
@@ -1074,6 +1075,12 @@ int
 hid_set_protocol(device_t dev, uint16_t protocol)
 {
 	return (HID_SET_PROTOCOL(device_get_parent(dev), protocol));
+}
+
+int
+hid_ioctl(device_t dev, unsigned long cmd, uintptr_t data)
+{
+	return (HID_IOCTL(device_get_parent(dev), cmd, data));
 }
 
 MODULE_VERSION(hid, 1);

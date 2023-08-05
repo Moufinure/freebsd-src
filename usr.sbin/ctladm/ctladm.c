@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2003, 2004 Silicon Graphics International Corp.
  * Copyright (c) 1997-2007 Kenneth D. Merry
@@ -3964,7 +3964,7 @@ usage(int error)
 "-x                       : output port list in XML format\n"
 "lunmap options:\n"
 "-p targ_port             : specify target port number\n"
-"-L pLUN                  : specify port-visible LUN\n"
+"-l pLUN                  : specify port-visible LUN\n"
 "-L cLUN                  : specify CTL LUN\n",
 CTL_DEFAULT_DEV);
 }

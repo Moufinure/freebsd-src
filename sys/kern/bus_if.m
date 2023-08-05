@@ -67,12 +67,14 @@ CODE {
 		panic("bus_add_child is not implemented");
 	}
 
-	static int null_reset_post(device_t bus, device_t dev)
+	static int
+	null_reset_post(device_t bus, device_t dev)
 	{
 		return (0);
 	}
 
-	static int null_reset_prepare(device_t bus, device_t dev)
+	static int
+	null_reset_prepare(device_t bus, device_t dev)
 	{
 		return (0);
 	}
@@ -264,7 +266,7 @@ METHOD device_t add_child {
  */
 METHOD int rescan {
 	device_t _dev;
-}
+} DEFAULT bus_null_rescan;
 
 /**
  * @brief Allocate a system resource
@@ -932,3 +934,28 @@ METHOD int reset_child {
 	device_t _child;
 	int _flags;
 };
+
+/**
+ * @brief Gets child's specific property
+ *
+ * The bus_get_property can be used to access device
+ * specific properties stored on the bus. If _propvalue
+ * is NULL or _size is 0, then method only returns size
+ * of the property.
+ *
+ * @param _dev			the bus device
+ * @param _child		the child device
+ * @param _propname		property name
+ * @param _propvalue	property value destination
+ * @param _size			property value size
+ *
+ * @returns size of property if successful otherwise -1
+ */
+METHOD ssize_t get_property {
+	device_t _dev;
+	device_t _child;
+	const char *_propname;
+	void *_propvalue;
+	size_t _size;
+	device_property_type_t type;
+} DEFAULT bus_generic_get_property;

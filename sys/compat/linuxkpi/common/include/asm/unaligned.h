@@ -1,7 +1,7 @@
 /*-
  * SPDX-License-Identifier: BSD-2-Clause
  *
- * Copyright (c) 2020 The FreeBSD Foundation
+ * Copyright (c) 2020,2023 The FreeBSD Foundation
  *
  * This software was developed by Björn Zeeb under sponsorship from
  * the FreeBSD Foundation.
@@ -30,17 +30,33 @@
  * $FreeBSD$
  */
 
-#ifndef	_ASM_UNALIGNED_H
-#define	_ASM_UNALIGNED_H
+#ifndef	_LINUXKPI_ASM_UNALIGNED_H
+#define	_LINUXKPI_ASM_UNALIGNED_H
 
 #include <linux/types.h>
 #include <asm/byteorder.h>
+
+static __inline uint16_t
+get_unaligned_le16(const void *p)
+{
+
+	return (le16_to_cpup((const __le16 *)p));
+}
 
 static __inline uint32_t
 get_unaligned_le32(const void *p)
 {
 
 	return (le32_to_cpup((const __le32 *)p));
+}
+
+static __inline void
+put_unaligned_le16(__le16 v, void *p)
+{
+	__le16 x;
+
+	x = cpu_to_le16(v);
+	memcpy(p, &x, sizeof(x));
 }
 
 static __inline void
@@ -75,4 +91,11 @@ get_unaligned_be32(const void *p)
 	return (be32_to_cpup((const __be32 *)p));
 }
 
-#endif	/* _ASM_UNALIGNED_H */
+static __inline uint64_t
+get_unaligned_be64(const void *p)
+{
+
+	return (be64_to_cpup((const __be64 *)p));
+}
+
+#endif	/* _LINUXKPI_ASM_UNALIGNED_H */

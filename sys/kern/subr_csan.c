@@ -30,7 +30,7 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
-#define	KCSAN_RUNTIME
+#define	SAN_RUNTIME
 
 #include "opt_ddb.h"
 
@@ -301,6 +301,10 @@ kcsan_memmove(void *dst, const void *src, size_t len)
 	return __builtin_memmove(dst, src, len);
 }
 
+__strong_reference(kcsan_memcpy, __tsan_memcpy);
+__strong_reference(kcsan_memset, __tsan_memset);
+__strong_reference(kcsan_memmove, __tsan_memmove);
+
 char *
 kcsan_strcpy(char *dst, const char *src)
 {
@@ -350,12 +354,6 @@ kcsan_strlen(const char *str)
 	return (s - str);
 }
 
-#undef copyin
-#undef copyin_nofault
-#undef copyinstr
-#undef copyout
-#undef copyout_nofault
-
 int
 kcsan_copyin(const void *uaddr, void *kaddr, size_t len)
 {
@@ -380,7 +378,7 @@ kcsan_copyout(const void *kaddr, void *uaddr, size_t len)
 /* -------------------------------------------------------------------------- */
 
 #include <machine/atomic.h>
-#include <sys/_cscan_atomic.h>
+#include <sys/atomic_san.h>
 
 #define	_CSAN_ATOMIC_FUNC_ADD(name, type)				\
 	void kcsan_atomic_add_##name(volatile type *ptr, type val)	\
@@ -525,6 +523,9 @@ kcsan_copyout(const void *kaddr, void *uaddr, size_t len)
 		    __RET_ADDR);					\
 		return (atomic_testandset_##name(ptr, val)); 		\
 	}
+
+_CSAN_ATOMIC_FUNC_LOAD(bool, bool)
+_CSAN_ATOMIC_FUNC_STORE(bool, bool)
 
 CSAN_ATOMIC_FUNC_ADD(8, uint8_t)
 CSAN_ATOMIC_FUNC_CLEAR(8, uint8_t)
@@ -684,11 +685,17 @@ CSAN_ATOMIC_FUNC_THREAD_FENCE(acq_rel)
 CSAN_ATOMIC_FUNC_THREAD_FENCE(rel)
 CSAN_ATOMIC_FUNC_THREAD_FENCE(seq_cst)
 
+void
+kcsan_atomic_interrupt_fence(void)
+{
+	atomic_interrupt_fence();
+}
+
 /* -------------------------------------------------------------------------- */
 
 #include <sys/bus.h>
 #include <machine/bus.h>
-#include <sys/_cscan_bus.h>
+#include <sys/bus_san.h>
 
 int
 kcsan_bus_space_map(bus_space_tag_t tag, bus_addr_t hnd, bus_size_t size,

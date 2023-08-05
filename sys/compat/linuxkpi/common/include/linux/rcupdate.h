@@ -25,8 +25,8 @@
  *
  * $FreeBSD$
  */
-#ifndef	_LINUX_RCUPDATE_H_
-#define	_LINUX_RCUPDATE_H_
+#ifndef	_LINUXKPI_LINUX_RCUPDATE_H_
+#define	_LINUXKPI_LINUX_RCUPDATE_H_
 
 #include <linux/compiler.h>
 #include <linux/types.h>
@@ -87,6 +87,9 @@
 #define	rcu_dereference(p)			\
 	rcu_dereference_protected(p, 0)
 
+#define	rcu_dereference_check(p, c)		\
+	rcu_dereference_protected(p, c)
+
 #define	rcu_dereference_raw(p)			\
 	((__typeof(*p) *)READ_ONCE(p))
 
@@ -96,6 +99,13 @@
 	atomic_store_rel_ptr((volatile uintptr_t *)&(p),	\
 	    (uintptr_t)(v));					\
 } while (0)
+
+#define	rcu_replace_pointer(rcu, ptr, c)			\
+({								\
+	typeof(ptr) __tmp = rcu_dereference_protected(rcu, c);	\
+	rcu_assign_pointer(rcu, ptr);				\
+	__tmp;							\
+})
 
 #define	rcu_swap_protected(rcu, ptr, c) do {			\
 	typeof(ptr) p = rcu_dereference_protected(rcu, c);	\
@@ -117,4 +127,4 @@ extern void linux_synchronize_rcu(unsigned type);
 #define	init_rcu_head_on_stack(...)
 #define	destroy_rcu_head_on_stack(...)
 
-#endif					/* _LINUX_RCUPDATE_H_ */
+#endif					/* _LINUXKPI_LINUX_RCUPDATE_H_ */

@@ -196,6 +196,19 @@
 #define NKPML4E		4
 
 /*
+ * Number of PML4 slots for the KASAN shadow map.  It requires 1 byte of memory
+ * for every 8 bytes of the kernel address space.
+ */
+#define	NKASANPML4E	((NKPML4E + 7) / 8)
+
+/*
+ * Number of PML4 slots for the KMSAN shadow and origin maps.  These are
+ * one-to-one with the kernel map.
+ */
+#define	NKMSANSHADPML4E	NKPML4E
+#define	NKMSANORIGPML4E	NKPML4E
+
+/*
  * We use the same numbering of the page table pages for 5-level and
  * 4-level paging structures.
  */
@@ -243,9 +256,14 @@
 #define	KPML4I		(NPML4EPG-1)
 #define	KPDPI		(NPDPEPG-2)	/* kernbase at -2GB */
 
+#define	KASANPML4I	(DMPML4I - NKASANPML4E) /* Below the direct map */
+
+#define	KMSANSHADPML4I	(KPML4BASE - NKMSANSHADPML4E)
+#define	KMSANORIGPML4I	(DMPML4I - NKMSANORIGPML4E)
+
 /* Large map: index of the first and max last pml4 entry */
 #define	LMSPML4I	(PML4PML4I + 1)
-#define	LMEPML4I	(DMPML4I - 1)
+#define	LMEPML4I	(KASANPML4I - 1)
 
 /*
  * XXX doesn't really belong here I guess...
@@ -303,7 +321,6 @@ typedef u_int64_t pml5_entry_t;
 #define	P5Dmap		((pd_entry_t *)(addr_P5Dmap))
 
 extern int nkpt;		/* Initial number of kernel page tables */
-extern u_int64_t KPDPphys;	/* physical address of kernel level 3 */
 extern u_int64_t KPML4phys;	/* physical address of kernel level 4 */
 extern u_int64_t KPML5phys;	/* physical address of kernel level 5 */
 
@@ -444,10 +461,18 @@ extern vm_offset_t virtual_end;
 extern vm_paddr_t dmaplimit;
 extern int pmap_pcid_enabled;
 extern int invpcid_works;
+extern int pmap_pcid_invlpg_workaround;
+extern int pmap_pcid_invlpg_workaround_uena;
 
 #define	pmap_page_get_memattr(m)	((vm_memattr_t)(m)->md.pat_mode)
 #define	pmap_page_is_write_mapped(m)	(((m)->a.flags & PGA_WRITEABLE) != 0)
 #define	pmap_unmapbios(va, sz)		pmap_unmapdev((va), (sz))
+
+#define	pmap_vm_page_alloc_check(m)					\
+	KASSERT(m->phys_addr < kernphys ||				\
+	    m->phys_addr >= kernphys + (vm_offset_t)&_end - KERNSTART,	\
+	    ("allocating kernel page %p pa %#lx kernphys %#lx end %p", \
+	    m, m->phys_addr, kernphys, &_end));
 
 struct thread;
 
@@ -476,6 +501,7 @@ void	*pmap_mapdev_pciecfg(vm_paddr_t pa, vm_size_t size);
 bool	pmap_not_in_di(void);
 boolean_t pmap_page_is_mapped(vm_page_t m);
 void	pmap_page_set_memattr(vm_page_t m, vm_memattr_t ma);
+void	pmap_page_set_memattr_noflush(vm_page_t m, vm_memattr_t ma);
 void	pmap_pinit_pml4(vm_page_t);
 void	pmap_pinit_pml5(vm_page_t);
 bool	pmap_ps_enabled(pmap_t pmap);
@@ -490,6 +516,7 @@ void	pmap_force_invalidate_cache_range(vm_offset_t sva, vm_offset_t eva);
 void	pmap_get_mapping(pmap_t pmap, vm_offset_t va, uint64_t *ptr, int *num);
 boolean_t pmap_map_io_transient(vm_page_t *, vm_offset_t *, int, boolean_t);
 void	pmap_unmap_io_transient(vm_page_t *, vm_offset_t *, int, boolean_t);
+void	pmap_map_delete(pmap_t, vm_offset_t, vm_offset_t);
 void	pmap_pti_add_kva(vm_offset_t sva, vm_offset_t eva, bool exec);
 void	pmap_pti_remove_kva(vm_offset_t sva, vm_offset_t eva);
 void	pmap_pti_pcid_invalidate(uint64_t ucr3, uint64_t kcr3);
@@ -502,6 +529,46 @@ int	pmap_pkru_set(pmap_t pmap, vm_offset_t sva, vm_offset_t eva,
 void	pmap_thread_init_invl_gen(struct thread *td);
 int	pmap_vmspace_copy(pmap_t dst_pmap, pmap_t src_pmap);
 void	pmap_page_array_startup(long count);
+vm_page_t pmap_page_alloc_below_4g(bool zeroed);
+
+#ifdef KASAN
+void	pmap_kasan_enter(vm_offset_t);
+#endif
+#ifdef KMSAN
+void	pmap_kmsan_enter(vm_offset_t);
+#endif
+
+/*
+ * Returns a pointer to a set of CPUs on which the pmap is currently active.
+ * Note that the set can be modified without any mutual exclusion, so a copy
+ * must be made if a stable value is required.
+ */
+static __inline volatile cpuset_t *
+pmap_invalidate_cpu_mask(pmap_t pmap)
+{
+	return (&pmap->pm_active);
+}
+
+#if defined(_SYS_PCPU_H_) && defined(_MACHINE_CPUFUNC_H_)
+/*
+ * It seems that AlderLake+ small cores have some microarchitectural
+ * bug, which results in the INVLPG instruction failing to flush all
+ * global TLB entries when PCID is enabled.  Work around it for now,
+ * by doing global invalidation on small cores instead of INVLPG.
+ */
+static __inline void
+pmap_invlpg(pmap_t pmap, vm_offset_t va)
+{
+	if (pmap == kernel_pmap && PCPU_GET(pcid_invlpg_workaround)) {
+		struct invpcid_descr d = { 0 };
+
+		invpcid(&d, INVPCID_CTXGLOB);
+	} else {
+		invlpg(va);
+	}
+}
+#endif /* sys/pcpu.h && machine/cpufunc.h */
+
 #endif /* _KERNEL */
 
 /* Return various clipped indexes for a given VA */

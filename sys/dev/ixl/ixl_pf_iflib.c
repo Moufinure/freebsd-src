@@ -158,7 +158,7 @@ ixl_msix_adminq(void *arg)
 
 	if (reg & I40E_PFINT_ICR0_MAL_DETECT_MASK) {
 		mask &= ~I40E_PFINT_ICR0_ENA_MAL_DETECT_MASK;
-		atomic_set_32(&pf->state, IXL_PF_STATE_MDD_PENDING);
+		ixl_set_state(&pf->state, IXL_STATE_MDD_PENDING);
 		do_task = TRUE;
 	}
 
@@ -185,7 +185,7 @@ ixl_msix_adminq(void *arg)
 		}
 		device_printf(dev, "Reset Requested! (%s)\n", reset_type);
 		/* overload admin queue task to check reset progress */
-		atomic_set_int(&pf->state, IXL_PF_STATE_RESETTING);
+		ixl_set_state(&pf->state, IXL_STATE_RESETTING);
 		do_task = TRUE;
 	}
 
@@ -202,8 +202,8 @@ ixl_msix_adminq(void *arg)
 	/* Checks against the conditions above */
 	if (reg & IXL_ICR0_CRIT_ERR_MASK) {
 		mask &= ~IXL_ICR0_CRIT_ERR_MASK;
-		atomic_set_32(&pf->state,
-		    IXL_PF_STATE_PF_RESET_REQ | IXL_PF_STATE_PF_CRIT_ERR);
+		ixl_set_state(&pf->state,
+		    IXL_STATE_PF_RESET_REQ | IXL_STATE_PF_CRIT_ERR);
 		do_task = TRUE;
 	}
 
@@ -403,20 +403,23 @@ ixl_link_event(struct ixl_pf *pf, struct i40e_arq_event_info *e)
 {
 	struct i40e_hw *hw = &pf->hw;
 	device_t dev = iflib_get_dev(pf->vsi.ctx);
-	struct i40e_aqc_get_link_status *status =
-	    (struct i40e_aqc_get_link_status *)&e->desc.params.raw;
+	struct i40e_link_status *link_info = &hw->phy.link_info;
 
-	/* Request link status from adapter */
+	/* Driver needs to re-enable delivering of link status events
+	 * by FW after each event reception. Call i40e_get_link_status
+	 * to do that. To not lose information about link state changes,
+	 * which happened between receiving an event and the call,
+	 * do not rely on status from event but use most recent
+	 * status information retrieved by the call. */
 	hw->phy.get_link_info = TRUE;
 	i40e_get_link_status(hw, &pf->link_up);
 
 	/* Print out message if an unqualified module is found */
-	if ((status->link_info & I40E_AQ_MEDIA_AVAILABLE) &&
+	if ((link_info->link_info & I40E_AQ_MEDIA_AVAILABLE) &&
 	    (pf->advertised_speed) &&
-	    (atomic_load_32(&pf->state) &
-	     IXL_PF_STATE_LINK_ACTIVE_ON_DOWN) != 0 &&
-	    (!(status->an_info & I40E_AQ_QUALIFIED_MODULE)) &&
-	    (!(status->link_info & I40E_AQ_LINK_UP)))
+	    (if_getflags(pf->vsi.ifp) & IFF_UP) &&
+	    (!(link_info->an_info & I40E_AQ_QUALIFIED_MODULE)) &&
+	    (!(link_info->link_info & I40E_AQ_LINK_UP)))
 		device_printf(dev, "Link failed because "
 		    "an unqualified module was detected!\n");
 
@@ -1025,20 +1028,18 @@ ixl_rebuild_hw_structs_after_reset(struct ixl_pf *pf, bool is_up)
 	i40e_aq_set_vsi_broadcast(&pf->hw, vsi->seid, TRUE, NULL);
 
 	/* Determine link state */
-	if (ixl_attach_get_link_status(pf)) {
-		error = EINVAL;
-	}
+	ixl_attach_get_link_status(pf);
 
 	i40e_aq_set_dcb_parameters(hw, TRUE, NULL);
 
 	/* Query device FW LLDP status */
 	if (i40e_get_fw_lldp_status(hw, &lldp_status) == I40E_SUCCESS) {
 		if (lldp_status == I40E_GET_FW_LLDP_STATUS_DISABLED) {
-			atomic_set_32(&pf->state,
-			    IXL_PF_STATE_FW_LLDP_DISABLED);
+			ixl_set_state(&pf->state,
+			    IXL_STATE_FW_LLDP_DISABLED);
 		} else {
-			atomic_clear_32(&pf->state,
-			    IXL_PF_STATE_FW_LLDP_DISABLED);
+			ixl_clear_state(&pf->state,
+			    IXL_STATE_FW_LLDP_DISABLED);
 		}
 	}
 
@@ -1094,7 +1095,7 @@ ixl_sysctl_set_flowcntl(SYSCTL_HANDLER_ARGS)
 	aq_error = i40e_set_fc(hw, &fc_aq_err, TRUE);
 	if (aq_error) {
 		device_printf(dev,
-		    "%s: Error setting new fc mode %d; fc_err %#x\n",
+		    "%s: Error setting Flow Control mode %d; fc_err %#x\n",
 		    __func__, aq_error, fc_aq_err);
 		return (EIO);
 	}

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 1984-2020  Mark Nudelman
+ * Copyright (C) 1984-2023  Mark Nudelman
  *
  * You may distribute under the terms of either the GNU General Public
  * License or the Less License, as specified in the README file.
@@ -19,10 +19,7 @@ extern int utf_mode;
 /*
  * Get the length of a buffer needed to convert a string.
  */
-	public int
-cvt_length(len, ops)
-	int len;
-	int ops;
+public int cvt_length(int len, int ops)
 {
 	if (utf_mode)
 		/*
@@ -37,9 +34,7 @@ cvt_length(len, ops)
 /*
  * Allocate a chpos array for use by cvt_text.
  */
-	public int *
-cvt_alloc_chpos(len)
-	int len;
+public int * cvt_alloc_chpos(int len)
 {
 	int i;
 	int *chpos = (int *) ecalloc(sizeof(int), len);
@@ -54,13 +49,7 @@ cvt_alloc_chpos(len)
  * Returns converted text in odst.  The original offset of each
  * odst character (when it was in osrc) is returned in the chpos array.
  */
-	public void
-cvt_text(odst, osrc, chpos, lenp, ops)
-	char *odst;
-	char *osrc;
-	int *chpos;
-	int *lenp;
-	int ops;
+public void cvt_text(char *odst, char *osrc, int *chpos, int *lenp, int ops)
 {
 	char *dst;
 	char *edst = odst;
@@ -77,6 +66,7 @@ cvt_text(odst, osrc, chpos, lenp, ops)
 	{
 		int src_pos = (int) (src - osrc);
 		int dst_pos = (int) (dst - odst);
+		struct ansi_state *pansi;
 		ch = step_char(&src, +1, src_end);
 		if ((ops & CVT_BS) && ch == '\b' && dst > odst)
 		{
@@ -85,13 +75,16 @@ cvt_text(odst, osrc, chpos, lenp, ops)
 				dst--;
 			} while (dst > odst && utf_mode &&
 				!IS_ASCII_OCTET(*dst) && !IS_UTF8_LEAD(*dst));
-		} else if ((ops & CVT_ANSI) && IS_CSI_START(ch))
+		} else if ((ops & CVT_ANSI) && (pansi = ansi_start(ch)) != NULL)
 		{
 			/* Skip to end of ANSI escape sequence. */
-			src++;  /* skip the CSI start char */
 			while (src < src_end)
-				if (!is_ansi_middle(*src++))
+			{
+				if (ansi_step(pansi, ch) != ANSI_MID)
 					break;
+				ch = *src++;
+			}
+			ansi_done(pansi);
 		} else
 		{
 			/* Just copy the char to the destination buffer. */

@@ -5,8 +5,8 @@
 .PATH: ${SRCTOP}/sys/contrib/openzfs/module/os/freebsd/zfs
 
 LIB=	zutil
-LIBADD=	avl tpool
-PACKAGE=	runtime
+LIBADD=	avl geom m tpool
+PACKAGE=	zfs
 
 INCS = zutil_import.h
 

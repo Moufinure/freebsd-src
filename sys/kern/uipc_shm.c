@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2006, 2011, 2016-2017 Robert N. M. Watson
  * Copyright 2020 The FreeBSD Foundation
@@ -125,6 +125,7 @@ static void	shm_init(void *arg);
 static void	shm_insert(char *path, Fnv32_t fnv, struct shmfd *shmfd);
 static struct shmfd *shm_lookup(char *path, Fnv32_t fnv);
 static int	shm_remove(char *path, Fnv32_t fnv, struct ucred *ucred);
+static void	shm_doremove(struct shm_mapping *map);
 static int	shm_dotruncate_cookie(struct shmfd *shmfd, off_t length,
     void *rl_cookie);
 static int	shm_dotruncate_locked(struct shmfd *shmfd, off_t length,
@@ -220,9 +221,11 @@ uiomove_object_page(vm_object_t obj, size_t len, struct uio *uio)
 	    VM_ALLOC_NORMAL | VM_ALLOC_SBUSY | VM_ALLOC_IGN_SBUSY);
 	if (rv != VM_PAGER_OK) {
 		VM_OBJECT_WUNLOCK(obj);
-		printf("uiomove_object: vm_obj %p idx %jd pager error %d\n",
-		    obj, idx, rv);
-		return (EIO);
+		if (bootverbose) {
+			printf("uiomove_object: vm_obj %p idx %jd "
+			    "pager error %d\n", obj, idx, rv);
+		}
+		return (rv == VM_PAGER_AGAIN ? ENOSPC : EIO);
 	}
 	VM_OBJECT_WUNLOCK(obj);
 
@@ -263,7 +266,7 @@ static int
 shm_largepage_phys_populate(vm_object_t object, vm_pindex_t pidx,
     int fault_type, vm_prot_t max_prot, vm_pindex_t *first, vm_pindex_t *last)
 {
-	vm_page_t m;
+	vm_page_t m __diagused;
 	int psind;
 
 	psind = object->un_pager.phys.data_val;
@@ -327,7 +330,7 @@ shm_largepage_phys_dtor(vm_object_t object)
 	}
 }
 
-static struct phys_pager_ops shm_largepage_phys_ops = {
+static const struct phys_pager_ops shm_largepage_phys_ops = {
 	.phys_pg_populate =	shm_largepage_phys_populate,
 	.phys_pg_haspage =	shm_largepage_phys_haspage,
 	.phys_pg_ctor =		shm_largepage_phys_ctor,
@@ -339,6 +342,61 @@ shm_largepage(struct shmfd *shmfd)
 {
 	return (shmfd->shm_object->type == OBJT_PHYS);
 }
+
+static void
+shm_pager_freespace(vm_object_t obj, vm_pindex_t start, vm_size_t size)
+{
+	struct shmfd *shm;
+	vm_size_t c;
+
+	swap_pager_freespace(obj, start, size, &c);
+	if (c == 0)
+		return;
+
+	shm = obj->un_pager.swp.swp_priv;
+	if (shm == NULL)
+		return;
+	KASSERT(shm->shm_pages >= c,
+	    ("shm %p pages %jd free %jd", shm,
+	    (uintmax_t)shm->shm_pages, (uintmax_t)c));
+	shm->shm_pages -= c;
+}
+
+static void
+shm_page_inserted(vm_object_t obj, vm_page_t m)
+{
+	struct shmfd *shm;
+
+	shm = obj->un_pager.swp.swp_priv;
+	if (shm == NULL)
+		return;
+	if (!vm_pager_has_page(obj, m->pindex, NULL, NULL))
+		shm->shm_pages += 1;
+}
+
+static void
+shm_page_removed(vm_object_t obj, vm_page_t m)
+{
+	struct shmfd *shm;
+
+	shm = obj->un_pager.swp.swp_priv;
+	if (shm == NULL)
+		return;
+	if (!vm_pager_has_page(obj, m->pindex, NULL, NULL)) {
+		KASSERT(shm->shm_pages >= 1,
+		    ("shm %p pages %jd free 1", shm,
+		    (uintmax_t)shm->shm_pages));
+		shm->shm_pages -= 1;
+	}
+}
+
+static struct pagerops shm_swap_pager_ops = {
+	.pgo_kvme_type = KVME_TYPE_SWAP,
+	.pgo_freespace = shm_pager_freespace,
+	.pgo_page_inserted = shm_page_inserted,
+	.pgo_page_removed = shm_page_removed,
+};
+static int shmfd_pager_type = -1;
 
 static int
 shm_seek(struct file *fp, off_t offset, int whence, struct thread *td)
@@ -557,7 +615,6 @@ shm_stat(struct file *fp, struct stat *sb, struct ucred *active_cred,
 	bzero(sb, sizeof(*sb));
 	sb->st_blksize = PAGE_SIZE;
 	sb->st_size = shmfd->shm_size;
-	sb->st_blocks = howmany(sb->st_size, sb->st_blksize);
 	mtx_lock(&shm_timestamp_lock);
 	sb->st_atim = shmfd->shm_atime;
 	sb->st_ctim = shmfd->shm_ctime;
@@ -570,8 +627,12 @@ shm_stat(struct file *fp, struct stat *sb, struct ucred *active_cred,
 	sb->st_dev = shm_dev_ino;
 	sb->st_ino = shmfd->shm_ino;
 	sb->st_nlink = shmfd->shm_object->ref_count;
-	sb->st_blocks = shmfd->shm_object->size /
-	    (pagesizes[shmfd->shm_lp_psind] >> PAGE_SHIFT);
+	if (shm_largepage(shmfd)) {
+		sb->st_blocks = shmfd->shm_object->size /
+		    (pagesizes[shmfd->shm_lp_psind] >> PAGE_SHIFT);
+	} else {
+		sb->st_blocks = shmfd->shm_pages;
+	}
 
 	return (0);
 }
@@ -733,7 +794,8 @@ shm_dotruncate_largepage(struct shmfd *shmfd, off_t length, void *rl_cookie)
 {
 	vm_object_t object;
 	vm_page_t m;
-	vm_pindex_t newobjsz, oldobjsz;
+	vm_pindex_t newobjsz;
+	vm_pindex_t oldobjsz __unused;
 	int aflags, error, i, psind, try;
 
 	KASSERT(length >= 0, ("shm_dotruncate: length < 0"));
@@ -854,6 +916,7 @@ struct shmfd *
 shm_alloc(struct ucred *ucred, mode_t mode, bool largepage)
 {
 	struct shmfd *shmfd;
+	vm_object_t obj;
 
 	shmfd = malloc(sizeof(*shmfd), M_SHMFD, M_WAITOK | M_ZERO);
 	shmfd->shm_size = 0;
@@ -866,8 +929,12 @@ shm_alloc(struct ucred *ucred, mode_t mode, bool largepage)
 		    VM_PROT_DEFAULT, 0, ucred);
 		shmfd->shm_lp_alloc_policy = SHM_LARGEPAGE_ALLOC_DEFAULT;
 	} else {
-		shmfd->shm_object = vm_pager_allocate(OBJT_SWAP, NULL,
+		obj = vm_pager_allocate(shmfd_pager_type, NULL,
 		    shmfd->shm_size, VM_PROT_DEFAULT, 0, ucred);
+		VM_OBJECT_WLOCK(obj);
+		obj->un_pager.swp.swp_priv = shmfd;
+		VM_OBJECT_WUNLOCK(obj);
+		shmfd->shm_object = obj;
 	}
 	KASSERT(shmfd->shm_object != NULL, ("shm_create: vm_pager_allocate"));
 	vfs_timestamp(&shmfd->shm_birthtime);
@@ -896,6 +963,7 @@ shm_hold(struct shmfd *shmfd)
 void
 shm_drop(struct shmfd *shmfd)
 {
+	vm_object_t obj;
 
 	if (refcount_release(&shmfd->shm_refs)) {
 #ifdef MAC
@@ -903,7 +971,13 @@ shm_drop(struct shmfd *shmfd)
 #endif
 		rangelock_destroy(&shmfd->shm_rl);
 		mtx_destroy(&shmfd->shm_mtx);
-		vm_object_deallocate(shmfd->shm_object);
+		obj = shmfd->shm_object;
+		if (!shm_largepage(shmfd)) {
+			VM_OBJECT_WLOCK(obj);
+			obj->un_pager.swp.swp_priv = NULL;
+			VM_OBJECT_WUNLOCK(obj);
+		}
+		vm_object_deallocate(obj);
 		free(shmfd, M_SHMFD);
 	}
 }
@@ -942,6 +1016,9 @@ shm_init(void *arg)
 	new_unrhdr64(&shm_ino_unr, 1);
 	shm_dev_ino = devfs_alloc_cdp_inode();
 	KASSERT(shm_dev_ino > 0, ("shm dev inode not initialized"));
+	shmfd_pager_type = vm_pager_alloc_dyn_type(&shm_swap_pager_ops,
+	    OBJT_SWAP);
+	MPASS(shmfd_pager_type != -1);
 
 	for (i = 1; i < MAXPAGESIZES; i++) {
 		if (pagesizes[i] == 0)
@@ -962,6 +1039,26 @@ shm_init(void *arg)
 	}
 }
 SYSINIT(shm_init, SI_SUB_SYSV_SHM, SI_ORDER_ANY, shm_init, NULL);
+
+/*
+ * Remove all shared memory objects that belong to a prison.
+ */
+void
+shm_remove_prison(struct prison *pr)
+{
+	struct shm_mapping *shmm, *tshmm;
+	u_long i;
+
+	sx_xlock(&shm_dict_lock);
+	for (i = 0; i < shm_hash + 1; i++) {
+		LIST_FOREACH_SAFE(shmm, &shm_dictionary[i], sm_link, tshmm) {
+			if (shmm->sm_shmfd->shm_object->cred &&
+			    shmm->sm_shmfd->shm_object->cred->cr_prison == pr)
+				shm_doremove(shmm);
+		}
+	}
+	sx_xunlock(&shm_dict_lock);
+}
 
 /*
  * Dictionary management.  We maintain an in-kernel dictionary to map
@@ -1015,16 +1112,22 @@ shm_remove(char *path, Fnv32_t fnv, struct ucred *ucred)
 			    FREAD | FWRITE);
 			if (error)
 				return (error);
-			map->sm_shmfd->shm_path = NULL;
-			LIST_REMOVE(map, sm_link);
-			shm_drop(map->sm_shmfd);
-			free(map->sm_path, M_SHMFD);
-			free(map, M_SHMFD);
+			shm_doremove(map);
 			return (0);
 		}
 	}
 
 	return (ENOENT);
+}
+
+static void
+shm_doremove(struct shm_mapping *map)
+{
+	map->sm_shmfd->shm_path = NULL;
+	LIST_REMOVE(map, sm_link);
+	shm_drop(map->sm_shmfd);
+	free(map->sm_path, M_SHMFD);
+	free(map, M_SHMFD);
 }
 
 int
@@ -1926,14 +2029,13 @@ sysctl_posix_shm_list(SYSCTL_HANDLER_ARGS)
 		LIST_FOREACH(shmm, &shm_dictionary[i], sm_link) {
 			error = shm_fill_kinfo_locked(shmm->sm_shmfd,
 			    &kif, true);
-			if (error == EPERM)
+			if (error == EPERM) {
+				error = 0;
 				continue;
+			}
 			if (error != 0)
 				break;
 			pack_kinfo(&kif);
-			if (req->oldptr != NULL &&
-			    kif.kf_structsize + curlen > req->oldlen)
-				break;
 			error = sbuf_bcat(&sb, &kif, kif.kf_structsize) == 0 ?
 			    0 : ENOMEM;
 			if (error != 0)
@@ -1948,7 +2050,7 @@ sysctl_posix_shm_list(SYSCTL_HANDLER_ARGS)
 }
 
 SYSCTL_PROC(_kern_ipc, OID_AUTO, posix_shm_list,
-    CTLFLAG_RD | CTLFLAG_MPSAFE | CTLTYPE_OPAQUE,
+    CTLFLAG_RD | CTLFLAG_PRISON | CTLFLAG_MPSAFE | CTLTYPE_OPAQUE,
     NULL, 0, sysctl_posix_shm_list, "",
     "POSIX SHM list");
 

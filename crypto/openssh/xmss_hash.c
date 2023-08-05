@@ -1,4 +1,4 @@
-/* $OpenBSD: xmss_hash.c,v 1.2 2018/02/26 03:56:44 dtucker Exp $ */
+/* $OpenBSD: xmss_hash.c,v 1.3 2022/04/20 16:00:25 millert Exp $ */
 /*
 hash.c version 20160722
 Andreas Hülsing
@@ -15,13 +15,10 @@ Public domain.
 
 #include <stddef.h>
 #ifdef HAVE_STDINT_H
-#include <stdint.h>
+# include <stdint.h>
 #endif
 #include <stdio.h>
 #include <string.h>
-#include <openssl/sha.h>
-#include <openssl/hmac.h>
-#include <openssl/evp.h>
 
 int core_hash_SHA2(unsigned char *, const unsigned int, const unsigned char *,
     unsigned int, const unsigned char *, unsigned long long, unsigned int);

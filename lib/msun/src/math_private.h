@@ -460,7 +460,7 @@ do {								\
  * or by having |c| a few percent smaller than |a|.  Pre-normalization of
  * (a, b) may help.
  *
- * This is is a variant of an algorithm of Kahan (see Knuth (1981) 4.2.2
+ * This is a variant of an algorithm of Kahan (see Knuth (1981) 4.2.2
  * exercise 19).  We gain considerable efficiency by requiring the terms to
  * be sufficiently normalized and sufficiently increasing.
  */
@@ -624,7 +624,7 @@ rnintf(__float_t x)
  * The complications for extra precision are smaller for rnintl() since it
  * can safely assume that the rounding precision has been increased from
  * its default to FP_PE on x86.  We don't exploit that here to get small
- * optimizations from limiting the rangle to double.  We just need it for
+ * optimizations from limiting the range to double.  We just need it for
  * the magic number to work with long doubles.  ld128 callers should use
  * rnint() instead of this if possible.  ld80 callers should prefer
  * rnintl() since for amd64 this avoids swapping the register set, while

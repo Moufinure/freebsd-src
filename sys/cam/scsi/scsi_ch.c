@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: (BSD-2-Clause-FreeBSD AND BSD-4-Clause)
+ * SPDX-License-Identifier: (BSD-2-Clause AND BSD-4-Clause)
  *
  * Copyright (c) 1997 Justin T. Gibbs.
  * Copyright (c) 1997, 1998, 1999 Kenneth D. Merry.
@@ -735,11 +735,6 @@ chdone(struct cam_periph *periph, union ccb *done_ccb)
 static int
 cherror(union ccb *ccb, u_int32_t cam_flags, u_int32_t sense_flags)
 {
-	struct ch_softc *softc;
-	struct cam_periph *periph;
-
-	periph = xpt_path_periph(ccb->ccb_h.path);
-	softc = (struct ch_softc *)periph->softc;
 
 	return (cam_periph_error(ccb, cam_flags, sense_flags));
 }

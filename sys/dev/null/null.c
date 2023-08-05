@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2000 Mark R. V. Murray & Jeroen C. van Gelderen
  * Copyright (c) 2001-2004 Mark R. V. Murray
@@ -109,11 +109,6 @@ null_ioctl(struct cdev *dev __unused, u_long cmd, caddr_t data __unused,
 
 	error = 0;
 	switch (cmd) {
-#ifdef COMPAT_FREEBSD11
-	case DIOCSKERNELDUMP_FREEBSD11:
-		gone_in(13, "FreeBSD 11.x ABI compat");
-		/* FALLTHROUGH */
-#endif
 #ifdef COMPAT_FREEBSD12
 	case DIOCSKERNELDUMP_FREEBSD12:
 		if (cmd == DIOCSKERNELDUMP_FREEBSD12)

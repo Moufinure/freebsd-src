@@ -861,8 +861,10 @@ ecap_aer(int fd, struct pci_conf *p, uint16_t ptr, uint8_t ver)
 	uint32_t sta, mask;
 
 	printf("AER %d", ver);
-	if (ver < 1)
+	if (ver < 1) {
+		printf("\n");
 		return;
+	}
 	sta = read_config(fd, &p->pc_sel, ptr + PCIR_AER_UC_STATUS, 4);
 	mask = read_config(fd, &p->pc_sel, ptr + PCIR_AER_UC_SEVERITY, 4);
 	printf(" %d fatal", bitcount32(sta & mask));
@@ -877,8 +879,10 @@ ecap_vc(int fd, struct pci_conf *p, uint16_t ptr, uint8_t ver)
 	uint32_t cap1;
 
 	printf("VC %d", ver);
-	if (ver < 1)
+	if (ver < 1) {
+		printf("\n");
 		return;
+	}
 	cap1 = read_config(fd, &p->pc_sel, ptr + PCIR_VC_CAP1, 4);
 	printf(" max VC%d", cap1 & PCIM_VC_CAP1_EXT_COUNT);
 	if ((cap1 & PCIM_VC_CAP1_LOWPRI_EXT_COUNT) != 0)
@@ -893,8 +897,10 @@ ecap_sernum(int fd, struct pci_conf *p, uint16_t ptr, uint8_t ver)
 	uint32_t high, low;
 
 	printf("Serial %d", ver);
-	if (ver < 1)
+	if (ver < 1) {
+		printf("\n");
 		return;
+	}
 	low = read_config(fd, &p->pc_sel, ptr + PCIR_SERIAL_LOW, 4);
 	high = read_config(fd, &p->pc_sel, ptr + PCIR_SERIAL_HIGH, 4);
 	printf(" %08x%08x\n", high, low);
@@ -940,8 +946,10 @@ ecap_sec_pcie(int fd, struct pci_conf *p, uint16_t ptr, uint8_t ver)
 	uint32_t val;
 
 	printf("PCIe Sec %d", ver);
-	if (ver < 1)
+	if (ver < 1) {
+		printf("\n");
 		return;
+	}
 	val = read_config(fd, &p->pc_sel, ptr + 8, 4);
 	printf(" lane errors %#x\n", val);
 }
@@ -1006,6 +1014,64 @@ ecap_sriov(int fd, struct pci_conf *p, uint16_t ptr, uint8_t ver)
 
 	for (i = 0; i <= PCIR_MAX_BAR_0; i++)
 		print_bar(fd, p, "iov bar  ", ptr + PCIR_SRIOV_BAR(i));
+}
+
+static const char *
+check_avail_and_state(u_int cap, u_int capbit, u_int ctl, u_int ctlbit)
+{
+
+	if (cap & capbit)
+		return (ctl & ctlbit ? "enabled" : "disabled");
+	else
+		return "unavailable";
+}
+
+static void
+ecap_acs(int fd, struct pci_conf *p, uint16_t ptr, uint8_t ver)
+{
+	uint16_t acs_cap, acs_ctl;
+	static const char *const acc[] = { "access enabled", "blocking enabled",
+		"redirect enabled", "reserved" };
+
+	printf("ACS %d ", ver);
+	if (ver != 1) {
+		printf("\n");
+		return;
+	}
+
+#define	CHECK_AVAIL_STATE(bit) \
+	check_avail_and_state(acs_cap, bit, acs_ctl, bit##_ENABLE)
+
+	acs_cap = read_config(fd, &p->pc_sel, ptr + PCIR_ACS_CAP, 2);
+	acs_ctl = read_config(fd, &p->pc_sel, ptr + PCIR_ACS_CTL, 2);
+	printf("Source Validation %s, Translation Blocking %s\n",
+	    CHECK_AVAIL_STATE(PCIM_ACS_SOURCE_VALIDATION),
+	    CHECK_AVAIL_STATE(PCIM_ACS_TRANSLATION_BLOCKING));
+
+	printf("                     ");
+	printf("P2P Req Redirect %s, P2P Cmpl Redirect %s\n",
+	    CHECK_AVAIL_STATE(PCIM_ACS_P2P_REQ_REDIRECT),
+	    CHECK_AVAIL_STATE(PCIM_ACS_P2P_CMP_REDIRECT));
+	printf("                     ");
+	printf("P2P Upstream Forwarding %s, P2P Egress Control %s\n",
+	    CHECK_AVAIL_STATE(PCIM_ACS_P2P_UPSTREAM_FORWARDING),
+	    CHECK_AVAIL_STATE(PCIM_ACS_P2P_EGRESS_CTL));
+	printf("                     ");
+	printf("P2P Direct Translated %s, Enhanced Capability %s\n",
+	    CHECK_AVAIL_STATE(PCIM_ACS_P2P_DIRECT_TRANSLATED),
+	    acs_ctl & PCIM_ACS_ENHANCED_CAP ? "available" : "unavailable");
+#undef	CHECK_AVAIL_STATE
+
+	if (acs_cap & PCIM_ACS_ENHANCED_CAP) {
+		printf("                     ");
+		printf("I/O Req Blocking %s, Unclaimed Req Redirect Control %s\n",
+		    check_enabled(acs_ctl & PCIM_ACS_IO_REQ_BLOCKING_ENABLE),
+		    check_enabled(acs_ctl & PCIM_ACS_UNCLAIMED_REQ_REDIRECT_CTL));
+		printf("                     ");
+		printf("DSP BAR %s, USP BAR %s\n",
+		    acc[(acs_cap & PCIM_ACS_DSP_MEM_TGT_ACC_CTL) >> 8],
+		    acc[(acs_cap & PCIM_ACS_USP_MEM_TGT_ACC_CTL) >> 10]);
+	}
 }
 
 static struct {
@@ -1090,6 +1156,9 @@ list_ecaps(int fd, struct pci_conf *p)
 			break;
 		case PCIZ_SRIOV:
 			ecap_sriov(fd, p, ptr, PCI_EXTCAP_VER(ecap));
+			break;
+		case PCIZ_ACS:
+			ecap_acs(fd, p, ptr, PCI_EXTCAP_VER(ecap));
 			break;
 		default:
 			name = "unknown";

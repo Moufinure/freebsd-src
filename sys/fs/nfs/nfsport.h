@@ -181,6 +181,20 @@
  */
 #define	NFSMUTEX_T		struct mtx
 
+/* Just define the NFSD_VNETxxx() macros as VNETxxx() macros. */
+#define	NFSD_VNET_NAME(n)		VNET_NAME(n)
+#define	NFSD_VNET_DECLARE(t, n)		VNET_DECLARE(t, n)
+#define	NFSD_VNET_DEFINE(t, n)		VNET_DEFINE(t, n)
+#define	NFSD_VNET_DEFINE_STATIC(t, n)	VNET_DEFINE_STATIC(t, n)
+#define	NFSD_VNET(n)			VNET(n)
+
+#define	CTLFLAG_NFSD_VNET		CTLFLAG_VNET
+
+#define	NFSD_CURVNET_SET(n)		CURVNET_SET(n)
+#define	NFSD_CURVNET_SET_QUIET(n)	CURVNET_SET_QUIET(n)
+#define	NFSD_CURVNET_RESTORE()		CURVNET_RESTORE()
+#define	NFSD_TD_TO_VNET(n)		TD_TO_VNET(n)
+
 #endif	/* _KERNEL */
 
 /*
@@ -412,10 +426,28 @@
 #define	NFSPROC_RMEXTATTR	63
 #define	NFSPROC_LISTEXTATTR	64
 
+/* BindConnectionToSession, done by the krpc for a new connection. */
+#define	NFSPROC_BINDCONNTOSESS	65
+
+/* Do a Lookup+Open for "oneopenown". */
+#define	NFSPROC_LOOKUPOPEN	66
+
+/* Do an NFSv4.2 Deallocate. */
+#define	NFSPROC_DEALLOCATE	67
+
+/* Do an NFSv4.2 LayoutError. */
+#define	NFSPROC_LAYOUTERROR	68
+
+/* Do an NFSv4 Verify+Write. */
+#define	NFSPROC_APPENDWRITE	69
+
 /*
  * Must be defined as one higher than the last NFSv4.2 Proc# above.
  */
-#define	NFSV42_NPROCS		65
+#define	NFSV42_NPROCS		70
+
+/* Value of NFSV42_NPROCS for old nfsstats structure. (Always 69) */
+#define	NFSV42_OLDNPROCS	69
 
 #endif	/* NFS_V3NPROCS */
 
@@ -444,11 +476,11 @@ struct nfsstatsv1 {
 	uint64_t	readlink_bios;
 	uint64_t	biocache_readdirs;
 	uint64_t	readdir_bios;
-	uint64_t	rpccnt[NFSV42_NPROCS + 15];
+	uint64_t	rpccnt[NFSV42_NPROCS + 10];
 	uint64_t	rpcretries;
 	uint64_t	srvrpccnt[NFSV42_NOPS + NFSV4OP_FAKENOPS + 15];
-	uint64_t	reserved_0;
-	uint64_t	reserved_1;
+	uint64_t	srvlayouts;
+	uint64_t	cllayouts;
 	uint64_t	rpcrequests;
 	uint64_t	rpctimeouts;
 	uint64_t	rpcunexpected;
@@ -509,7 +541,7 @@ struct nfsstatsov1 {
 	uint64_t	readlink_bios;
 	uint64_t	biocache_readdirs;
 	uint64_t	readdir_bios;
-	uint64_t	rpccnt[NFSV42_NPROCS + 4];
+	uint64_t	rpccnt[NFSV42_OLDNPROCS];
 	uint64_t	rpcretries;
 	uint64_t	srvrpccnt[NFSV42_PURENOPS + NFSV4OP_FAKENOPS];
 	uint64_t	reserved_0;
@@ -765,12 +797,6 @@ void nfsrvd_rcv(struct socket *, void *, int);
 #define	NCHNAMLEN	9999999
 
 /*
- * These macros are defined to initialize and set the timer routine.
- */
-#define	NFS_TIMERINIT \
-	newnfs_timer(NULL)
-
-/*
  * Handle SMP stuff:
  */
 #define	NFSSTATESPINLOCK	extern struct mtx nfs_state_mutex
@@ -998,6 +1024,7 @@ int nfscl_loadattrcache(struct vnode **, struct nfsvattr *, void *, void *,
     int, int);
 int newnfs_realign(struct mbuf **, int);
 bool ncl_pager_setsize(struct vnode *vp, u_quad_t *nsizep);
+void ncl_copy_vattr(struct vattr *dst, struct vattr *src);
 
 /*
  * If the port runs on an SMP box that can enforce Atomic ops with low
@@ -1006,6 +1033,7 @@ bool ncl_pager_setsize(struct vnode *vp, u_quad_t *nsizep);
  * "out by one" without disastrous consequences.
  */
 #define	NFSINCRGLOBAL(a)	((a)++)
+#define	NFSDECRGLOBAL(a)	((a)--)
 
 /*
  * Assorted funky stuff to make things work under Darwin8.
@@ -1058,6 +1086,7 @@ bool ncl_pager_setsize(struct vnode *vp, u_quad_t *nsizep);
 #define	NFSHASONEOPENOWN(n)	(((n)->nm_flag & NFSMNT_ONEOPENOWN) != 0 &&	\
 				    (n)->nm_minorvers > 0)
 #define	NFSHASTLS(n)		(((n)->nm_newflag & NFSMNT_TLS) != 0)
+#define	NFSHASSYSKRB5(n)	(((n)->nm_newflag & NFSMNT_SYSKRB5) != 0)
 
 /*
  * Set boottime.

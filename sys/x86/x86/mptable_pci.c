@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2003 John Baldwin <jhb@FreeBSD.org>
  *
@@ -57,7 +57,7 @@ mptable_hostb_probe(device_t dev)
 
 	if (pci_cfgregopen() == 0)
 		return (ENXIO);
-	if (mptable_pci_probe_table(pcib_get_bus(dev)) != 0)
+	if (mptable_pci_probe_table(legacy_get_pcibus(dev)) != 0)
 		return (ENXIO);
 	device_set_desc(dev, "MPTable Host-PCI bridge");
 	return (0);

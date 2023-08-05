@@ -27,7 +27,7 @@
 #include "file.h"
 
 #ifndef lint
-FILE_RCSID("@(#)$File: readelf.c,v 1.173 2020/06/07 22:12:54 christos Exp $")
+FILE_RCSID("@(#)$File: readelf.c,v 1.182 2022/07/31 16:01:01 christos Exp $")
 #endif
 
 #ifdef BUILTIN_ELF
@@ -62,6 +62,7 @@ private uint64_t getu64(int, uint64_t);
 
 #define MAX_PHNUM	128
 #define	MAX_SHNUM	32768
+#define MAX_SHSIZE	(64 * 1024 * 1024)
 #define SIZE_UNKNOWN	CAST(off_t, -1)
 
 private int
@@ -354,7 +355,7 @@ dophn_core(struct magic_set *ms, int clazz, int swap, int fd, off_t off,
 	size_t offset, len;
 	unsigned char nbuf[BUFSIZ];
 	ssize_t bufsize;
-	off_t ph_off = off;
+	off_t ph_off = off, offs;
 	int ph_num = num;
 
 	if (ms->flags & MAGIC_MIME)
@@ -377,8 +378,11 @@ dophn_core(struct magic_set *ms, int clazz, int swap, int fd, off_t off,
 	for ( ; num; num--) {
 		if (pread(fd, xph_addr, xph_sizeof, off) <
 		    CAST(ssize_t, xph_sizeof)) {
-			file_badread(ms);
-			return -1;
+			if (file_printf(ms, 
+			    ", can't read elf program headers at %jd",
+			    (intmax_t)off) == -1)
+				return -1;
+			return 0;
 		}
 		off += size;
 
@@ -395,9 +399,12 @@ dophn_core(struct magic_set *ms, int clazz, int swap, int fd, off_t off,
 		 * in the section.
 		 */
 		len = xph_filesz < sizeof(nbuf) ? xph_filesz : sizeof(nbuf);
-		if ((bufsize = pread(fd, nbuf, len, xph_offset)) == -1) {
-			file_badread(ms);
-			return -1;
+		offs = xph_offset;
+		if ((bufsize = pread(fd, nbuf, len, offs)) == -1) {
+			if (file_printf(ms, " can't read note section at %jd",
+			    (intmax_t)offs) == -1)
+				return -1;
+			return 0;
 		}
 		offset = 0;
 		for (;;) {
@@ -778,7 +785,7 @@ do_core_note(struct magic_set *ms, unsigned char *nbuf, uint32_t type,
 
 			if (file_printf(ms, ", from '%.31s', pid=%u, uid=%u, "
 			    "gid=%u, nlwps=%u, lwp=%u (signal %u/code %u)",
-			    file_printable(sbuf, sizeof(sbuf),
+			    file_printable(ms, sbuf, sizeof(sbuf),
 			    RCAST(char *, pi.cpi_name), sizeof(pi.cpi_name)),
 			    elf_getu32(swap, CAST(uint32_t, pi.cpi_pid)),
 			    elf_getu32(swap, pi.cpi_euid),
@@ -890,6 +897,13 @@ do_core_note(struct magic_set *ms, unsigned char *nbuf, uint32_t type,
 					int adjust = 1;
 					if (prpsoffsets(k) >= prpsoffsets(i))
 						continue;
+					/*
+					 * pr_fname == pr_psargs - 16 &&
+					 * non-nul-terminated fname (qemu)
+					 */
+					if (prpsoffsets(k) ==
+					    prpsoffsets(i) - 16 && j == 16)
+						continue;
 					for (no = doff + prpsoffsets(k);
 					     no < doff + prpsoffsets(i); no++)
 						adjust = adjust
@@ -912,7 +926,7 @@ do_core_note(struct magic_set *ms, unsigned char *nbuf, uint32_t type,
 				if (file_printf(ms, ", from '%s'",
 				    file_copystr(buf, sizeof(buf),
 				    CAST(size_t, cp - cname),
-				    CAST(const char *, cname))) == -1)
+				    RCAST(char *, cname))) == -1)
 					return -1;
 				*flags |= FLAGS_DID_CORE;
 				return 1;
@@ -941,8 +955,12 @@ get_offset_from_virtaddr(struct magic_set *ms, int swap, int clazz, int fd,
 	for ( ; num; num--) {
 		if (pread(fd, xph_addr, xph_sizeof, off) <
 		    CAST(ssize_t, xph_sizeof)) {
-			file_badread(ms);
-			return -1;
+			if (file_printf(ms,
+			    ", can't read elf program header at %jd",
+			    (intmax_t)off) == -1)
+				return -1;
+			return 0;
+
 		}
 		off += xph_sizeof;
 
@@ -972,7 +990,8 @@ get_string_on_virtaddr(struct magic_set *ms,
 	    fsize, virtaddr);
 	if (offset < 0 ||
 	    (buflen = pread(fd, buf, CAST(size_t, buflen), offset)) <= 0) {
-		file_badread(ms);
+		(void)file_printf(ms, ", can't read elf string at %jd",
+		    (intmax_t)offset);
 		return 0;
 	}
 
@@ -1004,7 +1023,7 @@ do_auxv_note(struct magic_set *ms, unsigned char *nbuf, uint32_t type,
 	size_t elsize = xauxv_sizeof;
 	const char *tag;
 	int is_string;
-	size_t nval;
+	size_t nval, off;
 
 	if ((*flags & (FLAGS_IS_CORE|FLAGS_DID_CORE_STYLE)) !=
 	    (FLAGS_IS_CORE|FLAGS_DID_CORE_STYLE))
@@ -1032,7 +1051,7 @@ do_auxv_note(struct magic_set *ms, unsigned char *nbuf, uint32_t type,
 	*flags |= FLAGS_DID_AUXV;
 
 	nval = 0;
-	for (size_t off = 0; off + elsize <= descsz; off += elsize) {
+	for (off = 0; off + elsize <= descsz; off += elsize) {
 		memcpy(xauxv_addr, &nbuf[doff + off], xauxv_sizeof);
 		/* Limit processing to 50 vector entries to prevent DoS */
 		if (nval++ >= 50) {
@@ -1099,7 +1118,7 @@ do_auxv_note(struct magic_set *ms, unsigned char *nbuf, uint32_t type,
 
 private size_t
 dodynamic(struct magic_set *ms, void *vbuf, size_t offset, size_t size,
-    int clazz, int swap)
+    int clazz, int swap, int *pie, size_t *need)
 {
 	Elf32_Dyn dh32;
 	Elf64_Dyn dh64;
@@ -1117,10 +1136,14 @@ dodynamic(struct magic_set *ms, void *vbuf, size_t offset, size_t size,
 
 	switch (xdh_tag) {
 	case DT_FLAGS_1:
+		*pie = 1;
 		if (xdh_val & DF_1_PIE)
 			ms->mode |= 0111;
 		else
 			ms->mode &= ~0111;
+		break;
+	case DT_NEEDED:
+		(*need)++;
 		break;
 	default:
 		break;
@@ -1169,17 +1192,15 @@ donote(struct magic_set *ms, void *vbuf, size_t offset, size_t size,
 	}
 
 	if (namesz & 0x80000000) {
-		if (file_printf(ms, ", bad note name size %#lx",
-		    CAST(unsigned long, namesz)) == -1)
-			return -1;
+	    (void)file_printf(ms, ", bad note name size %#lx",
+		CAST(unsigned long, namesz));
 	    return 0;
 	}
 
 	if (descsz & 0x80000000) {
-		if (file_printf(ms, ", bad note description size %#lx",
-		    CAST(unsigned long, descsz)) == -1)
-		    	return -1;
-	    return 0;
+		(void)file_printf(ms, ", bad note description size %#lx",
+		    CAST(unsigned long, descsz));
+		return 0;
 	}
 
 	noff = offset;
@@ -1334,7 +1355,7 @@ doshn(struct magic_set *ms, int clazz, int swap, int fd, off_t off, int num,
 	int stripped = 1, has_debug_info = 0;
 	size_t nbadcap = 0;
 	void *nbuf;
-	off_t noff, coff, name_off;
+	off_t noff, coff, name_off, offs;
 	uint64_t cap_hw1 = 0;	/* SunOS 5.x hardware capabilities */
 	uint64_t cap_sf1 = 0;	/* SunOS 5.x software capabilities */
 	char name[50];
@@ -1355,9 +1376,10 @@ doshn(struct magic_set *ms, int clazz, int swap, int fd, off_t off, int num,
 	}
 
 	/* Read offset of name section to be able to read section names later */
-	if (pread(fd, xsh_addr, xsh_sizeof, CAST(off_t, (off + size * strtab)))
-	    < CAST(ssize_t, xsh_sizeof)) {
-		if (file_printf(ms, ", missing section headers") == -1)
+	offs = CAST(off_t, (off + size * strtab));
+	if (pread(fd, xsh_addr, xsh_sizeof, offs) < CAST(ssize_t, xsh_sizeof)) {
+		if (file_printf(ms, ", missing section headers at %jd",
+		    (intmax_t)offs) == -1)
 			return -1;
 		return 0;
 	}
@@ -1372,10 +1394,14 @@ doshn(struct magic_set *ms, int clazz, int swap, int fd, off_t off, int num,
 
 	for ( ; num; num--) {
 		/* Read the name of this section. */
-		if ((namesize = pread(fd, name, sizeof(name) - 1,
-		    name_off + xsh_name)) == -1) {
-			file_badread(ms);
-			return -1;
+		offs = name_off + xsh_name;
+		if ((namesize = pread(fd, name, sizeof(name) - 1, offs))
+		    == -1) {
+			if (file_printf(ms, 
+			    ", can't read name of elf section at %jd",
+			    (intmax_t)offs) == -1)
+				return -1;
+			return 0;
 		}
 		name[namesize] = '\0';
 		if (strcmp(name, ".debug_info") == 0) {
@@ -1385,8 +1411,10 @@ doshn(struct magic_set *ms, int clazz, int swap, int fd, off_t off, int num,
 
 		if (pread(fd, xsh_addr, xsh_sizeof, off) <
 		    CAST(ssize_t, xsh_sizeof)) {
-			file_badread(ms);
-			return -1;
+			if (file_printf(ms, ", can't read elf section at %jd",
+			    (intmax_t)off) == -1)
+				return -1;
+			return 0;
 		}
 		off += size;
 
@@ -1422,16 +1450,26 @@ doshn(struct magic_set *ms, int clazz, int swap, int fd, off_t off, int num,
 					return -1;
 				return 0;
 			}
+			if (xsh_size > MAX_SHSIZE) {
+				file_error(ms, errno, "Note section size too "
+				    "big (%ju > %u)", (uintmax_t)xsh_size,
+				    MAX_SHSIZE);
+				return -1;
+			}
 			if ((nbuf = malloc(xsh_size)) == NULL) {
 				file_error(ms, errno, "Cannot allocate memory"
 				    " for note");
 				return -1;
 			}
-			if (pread(fd, nbuf, xsh_size, xsh_offset) <
+			offs = xsh_offset;
+			if (pread(fd, nbuf, xsh_size, offs) <
 			    CAST(ssize_t, xsh_size)) {
-				file_badread(ms);
 				free(nbuf);
-				return -1;
+				if (file_printf(ms,
+				    ", can't read elf note at %jd",
+				    (intmax_t)offs) == -1)
+					return -1;
+				return 0;
 			}
 
 			noff = 0;
@@ -1608,9 +1646,10 @@ doshn(struct magic_set *ms, int clazz, int swap, int fd, off_t off, int num,
 }
 
 /*
- * Look through the program headers of an executable image, searching
- * for a PT_INTERP section; if one is found, it's dynamically linked,
- * otherwise it's statically linked.
+ * Look through the program headers of an executable image, to determine
+ * if it is statically or dynamically linked. If it has a dynamic section,
+ * it is pie, and does not have an interpreter or needed libraries, we
+ * call it static pie.
  */
 private int
 dophn_exec(struct magic_set *ms, int clazz, int swap, int fd, off_t off,
@@ -1619,12 +1658,13 @@ dophn_exec(struct magic_set *ms, int clazz, int swap, int fd, off_t off,
 {
 	Elf32_Phdr ph32;
 	Elf64_Phdr ph64;
-	const char *linking_style = "statically";
+	const char *linking_style;
 	unsigned char nbuf[BUFSIZ];
 	char ibuf[BUFSIZ];
 	char interp[BUFSIZ];
 	ssize_t bufsize;
-	size_t offset, align, len;
+	size_t offset, align, need = 0;
+	int pie = 0, dynamic = 0;
 
 	if (num == 0) {
 		if (file_printf(ms, ", no program header") == -1)
@@ -1642,8 +1682,11 @@ dophn_exec(struct magic_set *ms, int clazz, int swap, int fd, off_t off,
 		int doread;
 		if (pread(fd, xph_addr, xph_sizeof, off) <
 		    CAST(ssize_t, xph_sizeof)) {
-			file_badread(ms);
-			return -1;
+			if (file_printf(ms,
+			    ", can't read elf program headers at %jd",
+			    (intmax_t)off) == -1)
+				return -1;
+			return 0;
 		}
 
 		off += size;
@@ -1654,7 +1697,6 @@ dophn_exec(struct magic_set *ms, int clazz, int swap, int fd, off_t off,
 		switch (xph_type) {
 		case PT_DYNAMIC:
 			doread = 1;
-			linking_style = "dynamically";
 			break;
 		case PT_NOTE:
 			if (sh_num)	/* Did this through section headers */
@@ -1681,19 +1723,23 @@ dophn_exec(struct magic_set *ms, int clazz, int swap, int fd, off_t off,
 		}
 
 		if (doread) {
-			len = xph_filesz < sizeof(nbuf) ? xph_filesz
+			size_t len = xph_filesz < sizeof(nbuf) ? xph_filesz
 			    : sizeof(nbuf);
-			bufsize = pread(fd, nbuf, len, xph_offset);
+			off_t offs = xph_offset;
+			bufsize = pread(fd, nbuf, len, offs);
 			if (bufsize == -1) {
-				file_badread(ms);
-				return -1;
+				if (file_printf(ms,
+				    ", can't read section at %jd",
+				    (intmax_t)offs) == -1)
+					return -1;
+				return 0;
 			}
-		} else
-			len = 0;
+		}
 
 		/* Things we can determine when we seek */
 		switch (xph_type) {
 		case PT_DYNAMIC:
+			dynamic = 1;
 			offset = 0;
 			// Let DF_1 determine if we are PIE or not.
 			ms->mode &= ~0111;
@@ -1701,7 +1747,8 @@ dophn_exec(struct magic_set *ms, int clazz, int swap, int fd, off_t off,
 				if (offset >= CAST(size_t, bufsize))
 					break;
 				offset = dodynamic(ms, nbuf, offset,
-				    CAST(size_t, bufsize), clazz, swap);
+				    CAST(size_t, bufsize), clazz, swap,
+				    &pie, &need);
 				if (offset == 0)
 					break;
 			}
@@ -1710,6 +1757,7 @@ dophn_exec(struct magic_set *ms, int clazz, int swap, int fd, off_t off,
 			break;
 
 		case PT_INTERP:
+			need++;
 			if (ms->flags & MAGIC_MIME)
 				continue;
 			if (bufsize && nbuf[0]) {
@@ -1744,13 +1792,19 @@ dophn_exec(struct magic_set *ms, int clazz, int swap, int fd, off_t off,
 	}
 	if (ms->flags & MAGIC_MIME)
 		return 0;
-	if (file_printf(ms, ", %s linked", linking_style)
-	    == -1)
+	if (dynamic) {
+		if (pie && need == 0)
+			linking_style = "static-pie";
+		else
+			linking_style = "dynamically";
+	} else {
+		linking_style = "statically";
+	}
+	if (file_printf(ms, ", %s linked", linking_style) == -1)
 		return -1;
 	if (interp[0])
-		if (file_printf(ms, ", interpreter %s",
-		    file_printable(ibuf, sizeof(ibuf), interp, sizeof(interp)))
-			== -1)
+		if (file_printf(ms, ", interpreter %s", file_printable(ms,
+		    ibuf, sizeof(ibuf), interp, sizeof(interp))) == -1)
 			return -1;
 	return 0;
 }

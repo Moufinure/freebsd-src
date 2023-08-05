@@ -11,12 +11,10 @@
 
 #include "lld/Common/LLVM.h"
 #include "llvm/ADT/StringRef.h"
-#include "llvm/Support/MemoryBuffer.h"
-#include <utility>
+#include "llvm/Support/MemoryBufferRef.h"
 #include <vector>
 
-namespace lld {
-namespace elf {
+namespace lld::elf {
 
 class ScriptLexer {
 public:
@@ -24,7 +22,7 @@ public:
 
   void setError(const Twine &msg);
   void tokenize(MemoryBufferRef mb);
-  static StringRef skipSpace(StringRef s);
+  StringRef skipSpace(StringRef s);
   bool atEOF();
   StringRef next();
   StringRef peek();
@@ -40,6 +38,9 @@ public:
   bool inExpr = false;
   size_t pos = 0;
 
+  size_t lastLineNumber = 0;
+  size_t lastLineNumberOffset = 0;
+
 protected:
   MemoryBufferRef getCurrentMB();
 
@@ -50,7 +51,6 @@ private:
   size_t getColumnNumber();
 };
 
-} // namespace elf
-} // namespace lld
+} // namespace lld::elf
 
 #endif

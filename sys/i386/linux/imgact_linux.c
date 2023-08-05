@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 1994-1996 Søren Schmidt
  * All rights reserved.
@@ -212,6 +212,10 @@ exec_linux_imgact(struct image_params *imgp)
 	vmspace->vm_taddr = (caddr_t)(void *)(uintptr_t)virtual_offset;
 	vmspace->vm_daddr =
 	    (caddr_t)(void *)(uintptr_t)(virtual_offset + a_out->a_text);
+
+	error = exec_map_stack(imgp);
+	if (error != 0)
+		goto fail;
 
 	/* Fill in image_params */
 	imgp->interpreted = 0;

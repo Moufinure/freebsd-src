@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2008-2015 Nathan Whitehorn
  * All rights reserved.
@@ -426,7 +426,7 @@ vm_paddr_t moea64_kextract(vm_offset_t);
 void moea64_page_set_memattr(vm_page_t m, vm_memattr_t ma);
 void moea64_kenter_attr(vm_offset_t, vm_paddr_t, vm_memattr_t ma);
 void moea64_kenter(vm_offset_t, vm_paddr_t);
-boolean_t moea64_dev_direct_mapped(vm_paddr_t, vm_size_t);
+int moea64_dev_direct_mapped(vm_paddr_t, vm_size_t);
 static void moea64_sync_icache(pmap_t, vm_offset_t, vm_size_t);
 void moea64_dumpsys_map(vm_paddr_t pa, size_t sz,
     void **va);
@@ -438,7 +438,7 @@ static int moea64_map_user_ptr(pmap_t pm,
     volatile const void *uaddr, void **kaddr, size_t ulen, size_t *klen);
 static int moea64_decode_kernel_ptr(vm_offset_t addr,
     int *is_user, vm_offset_t *decoded_addr);
-static size_t moea64_scan_pmap(void);
+static size_t moea64_scan_pmap(struct bitset *dump_bitset);
 static void *moea64_dump_pmap_init(unsigned blkpgs);
 #ifdef __powerpc64__
 static void moea64_page_array_startup(long);
@@ -1165,7 +1165,7 @@ moea64_late_bootstrap(vm_offset_t kernelstart, vm_offset_t kernelend)
 	 * Calculate the last available physical address.
 	 */
 	Maxmem = 0;
-	for (i = 0; phys_avail[i + 2] != 0; i += 2)
+	for (i = 0; phys_avail[i + 1] != 0; i += 2)
 		Maxmem = MAX(Maxmem, powerpc_btop(phys_avail[i + 1]));
 
 	/*
@@ -1400,13 +1400,15 @@ moea64_mincore(pmap_t pmap, vm_offset_t addr, vm_paddr_t *pap)
 
 	PMAP_LOCK(pmap);
 
-	/* XXX Add support for superpages */
 	pvo = moea64_pvo_find_va(pmap, addr);
 	if (pvo != NULL) {
 		pa = PVO_PADDR(pvo);
 		m = PHYS_TO_VM_PAGE(pa);
 		managed = (pvo->pvo_vaddr & PVO_MANAGED) == PVO_MANAGED;
-		val = MINCORE_INCORE;
+		if (PVO_IS_SP(pvo))
+			val = MINCORE_INCORE | MINCORE_PSIND(1);
+		else
+			val = MINCORE_INCORE;
 	} else {
 		PMAP_UNLOCK(pmap);
 		return (0);
@@ -1920,8 +1922,8 @@ moea64_uma_page_alloc(uma_zone_t zone, vm_size_t bytes, int domain,
 	*flags = UMA_SLAB_PRIV;
 	needed_lock = !PMAP_LOCKED(kernel_pmap);
 
-	m = vm_page_alloc_domain(NULL, 0, domain,
-	    malloc2vm_flags(wait) | VM_ALLOC_WIRED | VM_ALLOC_NOOBJ);
+	m = vm_page_alloc_noobj_domain(domain, malloc2vm_flags(wait) |
+	    VM_ALLOC_WIRED);
 	if (m == NULL)
 		return (NULL);
 
@@ -1943,16 +1945,13 @@ moea64_uma_page_alloc(uma_zone_t zone, vm_size_t bytes, int domain,
 	if (needed_lock)
 		PMAP_UNLOCK(kernel_pmap);
 
-	if ((wait & M_ZERO) && (m->flags & PG_ZERO) == 0)
-                bzero((void *)va, PAGE_SIZE);
-
 	return (void *)va;
 }
 
 extern int elf32_nxstack;
 
 void
-moea64_init()
+moea64_init(void)
 {
 
 	CTR0(KTR_PMAP, "moea64_init");
@@ -2457,7 +2456,7 @@ moea64_get_unique_vsid(void) {
 		u_int	n;
 
 		/*
-		 * Create a new value by mutiplying by a prime and adding in
+		 * Create a new value by multiplying by a prime and adding in
 		 * entropy from the timebase register.  This is to make the
 		 * VSID more random so that the PT hash function collides
 		 * less often.  (Note that the prime casues gcc to do shifts
@@ -3150,7 +3149,7 @@ moea64_clear_bit(vm_page_t m, u_int64_t ptebit)
 	return (count);
 }
 
-boolean_t
+int
 moea64_dev_direct_mapped(vm_paddr_t pa, vm_size_t size)
 {
 	struct pvo_entry *pvo, key;
@@ -3262,7 +3261,7 @@ moea64_dumpsys_map(vm_paddr_t pa, size_t sz, void **va)
 extern struct dump_pa dump_map[PHYS_AVAIL_SZ + 1];
 
 void
-moea64_scan_init()
+moea64_scan_init(void)
 {
 	struct pvo_entry *pvo;
 	vm_offset_t va;
@@ -3325,7 +3324,7 @@ moea64_scan_init()
 #ifdef __powerpc64__
 
 static size_t
-moea64_scan_pmap()
+moea64_scan_pmap(struct bitset *dump_bitset)
 {
 	struct pvo_entry *pvo;
 	vm_paddr_t pa, pa_end;
@@ -3367,12 +3366,12 @@ moea64_scan_pmap()
 		if (va & PVO_LARGE) {
 			pa_end = pa + lpsize;
 			for (; pa < pa_end; pa += PAGE_SIZE) {
-				if (is_dumpable(pa))
-					dump_add_page(pa);
+				if (vm_phys_is_dumpable(pa))
+					vm_page_dump_add(dump_bitset, pa);
 			}
 		} else {
-			if (is_dumpable(pa))
-				dump_add_page(pa);
+			if (vm_phys_is_dumpable(pa))
+				vm_page_dump_add(dump_bitset, pa);
 		}
 	}
 	PMAP_UNLOCK(kernel_pmap);
@@ -3394,7 +3393,7 @@ moea64_dump_pmap_init(unsigned blkpgs)
 #else
 
 static size_t
-moea64_scan_pmap()
+moea64_scan_pmap(struct bitset *dump_bitset __unused)
 {
 	return (0);
 }
@@ -3717,7 +3716,7 @@ moea64_sp_enter(pmap_t pmap, vm_offset_t va, vm_page_t m,
 		pvo = pvos[i];
 
 		pvo->pvo_pte.prot = prot;
-		pvo->pvo_pte.pa = (pa & ~LPTE_LP_MASK) | LPTE_LP_4K_16M |
+		pvo->pvo_pte.pa = (pa & ~HPT_SP_MASK) | LPTE_LP_4K_16M |
 		    moea64_calc_wimg(pa, pmap_page_get_memattr(m));
 
 		if ((flags & PMAP_ENTER_WIRED) != 0)
@@ -3874,7 +3873,7 @@ moea64_sp_promote(pmap_t pmap, vm_offset_t va, vm_page_t m)
 	for (pvo = first, va_end = PVO_VADDR(pvo) + HPT_SP_SIZE;
 	    pvo != NULL && PVO_VADDR(pvo) < va_end;
 	    pvo = RB_NEXT(pvo_tree, &pmap->pmap_pvo, pvo)) {
-		pvo->pvo_pte.pa &= ~LPTE_LP_MASK;
+		pvo->pvo_pte.pa &= ADDR_POFF | ~HPT_SP_MASK;
 		pvo->pvo_pte.pa |= LPTE_LP_4K_16M;
 		pvo->pvo_vaddr |= PVO_LARGE;
 	}

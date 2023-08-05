@@ -3255,9 +3255,41 @@ stats_v1_vsd_tdgst_add(enum vsd_dtype vs_dtype, struct voistatdata_tdgst *tdgst,
 		if (is32bit) {
 			ctd32 = (struct voistatdata_tdgstctd32 *)closest;
 			error = Q_QSUBQ(&x, ctd32->mu);
+			/*
+			 * The following calculation "x / (cnt + weight)"
+			 * computes the amount by which to adjust the centroid's
+			 * mu value in order to merge in the VOI sample.
+			 *
+			 * It can underflow (Q_QDIVI() returns ERANGE) when the
+			 * user centroids' fractional precision (which is
+			 * inherited by 'x') is too low to represent the result.
+			 *
+			 * A sophisticated approach to dealing with this issue
+			 * would minimise accumulation of error by tracking
+			 * underflow per centroid and making an adjustment when
+			 * a LSB's worth of underflow has accumulated.
+			 *
+			 * A simpler approach is to let the result underflow
+			 * i.e. merge the VOI sample into the centroid without
+			 * adjusting the centroid's mu, and rely on the user to
+			 * specify their t-digest with sufficient centroid
+			 * fractional precision such that the accumulation of
+			 * error from multiple underflows is of no material
+			 * consequence to the centroid's final value of mu.
+			 *
+			 * For the moment, the latter approach is employed by
+			 * simply ignoring ERANGE here.
+			 *
+			 * XXXLAS: Per-centroid underflow tracking is likely too
+			 * onerous, but it probably makes sense to accumulate a
+			 * single underflow error variable across all centroids
+			 * and report it as part of the digest to provide
+			 * additional visibility into the digest's fidelity.
+			 */
 			error = error ? error :
 			    Q_QDIVI(&x, ctd32->cnt + weight);
-			if (error || (error = Q_QADDQ(&ctd32->mu, x))) {
+			if ((error && error != ERANGE)
+			    || (error = Q_QADDQ(&ctd32->mu, x))) {
 #ifdef DIAGNOSTIC
 				KASSERT(!error, ("%s: unexpected error %d",
 				    __func__, error));
@@ -3276,7 +3308,9 @@ stats_v1_vsd_tdgst_add(enum vsd_dtype vs_dtype, struct voistatdata_tdgst *tdgst,
 			error = Q_QSUBQ(&x, ctd64->mu);
 			error = error ? error :
 			    Q_QDIVI(&x, ctd64->cnt + weight);
-			if (error || (error = Q_QADDQ(&ctd64->mu, x))) {
+			/* Refer to is32bit ERANGE discussion above. */
+			if ((error && error != ERANGE)
+			    || (error = Q_QADDQ(&ctd64->mu, x))) {
 				KASSERT(!error, ("%s: unexpected error %d",
 				    __func__, error));
 				return (error);
@@ -3372,6 +3406,13 @@ stats_v1_vsd_tdgst_add(enum vsd_dtype vs_dtype, struct voistatdata_tdgst *tdgst,
 
 				Q_TOSTR(rbctd64->mu, -1, 10, qstr,
 				    sizeof(qstr));
+				struct voistatdata_tdgstctd64 *parent;
+				parent = RB_PARENT(rbctd64, rblnk);
+				int rb_color =
+					parent == NULL ? 0 :
+					RB_LEFT(parent, rblnk) == rbctd64 ?
+					(_RB_BITSUP(parent, rblnk) & _RB_L) != 0 :
+ 					(_RB_BITSUP(parent, rblnk) & _RB_R) != 0;
 				printf(" RB ctd=%3d p=%3d l=%3d r=%3d c=%2d "
 				    "mu=%s\n",
 				    (int)ARB_SELFIDX(ctd64tree, rbctd64),
@@ -3381,7 +3422,7 @@ stats_v1_vsd_tdgst_add(enum vsd_dtype vs_dtype, struct voistatdata_tdgst *tdgst,
 				      RB_LEFT(rbctd64, rblnk)),
 				    (int)ARB_SELFIDX(ctd64tree,
 				      RB_RIGHT(rbctd64, rblnk)),
-				    RB_COLOR(rbctd64, rblnk),
+				    rb_color,
 				    qstr);
 
 				panic("RB@%p and ARB@%p trees differ\n",

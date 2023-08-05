@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2020 Alexander V. Chernikov
  *
@@ -47,8 +47,10 @@
 
 struct nhgrp_priv {
 	uint32_t		nhg_idx;
+	uint32_t		nhg_uidx;
 	uint8_t			nhg_nh_count;	/* number of items in nh_weights */
-	uint8_t			nhg_spare[3];
+	uint8_t			nhg_origin;	/* protocol which created the group */
+	uint8_t			nhg_spare[2];
 	u_int			nhg_refcount;	/* use refcount */
 	u_int			nhg_linked;	/* refcount(9), == 2 if linked to the list */
 	struct nh_control	*nh_control;	/* parent control structure */

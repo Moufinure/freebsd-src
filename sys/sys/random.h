@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2000-2015, 2017 Mark R. V. Murray
  * All rights reserved.
@@ -108,6 +108,7 @@ _Static_assert(ENTROPYSOURCE <= 32,
     "hardcoded assumption that values fit in a typical word-sized bitset");
 
 #define RANDOM_CACHED_BOOT_ENTROPY_MODULE	"boot_entropy_cache"
+#define RANDOM_PLATFORM_BOOT_ENTROPY_MODULE	"boot_entropy_platform"
 
 extern u_int hc_source_mask;
 void random_harvest_queue_(const void *, u_int, enum random_entropy_source);

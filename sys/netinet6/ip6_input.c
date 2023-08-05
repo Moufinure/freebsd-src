@@ -194,6 +194,7 @@ SYSCTL_PROC(_net_inet6_ip6, IPV6CTL_INTRDQMAXLEN, intr_direct_queue_maxlen,
 #endif
 
 VNET_DEFINE(pfil_head_t, inet6_pfil_head);
+VNET_DEFINE(pfil_head_t, inet6_local_pfil_head);
 
 VNET_PCPUSTAT_DEFINE(struct ip6stat, ip6stat);
 VNET_PCPUSTAT_SYSINIT(ip6stat);
@@ -232,6 +233,10 @@ ip6_init(void)
 	args.pa_type = PFIL_TYPE_IP6;
 	args.pa_headname = PFIL_INET6_NAME;
 	V_inet6_pfil_head = pfil_head_register(&args);
+
+	args.pa_flags = PFIL_OUT;
+	args.pa_headname = PFIL_INET6_LOCAL_NAME;
+	V_inet6_local_pfil_head = pfil_head_register(&args);
 
 	if (hhook_head_register(HHOOK_TYPE_IPSEC_IN, AF_INET6,
 	    &V_ipsec_hhh_in[HHOOK_IPSEC_INET6],
@@ -579,12 +584,11 @@ ip6_input(struct mbuf *m)
 			IP6STAT_INC(ip6s_mext1);
 	} else {
 		if (m->m_next) {
-			if (m->m_flags & M_LOOP) {
-				IP6STAT_INC(ip6s_m2m[V_loif->if_index]);
-			} else if (rcvif->if_index < IP6S_M2MMAX)
-				IP6STAT_INC(ip6s_m2m[rcvif->if_index]);
-			else
-				IP6STAT_INC(ip6s_m2m[0]);
+			struct ifnet *ifp = (m->m_flags & M_LOOP) ? V_loif : rcvif;
+			int ifindex = ifp->if_index;
+			if (ifindex >= IP6S_M2MMAX)
+				ifindex = 0;
+			IP6STAT_INC(ip6s_m2m[ifindex]);
 		} else
 			IP6STAT_INC(ip6s_m1);
 	}
@@ -894,6 +898,20 @@ passin:
 	} else if (!ours) {
 		ip6_forward(m, srcrt);
 		return;
+	}
+
+	/*
+	 * We are going to ship the packet to the local protocol stack. Call the
+	 * filter again for this 'output' action, allowing redirect-like rules
+	 * to adjust the source address.
+	 */
+	if (PFIL_HOOKED_OUT(V_inet6_local_pfil_head)) {
+		if (pfil_run_hooks(V_inet6_local_pfil_head, &m, V_loif, PFIL_OUT,
+			NULL) != PFIL_PASS)
+			return;
+		if (m == NULL)			/* consumed by filter */
+			return;
+		ip6 = mtod(m, struct ip6_hdr *);
 	}
 
 	/*
@@ -1575,6 +1593,7 @@ ip6_notify_pmtu(struct inpcb *inp, struct sockaddr_in6 *dst, u_int32_t mtu)
 	so =  inp->inp_socket;
 	if (sbappendaddr(&so->so_rcv, (struct sockaddr *)dst, NULL, m_mtu)
 	    == 0) {
+		soroverflow(so);
 		m_freem(m_mtu);
 		/* XXX: should count statistics */
 	} else

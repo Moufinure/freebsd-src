@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2004 David Schultz <das@FreeBSD.ORG>
  * All rights reserved.
@@ -34,6 +34,13 @@ __FBSDID("$FreeBSD$");
 
 #include "fpmath.h"
 
+#ifdef USE_BUILTIN_FMAX
+double
+fmax(double x, double y)
+{
+	return (__builtin_fmax(x, y));
+}
+#else
 double
 fmax(double x, double y)
 {
@@ -54,6 +61,7 @@ fmax(double x, double y)
 
 	return (x > y ? x : y);
 }
+#endif
 
 #if (LDBL_MANT_DIG == 53)
 __weak_reference(fmax, fmaxl);

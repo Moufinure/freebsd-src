@@ -253,11 +253,9 @@ main(int argc, char *argv[])
 			 * added for compatibility with SUSv3, but for
 			 * now it will not be described in the man page.
 			 */
-			nselectors++;
 			all = xkeep = 1;
 			break;
 		case 'a':
-			nselectors++;
 			all = 1;
 			break;
 		case 'C':
@@ -473,7 +471,7 @@ main(int argc, char *argv[])
 	if (!_fmt)
 		parsefmt(dfmt, 0);
 
-	if (nselectors == 0) {
+	if (!all && nselectors == 0) {
 		uidlist.l.ptr = malloc(sizeof(uid_t));
 		if (uidlist.l.ptr == NULL)
 			xo_errx(1, "malloc failed");
@@ -525,9 +523,6 @@ main(int argc, char *argv[])
 		} else if (uidlist.count == 1) {
 			what = KERN_PROC_UID | showthreads;
 			flag = *uidlist.l.uids;
-			nselectors = 0;
-		} else if (all) {
-			/* No need for this routine to select processes. */
 			nselectors = 0;
 		}
 	}
@@ -1465,9 +1460,9 @@ usage(void)
 #define	SINGLE_OPTS	"[-aCcde" OPT_LAZY_f "HhjlmrSTuvwXxZ]"
 
 	(void)xo_error("%s\n%s\n%s\n%s\n",
-	    "usage: ps " SINGLE_OPTS " [-O fmt | -o fmt] [-G gid[,gid...]]",
-	    "          [-J jid[,jid...]] [-M core] [-N system]",
+	    "usage: ps [--libxo] " SINGLE_OPTS " [-O fmt | -o fmt]",
+	    "          [-G gid[,gid...]] [-J jid[,jid...]] [-M core] [-N system]",
 	    "          [-p pid[,pid...]] [-t tty[,tty...]] [-U user[,user...]]",
-	    "       ps [-L]");
+	    "       ps [--libxo] -L");
 	exit(1);
 }

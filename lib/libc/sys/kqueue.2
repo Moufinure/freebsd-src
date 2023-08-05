@@ -24,7 +24,7 @@
 .\"
 .\" $FreeBSD$
 .\"
-.Dd October 8, 2020
+.Dd March 26, 2023
 .Dt KQUEUE 2
 .Os
 .Sh NAME
@@ -37,6 +37,8 @@
 .In sys/event.h
 .Ft int
 .Fn kqueue "void"
+.Ft int
+.Fn kqueuex "u_int flags"
 .Ft int
 .Fo kevent
 .Fa "int kq"
@@ -88,6 +90,30 @@ is called without the
 .Dv RFFDG
 flag, then the descriptor table is shared,
 which will allow sharing of the kqueue between two processes.
+.Pp
+The
+.Fn kqueuex
+system call also creates a new kernel event queue, and additionally takes
+the
+.Fa flags
+argument, which is a bitwise-inclusive OR of the following flags:
+.Bl -tag -width "KQUEUE_CLOEXEC"
+.It Fa KQUEUE_CLOEXEC
+The returned file descriptor is automatically closed on
+.Xr execve 2
+.El
+The
+.Ql fd = kqueue()
+call is equivalent to
+.Ql fd = kqueuex(0) .
+.Pp
+For compatibility with
+.Nx ,
+the
+.Fn kqueue1
+function is provided, which accepts the
+.Dv O_CLOEXEC
+flag with the expected semantic.
 .Pp
 The
 .Fn kevent
@@ -279,7 +305,7 @@ on the descriptor type.
 .Bl -tag -width 2n
 .It Sockets
 Sockets which have previously been passed to
-.Fn listen
+.Xr listen 2
 return when there is an incoming connection pending.
 .Va data
 contains the size of the listen backlog.
@@ -346,6 +372,10 @@ Returns when the counter is greater than 0;
 .Va data
 contains the counter value, which must be cast to
 .Vt uint64_t .
+.It Kqueues
+Returns when pending events are present on the queue;
+.Va data
+contains the number of events available.
 .El
 .It Dv EVFILT_WRITE
 Takes a descriptor as the identifier, and returns whenever
@@ -454,7 +484,9 @@ The events to monitor are:
 .It Dv NOTE_EXIT
 The process has exited.
 The exit status will be stored in
-.Va data .
+.Va data
+in the same format as the status returned by
+.Xr wait 2 .
 .It Dv NOTE_FORK
 The process has called
 .Fn fork .
@@ -579,6 +611,12 @@ is not set, the default is milliseconds.
 On return,
 .Va fflags
 contains the events which triggered the filter.
+.Pp
+Periodic timers with a specified timeout of 0 will be silently adjusted to
+timeout after 1 of the time units specified by the requested precision in
+.Va fflags .
+If an absolute time is specified that has already passed, then it is treated as
+if the current time were specified and the event will fire as soon as possible.
 .Pp
 If an existing timer is re-added, the existing timer will be
 effectively canceled (throwing away any undelivered record of previous
@@ -762,6 +800,8 @@ events were placed on the kqueue for return.
 A cancellation request was delivered to the thread, but not yet handled.
 .It Bq Er EINVAL
 The specified time limit or filter is invalid.
+.It Bq Er EINVAL
+The specified length of the event or change lists is negative.
 .It Bq Er ENOENT
 The event could not be found to be modified or deleted.
 .It Bq Er ENOMEM
@@ -814,10 +854,6 @@ The
 system and this manual page were written by
 .An Jonathan Lemon Aq Mt jlemon@FreeBSD.org .
 .Sh BUGS
-The
-.Fa timeout
-value is limited to 24 hours; longer timeouts will be silently
-reinterpreted as 24 hours.
 .Pp
 In versions older than
 .Fx 12.0 ,

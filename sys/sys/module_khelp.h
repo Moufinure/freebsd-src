@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2010 Lawrence Stewart <lstewart@freebsd.org>
  * Copyright (c) 2010 The FreeBSD Foundation
@@ -87,7 +87,7 @@ struct khelp_modevent_data {
 		.evhand = khelp_modevent,				\
 		.priv = &kmd_##hname					\
 	};								\
-	DECLARE_MODULE(hname, h_##hname, SI_SUB_KLD, SI_ORDER_ANY);	\
+	DECLARE_MODULE(hname, h_##hname, SI_SUB_KHELP, SI_ORDER_ANY);	\
 	MODULE_VERSION(hname, version)
 
 #define	KHELP_DECLARE_MOD(hname, hdata, hhooks, version)		\

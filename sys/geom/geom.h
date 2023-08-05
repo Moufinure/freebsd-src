@@ -260,6 +260,7 @@ extern int g_debugflags;
 
 /* geom_event.c */
 typedef void g_event_t(void *, int flag);
+struct g_event;
 #define EV_CANCEL	1
 int g_post_event(g_event_t *func, void *arg, int flag, ...);
 int g_waitfor_event(g_event_t *func, void *arg, int flag, ...);
@@ -268,7 +269,8 @@ int g_attr_changed(struct g_provider *pp, const char *attr, int flag);
 int g_media_changed(struct g_provider *pp, int flag);
 int g_media_gone(struct g_provider *pp, int flag);
 void g_orphan_provider(struct g_provider *pp, int error);
-void g_waitidlelock(void);
+struct g_event *g_alloc_event(int flag);
+void g_post_event_ep(g_event_t *func, void *arg, struct g_event *ep, ...);
 
 /* geom_subr.c */
 int g_access(struct g_consumer *cp, int nread, int nwrite, int nexcl);
@@ -430,6 +432,7 @@ int g_is_geom_thread(struct thread *td);
 int gctl_set_param(struct gctl_req *req, const char *param, void const *ptr, int len);
 void gctl_set_param_err(struct gctl_req *req, const char *param, void const *ptr, int len);
 void *gctl_get_param(struct gctl_req *req, const char *param, int *len);
+void *gctl_get_param_flags(struct gctl_req *req, const char *param, int flags, int *len);
 char const *gctl_get_asciiparam(struct gctl_req *req, const char *param);
 void *gctl_get_paraml(struct gctl_req *req, const char *param, int len);
 void *gctl_get_paraml_opt(struct gctl_req *req, const char *param, int len);

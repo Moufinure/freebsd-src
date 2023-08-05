@@ -15,13 +15,13 @@
 #ifndef LLVM_IR_PASSTIMINGINFO_H
 #define LLVM_IR_PASSTIMINGINFO_H
 
-#include "llvm/ADT/Any.h"
-#include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Timer.h"
-#include "llvm/Support/TypeName.h"
 #include <memory>
+#include <utility>
+
 namespace llvm {
 
 class Pass;
@@ -36,11 +36,6 @@ void reportAndResetTimings(raw_ostream *OutStream = nullptr);
 /// Request the timer for this legacy-pass-manager's pass instance.
 Timer *getPassTimer(Pass *);
 
-/// If the user specifies the -time-passes argument on an LLVM tool command line
-/// then the value of this boolean will be true, otherwise false.
-/// This is the storage for the -time-passes option.
-extern bool TimePassesIsEnabled;
-
 /// This class implements -time-passes functionality for new pass manager.
 /// It provides the pass-instrumentation callbacks that measure the pass
 /// execution time. They collect timing info into individual timers as
@@ -52,15 +47,19 @@ class TimePassesHandler {
   /// to all the instance of a given pass) + sequential invocation counter.
   using PassInvocationID = std::pair<StringRef, unsigned>;
 
-  /// A group of all pass-timing timers.
-  TimerGroup TG;
+  /// Groups of timers for passes and analyses.
+  TimerGroup PassTG;
+  TimerGroup AnalysisTG;
 
   using TimerVector = llvm::SmallVector<std::unique_ptr<Timer>, 4>;
   /// Map of timers for pass invocations
   StringMap<TimerVector> TimingData;
 
-  /// Stack of currently active timers.
-  SmallVector<Timer *, 8> TimerStack;
+  /// Currently active pass timer.
+  Timer *ActivePassTimer = nullptr;
+  /// Stack of currently active analysis timers. Analyses can request other
+  /// analyses.
+  SmallVector<Timer *, 8> AnalysisActiveTimerStack;
 
   /// Custom output stream to print timing information into.
   /// By default (== nullptr) we emit time report into the stream created by
@@ -68,9 +67,11 @@ class TimePassesHandler {
   raw_ostream *OutStream = nullptr;
 
   bool Enabled;
+  bool PerRun;
 
 public:
-  TimePassesHandler(bool Enabled = TimePassesIsEnabled);
+  TimePassesHandler();
+  TimePassesHandler(bool Enabled, bool PerRun = false);
 
   /// Destructor handles the print action if it has not been handled before.
   ~TimePassesHandler() { print(); }
@@ -92,14 +93,12 @@ private:
   LLVM_DUMP_METHOD void dump() const;
 
   /// Returns the new timer for each new run of the pass.
-  Timer &getPassTimer(StringRef PassID);
+  Timer &getPassTimer(StringRef PassID, bool IsPass);
 
-  void startTimer(StringRef PassID);
-  void stopTimer(StringRef PassID);
-
-  // Implementation of pass instrumentation callbacks.
-  bool runBeforePass(StringRef PassID);
-  void runAfterPass(StringRef PassID);
+  void startAnalysisTimer(StringRef PassID);
+  void stopAnalysisTimer(StringRef PassID);
+  void startPassTimer(StringRef PassID);
+  void stopPassTimer(StringRef PassID);
 };
 
 } // namespace llvm

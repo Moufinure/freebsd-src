@@ -63,7 +63,6 @@ ENTRY(_setjmp)
 	ret
 END(_setjmp)
 
-	.weak	CNAME(_longjmp)
 ENTRY(_longjmp)
 	movq	%rdi,%rdx
 	/* Restore the mxcsr, but leave exception flags intact. */
@@ -91,3 +90,5 @@ ENTRY(_longjmp)
 1:	movq	%rcx,0(%rsp)
 	ret
 END(_longjmp)
+
+	.section .note.GNU-stack,"",%progbits

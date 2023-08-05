@@ -166,6 +166,8 @@ extern vm_offset_t virtual_end;
 #define	pmap_page_is_mapped(m)	(!TAILQ_EMPTY(&(m)->md.pv_list))
 #define	pmap_page_is_write_mapped(m)	(((m)->a.flags & PGA_WRITEABLE) != 0)
 
+#define	pmap_vm_page_alloc_check(m)
+
 void pmap_bootstrap(void);
 void *pmap_mapdev(vm_paddr_t, vm_size_t);
 void *pmap_mapdev_attr(vm_paddr_t, vm_size_t, vm_memattr_t);
@@ -182,12 +184,19 @@ void pmap_flush_pvcache(vm_page_t m);
 int pmap_emulate_modified(pmap_t pmap, vm_offset_t va);
 void pmap_page_set_memattr(vm_page_t, vm_memattr_t);
 int pmap_change_attr(vm_offset_t, vm_size_t, vm_memattr_t);
+#define	pmap_map_delete(pmap, sva, eva)	pmap_remove(pmap, sva, eva)
 
 static inline int
 pmap_vmspace_copy(pmap_t dst_pmap __unused, pmap_t src_pmap __unused)
 {
 
 	return (0);
+}
+
+static inline bool
+pmap_ps_enabled(pmap_t pmap __unused)
+{
+	return (false);
 }
 
 #endif				/* _KERNEL */

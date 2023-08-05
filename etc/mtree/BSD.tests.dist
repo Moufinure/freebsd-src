@@ -62,6 +62,8 @@
         ..
         test
         ..
+        timeout
+        ..
     ..
     cddl
         lib
@@ -263,6 +265,8 @@
         rc.d
         ..
     ..
+    examples
+    ..
     games
     ..
     gnu
@@ -404,6 +408,8 @@
         ..
         libsbuf
         ..
+        libsysdecode
+        ..
         libthr
             dlopen
             ..
@@ -418,6 +424,8 @@
     libexec
         atf
             atf-check
+            ..
+            atf-pytest-wrapper
             ..
             atf-sh
             ..
@@ -438,7 +446,11 @@
         ..
         ifconfig
         ..
+        md5
+        ..
         mdconfig
+        ..
+        newfs_msdos
         ..
         nvmecontrol
         ..
@@ -797,6 +809,8 @@
         mqueue
         ..
         net
+            routing
+            ..
         ..
         netgraph
         ..
@@ -809,6 +823,8 @@
         netipsec
             tunnel
             ..
+        ..
+        netlink
         ..
         netmap
         ..
@@ -864,9 +880,13 @@
         ..
         vm
         ..
+        vmm
+        ..
     ..
     usr.bin
         apply
+        ..
+        asa
         ..
         awk
         ..
@@ -992,11 +1012,15 @@
         ..
         diff
         ..
+        diff3
+        ..
         dirname
         ..
         du
         ..
         file2c
+        ..
+        file
         ..
         find
         ..
@@ -1032,6 +1056,8 @@
         ..
         mkimg
         ..
+        mktemp
+        ..
         ncal
         ..
         opensm
@@ -1043,6 +1069,8 @@
         printf
         ..
         procstat
+        ..
+        renice
         ..
         rs
         ..
@@ -1056,17 +1084,21 @@
         ..
         soelim
         ..
+        sort
+        ..
+        split
+        ..
         stat
         ..
         tail
         ..
         tar
         ..
-        timeout
-        ..
         tr
         ..
         truncate
+        ..
+        tsort
         ..
         units
         ..
@@ -1093,6 +1125,8 @@
     ..
     usr.sbin
         chown
+        ..
+        daemon
         ..
         etcupdate
         ..

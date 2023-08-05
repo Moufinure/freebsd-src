@@ -10,7 +10,7 @@
 
 namespace scudo {
 
-HybridMutex PackedCounterArray::Mutex = {};
-uptr PackedCounterArray::StaticBuffer[1024];
+HybridMutex RegionPageMap::Mutex = {};
+uptr RegionPageMap::StaticBuffer[RegionPageMap::StaticBufferCount];
 
 } // namespace scudo

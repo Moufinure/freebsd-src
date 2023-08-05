@@ -24,10 +24,7 @@ CONFS=	DAEMON \
 	ctld \
 	ddb \
 	defaultroute \
-	devd \
 	devfs \
-	devmatch \
-	dhclient \
 	dmesg \
 	dumpon \
 	fsck \
@@ -36,7 +33,7 @@ CONFS=	DAEMON \
 	geli2 \
 	gptboot \
 	growfs \
-	gssd \
+	growfs_fstab \
 	hostid \
 	hostid_save \
 	hostname \
@@ -80,6 +77,7 @@ CONFS=	DAEMON \
 	pf \
 	pflog \
 	pfsync \
+	powerd \
 	ppp \
 	pppoed \
 	pwcheck \
@@ -87,7 +85,6 @@ CONFS=	DAEMON \
 	random \
 	rarpd \
 	rctl \
-	resolv \
 	root \
 	route6d \
 	routing \
@@ -106,13 +103,31 @@ CONFS=	DAEMON \
 	swap \
 	swaplate \
 	sysctl \
+	sysctl_lastload \
 	syslogd \
 	sysvipc \
 	tmp \
 	ugidfw \
 	${_utx} \
 	var \
+	var_run \
 	watchdogd
+
+CONFGROUPS+=		DEVD
+DEVD=			devd
+DEVDPACKAGE=		devd
+
+CONFGROUPS+=		DEVMATCH
+DEVMATCH=		devmatch
+DEVMATCHPACKAGE=	devmatch
+
+CONFGROUPS+=		DHCLIENT
+DHCLIENT=		dhclient
+DHCLIENTPACKAGE=	dhclient
+
+CONFGROUPS+=		RESOLVCONF
+RESOLVCONF=		resolv
+RESOLVCONFPACKAGE=	resolvconf
 
 .if ${MK_NIS} != "no"
 CONFS+=	ypbind \
@@ -134,10 +149,6 @@ ACCTPACKAGE=	acct
 CONFGROUPS+=	ACPI
 ACPI=		power_profile
 ACPIPACKAGE=	acpi
-.endif
-
-.if ${MK_ACPI} != "no" || ${MK_APM} != "no"
-CONFS+=		powerd
 .endif
 
 .if ${MK_APM} != "no"
@@ -193,6 +204,12 @@ CONFS+=		ccd
 
 .if ${MK_FTP} != "no"
 CONFS+=		ftpd
+.endif
+
+.if ${MK_GSSAPI} != "no"
+CONFGROUPS+=	GSSD
+GSSD=		gssd
+GSSDPACKAGE=	kerberos
 .endif
 
 .if ${MK_HAST} != "no"
@@ -323,7 +340,9 @@ CONFGROUPS+=	ZFS
 ZFS+=		zfs
 ZFS+=		zfsbe
 ZFS+=		zfsd
+ZFS+=		zfskeys
 ZFS+=		zpool
+ZFS+=		zpoolreguid
 ZFS+=		zvol
 ZFSPACKAGE=	rc
 .endif

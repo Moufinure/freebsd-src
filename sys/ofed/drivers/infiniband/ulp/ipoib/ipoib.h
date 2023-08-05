@@ -117,12 +117,11 @@ enum {
 	IPOIB_ENCAP_LEN		  = 4,
 	IPOIB_HEADER_LEN	  = IPOIB_ENCAP_LEN + INFINIBAND_ALEN,
 	IPOIB_UD_MAX_MTU	  = 4 * 1024,
-//	IPOIB_UD_RX_SG		  = (IPOIB_UD_MAX_MTU / MJUMPAGESIZE),
-	IPOIB_UD_RX_SG		  = 2,
+	IPOIB_UD_RX_SG		  = 2,	/* packet header and one cluster */
 	IPOIB_UD_TX_SG		  = (IPOIB_UD_MAX_MTU / MCLBYTES) + 2,
 	IPOIB_CM_MAX_MTU	  = (64 * 1024),
 	IPOIB_CM_TX_SG		  = (IPOIB_CM_MAX_MTU / MCLBYTES) + 2,
-	IPOIB_CM_RX_SG		  = (IPOIB_CM_MAX_MTU / MJUMPAGESIZE),
+	IPOIB_CM_RX_SG		  = (IPOIB_CM_MAX_MTU / MCLBYTES) + 2,
 	IPOIB_RX_RING_SIZE	  = 256,
 	IPOIB_TX_RING_SIZE	  = 128,
 	IPOIB_MAX_RX_SG		  = MAX(IPOIB_CM_RX_SG, IPOIB_UD_RX_SG),
@@ -460,7 +459,7 @@ void ipoib_reap_ah(struct work_struct *work);
 
 void ipoib_mark_paths_invalid(struct ipoib_dev_priv *priv);
 void ipoib_flush_paths(struct ipoib_dev_priv *priv);
-struct ipoib_dev_priv *ipoib_intf_alloc(const char *format);
+struct ipoib_dev_priv *ipoib_intf_alloc(const char *format, struct ib_device *ca);
 
 int ipoib_ib_dev_init(struct ipoib_dev_priv *priv, struct ib_device *ca,
     int port);
@@ -529,7 +528,7 @@ int ipoib_poll_tx(struct ipoib_dev_priv *priv, bool do_start);
 
 void ipoib_dma_unmap_rx(struct ipoib_dev_priv *priv, struct ipoib_rx_buf *rx_req);
 void ipoib_dma_mb(struct ipoib_dev_priv *priv, struct mbuf *mb, unsigned int length);
-struct mbuf *ipoib_alloc_map_mb(struct ipoib_dev_priv *priv, struct ipoib_rx_buf *rx_req, int align, int size);
+struct mbuf *ipoib_alloc_map_mb(struct ipoib_dev_priv *priv, struct ipoib_rx_buf *rx_req, int align, int size, int max_frags);
 
 
 void ipoib_set_ethtool_ops(struct ifnet *dev);

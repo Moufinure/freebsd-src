@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  * 
  * Copyright (c) 2020 Greg V <greg@unrelenting.technology>
  *
@@ -25,8 +25,8 @@
  * SUCH DAMAGE.
  */
 
-#ifndef	_FPU_API_H_
-#define	_FPU_API_H_
+#ifndef	_LINUXKPI_ASM_FPU_API_H_
+#define	_LINUXKPI_ASM_FPU_API_H_
 
 #if defined(__aarch64__) || defined(__amd64__) || defined(__i386__)
 
@@ -36,7 +36,7 @@ extern struct fpu_kern_ctx *__lkpi_fpu_ctx;
 extern unsigned int __lkpi_fpu_ctx_level;
 
 static inline void
-kernel_fpu_begin()
+kernel_fpu_begin(void)
 {
 	if (__lkpi_fpu_ctx_level++ == 0) {
 		fpu_kern_enter(curthread, __lkpi_fpu_ctx, FPU_KERN_NORMAL);
@@ -44,7 +44,7 @@ kernel_fpu_begin()
 }
 
 static inline void
-kernel_fpu_end()
+kernel_fpu_end(void)
 {
 	if (--__lkpi_fpu_ctx_level == 0) {
 		fpu_kern_leave(curthread, __lkpi_fpu_ctx);
@@ -54,15 +54,15 @@ kernel_fpu_end()
 #else
 
 static inline void
-kernel_fpu_begin()
+kernel_fpu_begin(void)
 {
 }
 
 static inline void
-kernel_fpu_end()
+kernel_fpu_end(void)
 {
 }
 
 #endif
 
-#endif /* _FPU_API_H_ */
+#endif /* _LINUXKPI_ASM_FPU_API_H_ */

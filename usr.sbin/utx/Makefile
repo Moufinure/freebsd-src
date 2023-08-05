@@ -1,5 +1,7 @@
 # $FreeBSD$
 
+PACKAGE=	acct
+
 PROG=	utx
 MAN=	utx.8
 

@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2000, 2001 Michael Smith
  * Copyright (c) 2000 BSDi
@@ -336,7 +336,7 @@ mly_attach(device_t dev)
     if (error != 0)
 	mly_free(sc);
     else
-	gone_in_dev(dev, 13, "mly(4) removed");
+	gone_in_dev(dev, 14, "mly(4) removed");
     return(error);
 }
 

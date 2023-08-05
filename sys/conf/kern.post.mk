@@ -50,6 +50,10 @@ MKMODULESENV+=	SAN_CFLAGS="${SAN_CFLAGS}"
 MKMODULESENV+=	GCOV_CFLAGS="${GCOV_CFLAGS}"
 .endif
 
+.if !empty(COMPAT_FREEBSD32_ENABLED)
+MKMODULESENV+=	COMPAT_FREEBSD32_ENABLED="yes"
+.endif
+
 # Allow overriding the kernel debug directory, so kernel and user debug may be
 # installed in different directories. Setting it to "" restores the historical
 # behavior of installing debug files in the kernel directory.
@@ -345,8 +349,6 @@ ${__obj}: ${OBJS_DEPEND_GUESS.${__obj}}
 
 .depend: .PRECIOUS ${SRCS}
 
-_MAP_DEBUG_PREFIX= yes
-
 _ILINKS= machine
 .if ${MACHINE} != ${MACHINE_CPUARCH} && ${MACHINE} != "arm64"
 _ILINKS+= ${MACHINE_CPUARCH}
@@ -361,12 +363,10 @@ _ILINKS+= x86
 .if !exists(${.OBJDIR}/${_link})
 ${SRCS} ${DEPENDOBJS}: ${_link}
 .endif
-.if defined(_MAP_DEBUG_PREFIX)
 .if ${_link} == "machine"
 CFLAGS+= -fdebug-prefix-map=./machine=${SYSDIR}/${MACHINE}/include
 .else
 CFLAGS+= -fdebug-prefix-map=./${_link}=${SYSDIR}/${_link}/include
-.endif
 .endif
 .endfor
 

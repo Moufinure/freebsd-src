@@ -580,7 +580,7 @@ struct sadb_msghdr {
 	int extlen[SADB_EXT_MAX + 1];
 };
 
-static struct supported_ealgs {
+static const struct supported_ealgs {
 	int sadb_alg;
 	const struct enc_xform *xform;
 } supported_ealgs[] = {
@@ -591,7 +591,7 @@ static struct supported_ealgs {
 	{ SADB_X_EALG_AESGMAC,		&enc_xform_aes_nist_gmac },
 };
 
-static struct supported_aalgs {
+static const struct supported_aalgs {
 	int sadb_alg;
 	const struct auth_hash *xform;
 } supported_aalgs[] = {
@@ -605,7 +605,7 @@ static struct supported_aalgs {
 	{ SADB_X_AALG_AES256GMAC,	&auth_hash_nist_gmac_aes_256 },
 };
 
-static struct supported_calgs {
+static const struct supported_calgs {
 	int sadb_alg;
 	const struct comp_algo *xform;
 } supported_calgs[] = {
@@ -802,6 +802,25 @@ key_havesp(u_int dir)
 
 	return (dir == IPSEC_DIR_INBOUND || dir == IPSEC_DIR_OUTBOUND ?
 		TAILQ_FIRST(&V_sptree[dir]) != NULL : 1);
+}
+
+/*
+ * Allocate a single mbuf with a buffer of the desired length.  The buffer is
+ * pre-zeroed to help ensure that uninitialized pad bytes are not leaked.
+ */
+static struct mbuf *
+key_mget(u_int len)
+{
+	struct mbuf *m;
+
+	KASSERT(len <= MCLBYTES,
+	    ("%s: invalid buffer length %u", __func__, len));
+
+	m = m_get2(len, M_NOWAIT, MT_DATA, M_PKTHDR);
+	if (m == NULL)
+		return (NULL);
+	memset(mtod(m, void *), 0, len);
+	return (m);
 }
 
 /* %%% IPsec policy management */
@@ -2315,14 +2334,8 @@ key_spddelete2(struct socket *so, struct mbuf *m,
 	/* create new sadb_msg to reply. */
 	len = PFKEY_ALIGN8(sizeof(struct sadb_msg));
 
-	MGETHDR(n, M_NOWAIT, MT_DATA);
-	if (n && len > MHLEN) {
-		if (!(MCLGET(n, M_NOWAIT))) {
-			m_freem(n);
-			n = NULL;
-		}
-	}
-	if (!n)
+	n = key_mget(len);
+	if (n == NULL)
 		return key_senderror(so, m, ENOBUFS);
 
 	n->m_len = len;
@@ -2932,13 +2945,13 @@ key_newsav(const struct sadb_msghdr *mhp, struct secasindex *saidx,
 		*errp = ENOBUFS;
 		goto done;
 	}
-	sav->lock = malloc(sizeof(struct mtx), M_IPSEC_MISC,
+	sav->lock = malloc(sizeof(struct rmlock), M_IPSEC_MISC,
 	    M_NOWAIT | M_ZERO);
 	if (sav->lock == NULL) {
 		*errp = ENOBUFS;
 		goto done;
 	}
-	mtx_init(sav->lock, "ipsec association", NULL, MTX_DEF);
+	rm_init(sav->lock, "ipsec association");
 	sav->lft_c = uma_zalloc_pcpu(V_key_lft_zone, M_NOWAIT);
 	if (sav->lft_c == NULL) {
 		*errp = ENOBUFS;
@@ -3027,7 +3040,7 @@ done:
 	if (*errp != 0) {
 		if (sav != NULL) {
 			if (sav->lock != NULL) {
-				mtx_destroy(sav->lock);
+				rm_destroy(sav->lock);
 				free(sav->lock, M_IPSEC_MISC);
 			}
 			if (sav->lft_c != NULL)
@@ -3073,6 +3086,7 @@ key_cleansav(struct secasvar *sav)
 		sav->key_enc = NULL;
 	}
 	if (sav->replay != NULL) {
+		mtx_destroy(&sav->replay->lock);
 		if (sav->replay->bitmap != NULL)
 			free(sav->replay->bitmap, M_IPSEC_MISC);
 		free(sav->replay, M_IPSEC_MISC);
@@ -3107,7 +3121,7 @@ key_delsav(struct secasvar *sav)
 	 */
 	key_cleansav(sav);
 	if ((sav->flags & SADB_X_EXT_F_CLONED) == 0) {
-		mtx_destroy(sav->lock);
+		rm_destroy(sav->lock);
 		free(sav->lock, M_IPSEC_MISC);
 		uma_zfree_pcpu(V_key_lft_zone, sav->lft_c);
 	}
@@ -3238,7 +3252,7 @@ reset:
 		 * key_update() holds reference to this SA,
 		 * so it won't be deleted in meanwhile.
 		 */
-		SECASVAR_LOCK(sav);
+		SECASVAR_WLOCK(sav);
 		tmp = sav->lft_h;
 		sav->lft_h = lft_h;
 		lft_h = tmp;
@@ -3246,7 +3260,7 @@ reset:
 		tmp = sav->lft_s;
 		sav->lft_s = lft_s;
 		lft_s = tmp;
-		SECASVAR_UNLOCK(sav);
+		SECASVAR_WUNLOCK(sav);
 		if (lft_h != NULL)
 			free(lft_h, M_IPSEC_MISC);
 		if (lft_s != NULL)
@@ -3335,6 +3349,7 @@ key_setsaval(struct secasvar *sav, const struct sadb_msghdr *mhp)
 			error = ENOBUFS;
 			goto fail;
 		}
+		mtx_init(&sav->replay->lock, "ipsec replay", NULL, MTX_DEF);
 
 		if (replay != 0) {
 			/* number of 32b blocks to be allocated */
@@ -3552,6 +3567,8 @@ key_setdumpsa(struct secasvar *sav, uint8_t type, uint8_t satype,
 	};
 	uint32_t replay_count;
 
+	SECASVAR_RLOCK_TRACKER;
+
 	m = key_setsadbmsg(type, 0, satype, seq, pid, sav->refcnt);
 	if (m == NULL)
 		goto fail;
@@ -3566,16 +3583,16 @@ key_setdumpsa(struct secasvar *sav, uint8_t type, uint8_t satype,
 				goto fail;
 			break;
 
-		case SADB_X_EXT_SA2:
-			SECASVAR_LOCK(sav);
+		case SADB_X_EXT_SA2: {
+			SECASVAR_RLOCK(sav);
 			replay_count = sav->replay ? sav->replay->count : 0;
-			SECASVAR_UNLOCK(sav);
+			SECASVAR_RUNLOCK(sav);
 			m = key_setsadbxsa2(sav->sah->saidx.mode, replay_count,
 					sav->sah->saidx.reqid);
 			if (!m)
 				goto fail;
 			break;
-
+		}
 		case SADB_X_EXT_SA_REPLAY:
 			if (sav->replay == NULL ||
 			    sav->replay->wsize <= UINT8_MAX)
@@ -3749,14 +3766,8 @@ key_setsadbmsg(u_int8_t type, u_int16_t tlen, u_int8_t satype, u_int32_t seq,
 	len = PFKEY_ALIGN8(sizeof(struct sadb_msg));
 	if (len > MCLBYTES)
 		return NULL;
-	MGETHDR(m, M_NOWAIT, MT_DATA);
-	if (m && len > MHLEN) {
-		if (!(MCLGET(m, M_NOWAIT))) {
-			m_freem(m);
-			m = NULL;
-		}
-	}
-	if (!m)
+	m = key_mget(len);
+	if (m == NULL)
 		return NULL;
 	m->m_pkthdr.len = m->m_len = len;
 	m->m_next = NULL;
@@ -4477,6 +4488,8 @@ key_flush_sad(time_t now)
 	struct secashead *sah, *nextsah;
 	struct secasvar *sav, *nextsav;
 
+	SECASVAR_RLOCK_TRACKER;
+
 	LIST_INIT(&drainq);
 	LIST_INIT(&hexpireq);
 	LIST_INIT(&sexpireq);
@@ -4502,13 +4515,13 @@ key_flush_sad(time_t now)
 			/* lifetimes aren't specified */
 			if (sav->lft_h == NULL)
 				continue;
-			SECASVAR_LOCK(sav);
+			SECASVAR_RLOCK(sav);
 			/*
 			 * Check again with lock held, because it may
 			 * be updated by SADB_UPDATE.
 			 */
 			if (sav->lft_h == NULL) {
-				SECASVAR_UNLOCK(sav);
+				SECASVAR_RUNLOCK(sav);
 				continue;
 			}
 			/*
@@ -4525,7 +4538,7 @@ key_flush_sad(time_t now)
 			    now - sav->firstused > sav->lft_h->usetime) ||
 			    (sav->lft_h->bytes != 0 && counter_u64_fetch(
 			        sav->lft_c_bytes) > sav->lft_h->bytes)) {
-				SECASVAR_UNLOCK(sav);
+				SECASVAR_RUNLOCK(sav);
 				SAV_ADDREF(sav);
 				LIST_INSERT_HEAD(&hexpireq, sav, drainq);
 				continue;
@@ -4542,12 +4555,12 @@ key_flush_sad(time_t now)
 			    (sav->replay != NULL) && (
 			    (sav->replay->count > UINT32_80PCT) ||
 			    (sav->replay->last > UINT32_80PCT))))) {
-				SECASVAR_UNLOCK(sav);
+				SECASVAR_RUNLOCK(sav);
 				SAV_ADDREF(sav);
 				LIST_INSERT_HEAD(&sexpireq, sav, drainq);
 				continue;
 			}
-			SECASVAR_UNLOCK(sav);
+			SECASVAR_RUNLOCK(sav);
 		}
 	}
 	SAHTREE_RUNLOCK();
@@ -4739,7 +4752,7 @@ key_timehandler(void *arg)
 }
 
 u_long
-key_random()
+key_random(void)
 {
 	u_long value;
 
@@ -4931,14 +4944,8 @@ key_getspi(struct socket *so, struct mbuf *m, const struct sadb_msghdr *mhp)
 	len = PFKEY_ALIGN8(sizeof(struct sadb_msg)) +
 	    PFKEY_ALIGN8(sizeof(struct sadb_sa));
 
-	MGETHDR(n, M_NOWAIT, MT_DATA);
-	if (len > MHLEN) {
-		if (!(MCLGET(n, M_NOWAIT))) {
-			m_freem(n);
-			n = NULL;
-		}
-	}
-	if (!n) {
+	n = key_mget(len);
+	if (n == NULL) {
 		error = ENOBUFS;
 		goto fail;
 	}
@@ -5023,7 +5030,7 @@ key_do_getnewspi(struct sadb_spirange *spirange, struct secasindex *saidx)
 	}
 
 	if (min == max) {
-		if (!key_checkspidup(htonl(min))) {
+		if (key_checkspidup(htonl(min))) {
 			ipseclog((LOG_DEBUG, "%s: SPI %u exists already.\n",
 			    __func__, min));
 			return 0;
@@ -5245,11 +5252,11 @@ key_updateaddresses(struct socket *so, struct mbuf *m,
 	 * isnew == 0 -> we use the same @sah, that was used by @sav,
 	 *	and we use its reference for @newsav.
 	 */
-	SECASVAR_LOCK(sav);
+	SECASVAR_WLOCK(sav);
 	/* XXX: replace cntr with pointer? */
 	newsav->cntr = sav->cntr;
 	sav->flags |= SADB_X_EXT_F_CLONED;
-	SECASVAR_UNLOCK(sav);
+	SECASVAR_WUNLOCK(sav);
 
 	SAHTREE_WUNLOCK();
 
@@ -6377,7 +6384,7 @@ key_getsizes_ah(const struct auth_hash *ah, int alg, u_int16_t* min,
  * XXX reorder combinations by preference
  */
 static struct mbuf *
-key_getcomb_ah()
+key_getcomb_ah(void)
 {
 	const struct auth_hash *algo;
 	struct sadb_comb *comb;
@@ -6434,7 +6441,7 @@ key_getcomb_ah()
  * XXX reorder combinations by preference
  */
 static struct mbuf *
-key_getcomb_ipcomp()
+key_getcomb_ipcomp(void)
 {
 	const struct comp_algo *algo;
 	struct sadb_comb *comb;
@@ -7142,14 +7149,8 @@ key_register(struct socket *so, struct mbuf *m, const struct sadb_msghdr *mhp)
 	if (len > MCLBYTES)
 		return key_senderror(so, m, ENOBUFS);
 
-	MGETHDR(n, M_NOWAIT, MT_DATA);
-	if (n != NULL && len > MHLEN) {
-		if (!(MCLGET(n, M_NOWAIT))) {
-			m_freem(n);
-			n = NULL;
-		}
-	}
-	if (!n)
+	n = key_mget(len);
+	if (n == NULL)
 		return key_senderror(so, m, ENOBUFS);
 
 	n->m_pkthdr.len = n->m_len = len;
@@ -7265,6 +7266,8 @@ key_expire(struct secasvar *sav, int hard)
 	int error, len;
 	uint8_t satype;
 
+	SECASVAR_RLOCK_TRACKER;
+
 	IPSEC_ASSERT (sav != NULL, ("null sav"));
 	IPSEC_ASSERT (sav->sah != NULL, ("null sa header"));
 
@@ -7291,9 +7294,9 @@ key_expire(struct secasvar *sav, int hard)
 	m_cat(result, m);
 
 	/* create SA extension */
-	SECASVAR_LOCK(sav);
+	SECASVAR_RLOCK(sav);
 	replay_count = sav->replay ? sav->replay->count : 0;
-	SECASVAR_UNLOCK(sav);
+	SECASVAR_RUNLOCK(sav);
 
 	m = key_setsadbxsa2(sav->sah->saidx.mode, replay_count,
 			sav->sah->saidx.reqid);
@@ -7778,14 +7781,8 @@ key_parse(struct mbuf *m, struct socket *so)
 	if (m->m_next) {
 		struct mbuf *n;
 
-		MGETHDR(n, M_NOWAIT, MT_DATA);
-		if (n && m->m_pkthdr.len > MHLEN) {
-			if (!(MCLGET(n, M_NOWAIT))) {
-				m_free(n);
-				n = NULL;
-			}
-		}
-		if (!n) {
+		n = key_mget(m->m_pkthdr.len);
+		if (n == NULL) {
 			m_freem(m);
 			return ENOBUFS;
 		}

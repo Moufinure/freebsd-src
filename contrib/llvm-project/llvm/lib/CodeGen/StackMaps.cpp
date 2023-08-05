@@ -45,6 +45,14 @@ static cl::opt<int> StackMapVersion(
 
 const char *StackMaps::WSMP = "Stack Maps: ";
 
+static uint64_t getConstMetaVal(const MachineInstr &MI, unsigned Idx) {
+  assert(MI.getOperand(Idx).isImm() &&
+         MI.getOperand(Idx).getImm() == StackMaps::ConstantOp);
+  const auto &MO = MI.getOperand(Idx + 1);
+  assert(MO.isImm());
+  return MO.getImm();
+}
+
 StackMapOpers::StackMapOpers(const MachineInstr *MI)
   : MI(MI) {
   assert(getVarIdx() <= MI->getNumOperands() &&
@@ -83,9 +91,104 @@ unsigned PatchPointOpers::getNextScratchIdx(unsigned StartIdx) const {
   return ScratchIdx;
 }
 
+unsigned StatepointOpers::getNumGcMapEntriesIdx() {
+  // Take index of num of allocas and skip all allocas records.
+  unsigned CurIdx = getNumAllocaIdx();
+  unsigned NumAllocas = getConstMetaVal(*MI, CurIdx - 1);
+  CurIdx++;
+  while (NumAllocas--)
+    CurIdx = StackMaps::getNextMetaArgIdx(MI, CurIdx);
+  return CurIdx + 1; // skip <StackMaps::ConstantOp>
+}
+
+unsigned StatepointOpers::getNumAllocaIdx() {
+  // Take index of num of gc ptrs and skip all gc ptr records.
+  unsigned CurIdx = getNumGCPtrIdx();
+  unsigned NumGCPtrs = getConstMetaVal(*MI, CurIdx - 1);
+  CurIdx++;
+  while (NumGCPtrs--)
+    CurIdx = StackMaps::getNextMetaArgIdx(MI, CurIdx);
+  return CurIdx + 1; // skip <StackMaps::ConstantOp>
+}
+
+unsigned StatepointOpers::getNumGCPtrIdx() {
+  // Take index of num of deopt args and skip all deopt records.
+  unsigned CurIdx = getNumDeoptArgsIdx();
+  unsigned NumDeoptArgs = getConstMetaVal(*MI, CurIdx - 1);
+  CurIdx++;
+  while (NumDeoptArgs--) {
+    CurIdx = StackMaps::getNextMetaArgIdx(MI, CurIdx);
+  }
+  return CurIdx + 1; // skip <StackMaps::ConstantOp>
+}
+
+int StatepointOpers::getFirstGCPtrIdx() {
+  unsigned NumGCPtrsIdx = getNumGCPtrIdx();
+  unsigned NumGCPtrs = getConstMetaVal(*MI, NumGCPtrsIdx - 1);
+  if (NumGCPtrs == 0)
+    return -1;
+  ++NumGCPtrsIdx; // skip <num gc ptrs>
+  assert(NumGCPtrsIdx < MI->getNumOperands());
+  return (int)NumGCPtrsIdx;
+}
+
+unsigned StatepointOpers::getGCPointerMap(
+    SmallVectorImpl<std::pair<unsigned, unsigned>> &GCMap) {
+  unsigned CurIdx = getNumGcMapEntriesIdx();
+  unsigned GCMapSize = getConstMetaVal(*MI, CurIdx - 1);
+  CurIdx++;
+  for (unsigned N = 0; N < GCMapSize; ++N) {
+    unsigned B = MI->getOperand(CurIdx++).getImm();
+    unsigned D = MI->getOperand(CurIdx++).getImm();
+    GCMap.push_back(std::make_pair(B, D));
+  }
+
+  return GCMapSize;
+}
+
+bool StatepointOpers::isFoldableReg(Register Reg) const {
+  unsigned FoldableAreaStart = getVarIdx();
+  for (const MachineOperand &MO : MI->uses()) {
+    if (MI->getOperandNo(&MO) >= FoldableAreaStart)
+      break;
+    if (MO.isReg() && MO.getReg() == Reg)
+      return false;
+  }
+  return true;
+}
+
+bool StatepointOpers::isFoldableReg(const MachineInstr *MI, Register Reg) {
+  if (MI->getOpcode() != TargetOpcode::STATEPOINT)
+    return false;
+  return StatepointOpers(MI).isFoldableReg(Reg);
+}
+
 StackMaps::StackMaps(AsmPrinter &AP) : AP(AP) {
   if (StackMapVersion != 3)
     llvm_unreachable("Unsupported stackmap version!");
+}
+
+unsigned StackMaps::getNextMetaArgIdx(const MachineInstr *MI, unsigned CurIdx) {
+  assert(CurIdx < MI->getNumOperands() && "Bad meta arg index");
+  const auto &MO = MI->getOperand(CurIdx);
+  if (MO.isImm()) {
+    switch (MO.getImm()) {
+    default:
+      llvm_unreachable("Unrecognized operand type.");
+    case StackMaps::DirectMemRefOp:
+      CurIdx += 2;
+      break;
+    case StackMaps::IndirectMemRefOp:
+      CurIdx += 3;
+      break;
+    case StackMaps::ConstantOp:
+      ++CurIdx;
+      break;
+    }
+  }
+  ++CurIdx;
+  assert(CurIdx < MI->getNumOperands() && "points past operand list");
+  return CurIdx;
 }
 
 /// Go up the super-register chain until we hit a valid dwarf register number.
@@ -148,7 +251,13 @@ StackMaps::parseOperand(MachineInstr::const_mop_iterator MOI,
     if (MOI->isImplicit())
       return ++MOI;
 
-    assert(Register::isPhysicalRegister(MOI->getReg()) &&
+    if (MOI->isUndef()) {
+      // Record `undef` register as constant. Use same value as ISel uses.
+      Locs.emplace_back(Location::Constant, sizeof(int64_t), 0, 0xFEFEFEFE);
+      return ++MOI;
+    }
+
+    assert(MOI->getReg().isPhysical() &&
            "Virtreg operands should have been rewritten before now.");
     const TargetRegisterClass *RC = TRI->getMinimalPhysRegClass(MOI->getReg());
     assert(!MOI->getSubReg() && "Physical subreg still around.");
@@ -273,7 +382,7 @@ StackMaps::parseRegisterLiveOutMask(const uint32_t *Mask) const {
   });
 
   for (auto I = LiveOuts.begin(), E = LiveOuts.end(); I != E; ++I) {
-    for (auto II = std::next(I); II != E; ++II) {
+    for (auto *II = std::next(I); II != E; ++II) {
       if (I->DwarfRegNum != II->DwarfRegNum) {
         // Skip all the now invalid entries.
         I = --II;
@@ -286,12 +395,80 @@ StackMaps::parseRegisterLiveOutMask(const uint32_t *Mask) const {
     }
   }
 
-  LiveOuts.erase(
-      llvm::remove_if(LiveOuts,
-                      [](const LiveOutReg &LO) { return LO.Reg == 0; }),
-      LiveOuts.end());
+  llvm::erase_if(LiveOuts, [](const LiveOutReg &LO) { return LO.Reg == 0; });
 
   return LiveOuts;
+}
+
+// See statepoint MI format description in StatepointOpers' class comment
+// in include/llvm/CodeGen/StackMaps.h
+void StackMaps::parseStatepointOpers(const MachineInstr &MI,
+                                     MachineInstr::const_mop_iterator MOI,
+                                     MachineInstr::const_mop_iterator MOE,
+                                     LocationVec &Locations,
+                                     LiveOutVec &LiveOuts) {
+  LLVM_DEBUG(dbgs() << "record statepoint : " << MI << "\n");
+  StatepointOpers SO(&MI);
+  MOI = parseOperand(MOI, MOE, Locations, LiveOuts); // CC
+  MOI = parseOperand(MOI, MOE, Locations, LiveOuts); // Flags
+  MOI = parseOperand(MOI, MOE, Locations, LiveOuts); // Num Deopts
+
+  // Record Deopt Args.
+  unsigned NumDeoptArgs = Locations.back().Offset;
+  assert(Locations.back().Type == Location::Constant);
+  assert(NumDeoptArgs == SO.getNumDeoptArgs());
+
+  while (NumDeoptArgs--)
+    MOI = parseOperand(MOI, MOE, Locations, LiveOuts);
+
+  // Record gc base/derived pairs
+  assert(MOI->isImm() && MOI->getImm() == StackMaps::ConstantOp);
+  ++MOI;
+  assert(MOI->isImm());
+  unsigned NumGCPointers = MOI->getImm();
+  ++MOI;
+  if (NumGCPointers) {
+    // Map logical index of GC ptr to MI operand index.
+    SmallVector<unsigned, 8> GCPtrIndices;
+    unsigned GCPtrIdx = (unsigned)SO.getFirstGCPtrIdx();
+    assert((int)GCPtrIdx != -1);
+    assert(MOI - MI.operands_begin() == GCPtrIdx + 0LL);
+    while (NumGCPointers--) {
+      GCPtrIndices.push_back(GCPtrIdx);
+      GCPtrIdx = StackMaps::getNextMetaArgIdx(&MI, GCPtrIdx);
+    }
+
+    SmallVector<std::pair<unsigned, unsigned>, 8> GCPairs;
+    unsigned NumGCPairs = SO.getGCPointerMap(GCPairs);
+    (void)NumGCPairs;
+    LLVM_DEBUG(dbgs() << "NumGCPairs = " << NumGCPairs << "\n");
+
+    auto MOB = MI.operands_begin();
+    for (auto &P : GCPairs) {
+      assert(P.first < GCPtrIndices.size() && "base pointer index not found");
+      assert(P.second < GCPtrIndices.size() &&
+             "derived pointer index not found");
+      unsigned BaseIdx = GCPtrIndices[P.first];
+      unsigned DerivedIdx = GCPtrIndices[P.second];
+      LLVM_DEBUG(dbgs() << "Base : " << BaseIdx << " Derived : " << DerivedIdx
+                        << "\n");
+      (void)parseOperand(MOB + BaseIdx, MOE, Locations, LiveOuts);
+      (void)parseOperand(MOB + DerivedIdx, MOE, Locations, LiveOuts);
+    }
+
+    MOI = MOB + GCPtrIdx;
+  }
+
+  // Record gc allocas
+  assert(MOI < MOE);
+  assert(MOI->isImm() && MOI->getImm() == StackMaps::ConstantOp);
+  ++MOI;
+  unsigned NumAllocas = MOI->getImm();
+  ++MOI;
+  while (NumAllocas--) {
+    MOI = parseOperand(MOI, MOE, Locations, LiveOuts);
+    assert(MOI < MOE);
+  }
 }
 
 void StackMaps::recordStackMapOpers(const MCSymbol &MILabel,
@@ -311,9 +488,11 @@ void StackMaps::recordStackMapOpers(const MCSymbol &MILabel,
   }
 
   // Parse operands.
-  while (MOI != MOE) {
-    MOI = parseOperand(MOI, MOE, Locations, LiveOuts);
-  }
+  if (MI.getOpcode() == TargetOpcode::STATEPOINT)
+    parseStatepointOpers(MI, MOI, MOE, Locations, LiveOuts);
+  else
+    while (MOI != MOE)
+      MOI = parseOperand(MOI, MOE, Locations, LiveOuts);
 
   // Move large constants into the constant pool.
   for (auto &Loc : Locations) {
@@ -349,7 +528,7 @@ void StackMaps::recordStackMapOpers(const MCSymbol &MILabel,
   const MachineFrameInfo &MFI = AP.MF->getFrameInfo();
   const TargetRegisterInfo *RegInfo = AP.MF->getSubtarget().getRegisterInfo();
   bool HasDynamicFrameSize =
-      MFI.hasVarSizedObjects() || RegInfo->needsStackRealignment(*(AP.MF));
+      MFI.hasVarSizedObjects() || RegInfo->hasStackRealignment(*(AP.MF));
   uint64_t FrameSize = HasDynamicFrameSize ? UINT64_MAX : MFI.getStackSize();
 
   auto CurrentIt = FnInfos.find(AP.CurrentFnSym);
@@ -394,8 +573,6 @@ void StackMaps::recordStatepoint(const MCSymbol &L, const MachineInstr &MI) {
   assert(MI.getOpcode() == TargetOpcode::STATEPOINT && "expected statepoint");
 
   StatepointOpers opers(&MI);
-  // Record all the deopt and gc operands (they're contiguous and run from the
-  // initial index to the end of the operand list)
   const unsigned StartIdx = opers.getVarIdx();
   recordStackMapOpers(L, MI, opers.getID(), MI.operands_begin() + StartIdx,
                       MI.operands_end(), false);
@@ -404,7 +581,7 @@ void StackMaps::recordStatepoint(const MCSymbol &L, const MachineInstr &MI) {
 /// Emit the stackmap header.
 ///
 /// Header {
-///   uint8  : Stack Map Version (currently 2)
+///   uint8  : Stack Map Version (currently 3)
 ///   uint8  : Reserved (expected to be 0)
 ///   uint16 : Reserved (expected to be 0)
 /// }
@@ -528,7 +705,7 @@ void StackMaps::emitCallsiteEntries(MCStreamer &OS) {
     }
 
     // Emit alignment to 8 byte.
-    OS.emitValueToAlignment(8);
+    OS.emitValueToAlignment(Align(8));
 
     // Num live-out registers and padding to align to 4 byte.
     OS.emitInt16(0);
@@ -540,7 +717,7 @@ void StackMaps::emitCallsiteEntries(MCStreamer &OS) {
       OS.emitIntValue(LO.Size, 1);
     }
     // Emit alignment to 8 byte.
-    OS.emitValueToAlignment(8);
+    OS.emitValueToAlignment(Align(8));
   }
 }
 
@@ -561,7 +738,7 @@ void StackMaps::serializeToStackMapSection() {
   // Create the section.
   MCSection *StackMapSection =
       OutContext.getObjectFileInfo()->getStackMapSection();
-  OS.SwitchSection(StackMapSection);
+  OS.switchSection(StackMapSection);
 
   // Emit a dummy symbol to force section inclusion.
   OS.emitLabel(OutContext.getOrCreateSymbol(Twine("__LLVM_StackMaps")));
@@ -572,7 +749,7 @@ void StackMaps::serializeToStackMapSection() {
   emitFunctionFrameRecords(OS);
   emitConstantPoolEntries(OS);
   emitCallsiteEntries(OS);
-  OS.AddBlankLine();
+  OS.addBlankLine();
 
   // Clean up.
   CSInfos.clear();

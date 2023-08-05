@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2006 Maxim Sobolev <sobomax@FreeBSD.org>
  * All rights reserved.
@@ -218,7 +218,7 @@ powermac_nvram_open(struct cdev *dev, int flags, int fmt, struct thread *td)
 	sc->sc_rpos = sc->sc_wpos = 0;
 	sx_xunlock(&sc->sc_lock);
 
-	return 0;
+	return (err);
 }
 
 static int
@@ -362,7 +362,7 @@ adler_checksum(uint8_t *data, int len)
 	high = 0;
 	for (i = 0; i < len; i++) {
 		if ((i % 5000) == 0) {
-			high %= 65521UL;
+			low %= 65521UL;
 			high %= 65521UL;
 		}
 		low += data[i];

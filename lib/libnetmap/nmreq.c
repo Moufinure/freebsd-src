@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (C) 2018 Universita` di Pisa
  * All rights reserved.
@@ -256,6 +256,8 @@ nmreq_register_decode(const char **pifname, struct nmreq_register *r, struct nmc
 	uint16_t nr_mem_id;
 	uint16_t nr_ringid;
 	uint64_t nr_flags;
+
+	errno = 0;
 
 	/* fill the request */
 

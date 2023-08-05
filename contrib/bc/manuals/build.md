@@ -37,9 +37,70 @@ See [Build Environment Variables][4] for a more detailed description of all
 accepted environment variables and [Build Options][5] for more detail about all
 accepted build options.
 
-<a name="cross-compiling"/>
+## Windows
 
-## Cross Compiling
+For releases, Windows builds of `bc`, `dc`, and `bcl` are available for download
+from <https://git.gavinhoward.com/gavin/bc> and GitHub.
+
+However, if you wish to build it yourself, this `bc` can be built using Visual
+Studio or MSBuild.
+
+Unfortunately, only one build configuration (besides Debug or Release) is
+supported: extra math and history enabled, NLS (locale support) disabled, with
+both calculators built. The default [settings][11] are `BC_BANNER=1`,
+`{BC,DC}_SIGINT_RESET=0`, `{BC,DC}_TTY_MODE=1`, `{BC,DC}_PROMPT=1`.
+
+The library can also be built on Windows.
+
+### Visual Studio
+
+In Visual Studio, open up the solution file (`bc.sln` for `bc`, or `bcl.sln` for
+the library), select the desired configuration, and build.
+
+### MSBuild
+
+To build with MSBuild, first, *be sure that you are using the MSBuild that comes
+with Visual Studio*.
+
+To build `bc`, run the following from the root directory:
+
+```
+msbuild -property:Configuration=<config> vs/bc.sln
+```
+
+where `<config>` is either one of `Debug` or `Release`.
+
+To build the library, run the following from the root directory:
+
+```
+msbuild -property:Configuration=<config> vs/bcl.sln
+```
+
+where `<config>` is either one of `Debug`, `ReleaseMD`, or `ReleaseMT`.
+
+## POSIX-Compatible Systems
+
+Building `bc`, `dc`, and `bcl` (the library) is more complex than on Windows
+because many build options are supported.
+
+### Out-of-Source Builds
+
+Out-of-source builds are done by calling `configure.sh` from the directory where
+the build will happen. The `Makefile` is generated into that directory, and the
+build can happen normally from there.
+
+For example, if the source is in `bc`, the build should happen in `build`, then
+call `configure.sh` and `make` like so:
+
+```
+../bc/configure.sh
+make
+```
+
+***WARNING***: The path to `configure.sh` from the build directory must not have
+spaces because `make` does not support target names with spaces.
+
+### Cross Compiling
 
 To cross-compile this `bc`, an appropriate compiler must be present and assigned
 to the environment variable `HOSTCC` or `HOST_CC` (the two are equivalent,
@@ -67,13 +128,11 @@ details.
 If an emulator is necessary to run the bootstrap binaries, it can be set with
 the environment variable `GEN_EMU`.
 
-<a name="build-environment-variables"/>
-
-## Build Environment Variables
+### Build Environment Variables
 
 This `bc` supports `CC`, `HOSTCC`, `HOST_CC`, `CFLAGS`, `HOSTCFLAGS`,
 `HOST_CFLAGS`, `CPPFLAGS`, `LDFLAGS`, `LDLIBS`, `PREFIX`, `DESTDIR`, `BINDIR`,
-`DATAROOTDIR`, `DATADIR`, `MANDIR`, `MAN1DIR`, `LOCALEDIR` `EXECSUFFIX`,
+`DATAROOTDIR`, `DATADIR`, `MANDIR`, `MAN1DIR`, `MAN3DIR`, `EXECSUFFIX`,
 `EXECPREFIX`, `LONG_BIT`, `GEN_HOST`, and `GEN_EMU` environment variables in
 `configure.sh`. Any values of those variables given to `configure.sh` will be
 put into the generated Makefile.
@@ -81,7 +140,7 @@ put into the generated Makefile.
 More detail on what those environment variables do can be found in the following
 sections.
 
-### `CC`
+#### `CC`
 
 C compiler for the target system. `CC` must be compatible with POSIX `c99`
 behavior and options. However, **I encourage users to use any C99 or C11
@@ -93,7 +152,7 @@ automatically moved into CFLAGS.
 
 Defaults to `c99`.
 
-### `HOSTCC` or `HOST_CC`
+#### `HOSTCC` or `HOST_CC`
 
 C compiler for the host system, used only in [cross compiling][6]. Must be
 compatible with POSIX `c99` behavior and options.
@@ -104,33 +163,33 @@ automatically moved into HOSTCFLAGS.
 
 Defaults to `$CC`.
 
-### `CFLAGS`
+#### `CFLAGS`
 
 Command-line flags that will be passed verbatim to `CC`.
 
 Defaults to empty.
 
-### `HOSTCFLAGS` or `HOST_CFLAGS`
+#### `HOSTCFLAGS` or `HOST_CFLAGS`
 
 Command-line flags that will be passed verbatim to `HOSTCC` or `HOST_CC`.
 
 Defaults to `$CFLAGS`.
 
-### `CPPFLAGS`
+#### `CPPFLAGS`
 
 Command-line flags for the C preprocessor. These are also passed verbatim to
 both compilers (`CC` and `HOSTCC`); they are supported just for legacy reasons.
 
 Defaults to empty.
 
-### `LDFLAGS`
+#### `LDFLAGS`
 
 Command-line flags for the linker. These are also passed verbatim to both
 compilers (`CC` and `HOSTCC`); they are supported just for legacy reasons.
 
 Defaults to empty.
 
-### `LDLIBS`
+#### `LDLIBS`
 
 Libraries to link to. These are also passed verbatim to both compilers (`CC` and
 `HOSTCC`); they are supported just for legacy reasons and for cross compiling
@@ -138,7 +197,7 @@ with different C standard libraries (like [musl][3]).
 
 Defaults to empty.
 
-### `PREFIX`
+#### `PREFIX`
 
 The prefix to install to.
 
@@ -146,7 +205,11 @@ Can be overridden by passing the `--prefix` option to `configure.sh`.
 
 Defaults to `/usr/local`.
 
-### `DESTDIR`
+***WARNING***: Locales ignore the prefix because they *must* be installed at a
+fixed location to work at all. If you do not want that to happen, you must
+disable locales (NLS) completely.
+
+#### `DESTDIR`
 
 Path to prepend onto `PREFIX`. This is mostly for distro and package
 maintainers.
@@ -156,7 +219,7 @@ to both, the one given to `configure.sh` takes precedence.
 
 Defaults to empty.
 
-### `BINDIR`
+#### `BINDIR`
 
 The directory to install binaries in.
 
@@ -164,7 +227,7 @@ Can be overridden by passing the `--bindir` option to `configure.sh`.
 
 Defaults to `$PREFIX/bin`.
 
-### `INCLUDEDIR`
+#### `INCLUDEDIR`
 
 The directory to install header files in.
 
@@ -172,7 +235,7 @@ Can be overridden by passing the `--includedir` option to `configure.sh`.
 
 Defaults to `$PREFIX/include`.
 
-### `LIBDIR`
+#### `LIBDIR`
 
 The directory to install libraries in.
 
@@ -180,7 +243,7 @@ Can be overridden by passing the `--libdir` option to `configure.sh`.
 
 Defaults to `$PREFIX/lib`.
 
-### `DATAROOTDIR`
+#### `DATAROOTDIR`
 
 The root directory to install data files in.
 
@@ -188,7 +251,7 @@ Can be overridden by passing the `--datarootdir` option to `configure.sh`.
 
 Defaults to `$PREFIX/share`.
 
-### `DATADIR`
+#### `DATADIR`
 
 The directory to install data files in.
 
@@ -196,7 +259,7 @@ Can be overridden by passing the `--datadir` option to `configure.sh`.
 
 Defaults to `$DATAROOTDIR`.
 
-### `MANDIR`
+#### `MANDIR`
 
 The directory to install manpages in.
 
@@ -204,7 +267,7 @@ Can be overridden by passing the `--mandir` option to `configure.sh`.
 
 Defaults to `$DATADIR/man`
 
-### `MAN1DIR`
+#### `MAN1DIR`
 
 The directory to install Section 1 manpages in. Because both `bc` and `dc` are
 Section 1 commands, this is the only relevant section directory.
@@ -213,15 +276,15 @@ Can be overridden by passing the `--man1dir` option to `configure.sh`.
 
 Defaults to `$MANDIR/man1`.
 
-### `LOCALEDIR`
+#### `MAN3DIR`
 
-The directory to install locales in.
+The directory to install Section 3 manpages in.
 
-Can be overridden by passing the `--localedir` option to `configure.sh`.
+Can be overridden by passing the `--man3dir` option to `configure.sh`.
 
-Defaults to `$DATAROOTDIR/locale`.
+Defaults to `$MANDIR/man3`.
 
-### `EXECSUFFIX`
+#### `EXECSUFFIX`
 
 The suffix to append onto the executable names *when installing*. This is for
 packagers and distro maintainers who want this `bc` as an option, but do not
@@ -229,7 +292,7 @@ want to replace the default `bc`.
 
 Defaults to empty.
 
-### `EXECPREFIX`
+#### `EXECPREFIX`
 
 The prefix to append onto the executable names *when building and installing*.
 This is for packagers and distro maintainers who want this `bc` as an option,
@@ -237,7 +300,7 @@ but do not want to replace the default `bc`.
 
 Defaults to empty.
 
-### `LONG_BIT`
+#### `LONG_BIT`
 
 The number of bits in a C `long` type. This is mostly for the embedded space.
 
@@ -254,7 +317,7 @@ compliance with the `bc` spec, the minimum allowed value is `32`.
 It is an error if the specified value is greater than the default value of
 `LONG_BIT` for the target platform.
 
-### `GEN_HOST`
+#### `GEN_HOST`
 
 Whether to use `gen/strgen.c`, instead of `gen/strgen.sh`, to produce the C
 files that contain the help texts as well as the math libraries. By default,
@@ -274,16 +337,14 @@ or a non-existent value, will cause the build system to compile and run
 
 Default is "".
 
-### `GEN_EMU`
+#### `GEN_EMU`
 
 The emulator to run bootstrap binaries under. This is only if the binaries
 produced by `HOSTCC` (or `HOST_CC`) need to be run under an emulator to work.
 
 Defaults to empty.
 
-<a name="build-options"/>
-
-## Build Options
+### Build Options
 
 This `bc` comes with several build options, all of which are enabled by default.
 
@@ -298,7 +359,31 @@ following forms:
 --option=arg
 ```
 
-### Library
+#### Predefined Builds
+
+To quickly get a release build of a `bc` and `dc` that is (by default)
+compatible with the BSD `bc` and `dc`, use the `-p` or `--predefined-build-type`
+options:
+
+```
+./configure.sh -pBSD
+./configure.sh --predefined-build-type=BSD
+```
+
+Both commands are equivalent.
+
+To quickly get a release build of a `bc` and `dc` that is (by default)
+compatible with the GNU `bc` and `dc`, use the `-p` or `--predefined-build-type`
+options:
+
+```
+./configure.sh -pGNU
+./configure.sh --predefined-build-type=GNU
+```
+
+Both commands are equivalent.
+
+#### Library
 
 To build the math library, use the following commands for the configure step:
 
@@ -309,7 +394,7 @@ To build the math library, use the following commands for the configure step:
 
 Both commands are equivalent.
 
-When the library is built, history, prompt, and locales are disabled, and the
+When the library is built, history and locales are disabled, and the
 functionality for `bc` and `dc` are both enabled, though the executables are
 *not* built. This is because the library's options clash with the executables.
 
@@ -321,7 +406,7 @@ is installed.
 
 The library is built as `bin/libbcl.a`.
 
-### `bc` Only
+#### `bc` Only
 
 To build `bc` only (no `dc`), use any one of the following commands for the
 configure step:
@@ -338,7 +423,7 @@ Those commands are all equivalent.
 ***Warning***: It is an error to use those options if `bc` has also been
 disabled (see below).
 
-### `dc` Only
+#### `dc` Only
 
 To build `dc` only (no `bc`), use either one of the following commands for the
 configure step:
@@ -355,12 +440,10 @@ Those commands are all equivalent.
 ***Warning***: It is an error to use those options if `dc` has also been
 disabled (see above).
 
-<a name="build-history"/>
+#### History
 
-### History
-
-To disable signal handling, pass either the `-H` flag or the `--disable-history`
-option to `configure.sh`, as follows:
+To disable hisory, pass either the `-H` flag or the `--disable-history` option
+to `configure.sh`, as follows:
 
 ```
 ./configure.sh -H
@@ -369,14 +452,75 @@ option to `configure.sh`, as follows:
 
 Both commands are equivalent.
 
-History is automatically disabled when building for Windows or on another
-platform that does not support the terminal handling that is required.
-
 ***WARNING***: Of all of the code in the `bc`, this is the only code that is not
 completely portable. If the `bc` does not work on your platform, your first step
 should be to retry with history disabled.
 
-### NLS (Locale Support)
+This option affects the [build type][7].
+
+##### Editline
+
+History support can be provided by editline, in order to implement `vi`-like
+keybindings and other features.
+
+To enable editline support, pass either the `-e` flag or the `--enable-editline`
+option to `configure.sh`, as follows:
+
+```
+./configure.sh -e
+./configure.sh --enable-editline
+```
+
+Both commands are equivalent.
+
+This is ignored if history is disabled.
+
+This option is only used if it is after any other `-e`/`--enable-editline`
+options, any `-r`/`--enable-readline` options, and any
+`-i`/`--enable-internal-history` options.
+
+##### Readline
+
+History support can be provided by readline, in order to implement `vi`-like
+keybindings and other features.
+
+To enable readline support, pass either the `-r` flag or the `--enable-readline`
+option to `configure.sh`, as follows:
+
+```
+./configure.sh -r
+./configure.sh --enable-readline
+```
+
+Both commands are equivalent.
+
+This is ignored if history is disabled.
+
+This option is only used if it is after any other `-r`/`--enable-readline`
+options, any `-e`/`--enable-editline` options, and any
+`-i`/`--enable-internal-history` options.
+
+##### Internal History
+
+History support is also available as an internal implementation with no
+dependencies. This is the default if editline and readline are not selected.
+
+However, if `-p` option is used, then this option can be useful for selecting
+the internal history regardless of what the predefined build has.
+
+To enable the internal history, pass either the `-i` flag or the
+`--enable-internal-history` option to `configure.sh` as follows:
+
+```
+./configure.sh -i
+./configure.sh --enable-internal-history
+```
+
+This option is only used if it is after any other
+`-i`/`--enable-internal-history` options, any `-e`/`--enable-editline` options,
+and any `-r`/`--enable-readline` options.
+
+#### NLS (Locale Support)
 
 To disable locale support (use only English), pass either the `-N` flag or the
 `--disable-nls` option to `configure.sh`, as follows:
@@ -391,37 +535,13 @@ Both commands are equivalent.
 NLS (locale support) is automatically disabled when building for Windows or on
 another platform that does not support the POSIX locale API or utilities.
 
-### Prompt
+This option affects the [build type][7].
 
-By default, `bc` and `dc` print a prompt when in interactive mode. They both
-have the command-line option `-P`/`--no-prompt`, which turns that off, but it
-can be disabled permanently in the build by passing the `-P` flag or the
-`--disable-prompt` option to `configure.sh`, as follows:
+***WARNING***: Locales ignore the prefix because they *must* be installed at a
+fixed location to work at all. If you do not want that to happen, you must
+disable locales (NLS) completely.
 
-```
-./configure.sh -P
-./configure.sh --disable-prompt
-```
-
-Both commands are equivalent.
-
-### Locales
-
-By default, `bc` and `dc` do not install all locales, but only the enabled
-locales. If `DESTDIR` exists and is not empty, then they will install all of
-the locales that exist on the system. The `-l` flag or `--install-all-locales`
-option skips all of that and just installs all of the locales that `bc` and `dc`
-have, regardless. To enable that behavior, you can pass the `-l` flag or the
-`--install-all-locales` option to `configure.sh`, as follows:
-
-```
-./configure.sh -l
-./configure.sh --install-all-locales
-```
-
-Both commands are equivalent.
-
-### Extra Math
+#### Extra Math
 
 This `bc` has 7 extra operators:
 
@@ -458,7 +578,162 @@ This `bc` also has a larger library that is only enabled if extra operators and
 the pseudo-random number generator are. More information about the functions can
 be found in the Extended Library section of the full manual.
 
-### Manpages
+This option affects the [build type][7].
+
+#### Karatsuba Length
+
+The Karatsuba length is the point at which `bc` and `dc` switch from Karatsuba
+multiplication to brute force, `O(n^2)` multiplication. It can be set by passing
+the `-k` flag or the `--karatsuba-len` option to `configure.sh` as follows:
+
+```
+./configure.sh -k32
+./configure.sh --karatsuba-len 32
+```
+
+Both commands are equivalent.
+
+Default is `32`.
+
+***WARNING***: The Karatsuba Length must be a **integer** greater than or equal
+to `16` (to prevent stack overflow). If it is not, `configure.sh` will give an
+error.
+
+#### Settings
+
+This `bc` and `dc` have a few settings to override default behavior.
+
+The defaults for these settings can be set by package maintainers, and the
+settings themselves can be overriden by users.
+
+To set a default to **on**, use the `-s` or `--set-default-on` option to
+`configure.sh`, with the name of the setting, as follows:
+
+```
+./configure.sh -s bc.banner
+./configure.sh --set-default-on=bc.banner
+```
+
+Both commands are equivalent.
+
+To set a default to **off**, use the `-S` or `--set-default-off` option to
+`configure.sh`, with the name of the setting, as follows:
+
+```
+./configure.sh -S bc.banner
+./configure.sh --set-default-off=bc.banner
+```
+
+Both commands are equivalent.
+
+Users can override the default settings set by packagers with environment
+variables. If the environment variable has an integer, then the setting is
+turned **on** for a non-zero integer, and **off** for zero.
+
+The table of the available settings, along with their defaults and the
+environment variables to override them, is below:
+
+```
+| Setting         | Description          | Default      | Env Variable         |
+| =============== | ==================== | ============ | ==================== |
+| bc.banner       | Whether to display   |            0 | BC_BANNER            |
+|                 | the bc version       |              |                      |
+|                 | banner when in       |              |                      |
+|                 | interactive mode.    |              |                      |
+| --------------- | -------------------- | ------------ | -------------------- |
+| bc.sigint_reset | Whether SIGINT will  |            1 | BC_SIGINT_RESET      |
+|                 | reset bc, instead of |              |                      |
+|                 | exiting, when in     |              |                      |
+|                 | interactive mode.    |              |                      |
+| --------------- | -------------------- | ------------ | -------------------- |
+| dc.sigint_reset | Whether SIGINT will  |            1 | DC_SIGINT_RESET      |
+|                 | reset dc, instead of |              |                      |
+|                 | exiting, when in     |              |                      |
+|                 | interactive mode.    |              |                      |
+| --------------- | -------------------- | ------------ | -------------------- |
+| bc.tty_mode     | Whether TTY mode for |            1 | BC_TTY_MODE          |
+|                 | bc should be on when |              |                      |
+|                 | available.           |              |                      |
+| --------------- | -------------------- | ------------ | -------------------- |
+| dc.tty_mode     | Whether TTY mode for |            0 | BC_TTY_MODE          |
+|                 | dc should be on when |              |                      |
+|                 | available.           |              |                      |
+| --------------- | -------------------- | ------------ | -------------------- |
+| bc.prompt       | Whether the prompt   | $BC_TTY_MODE | BC_PROMPT            |
+|                 | for bc should be on  |              |                      |
+|                 | in tty mode.         |              |                      |
+| --------------- | -------------------- | ------------ | -------------------- |
+| dc.prompt       | Whether the prompt   | $DC_TTY_MODE | DC_PROMPT            |
+|                 | for dc should be on  |              |                      |
+|                 | in tty mode.         |              |                      |
+| --------------- | -------------------- | ------------ | -------------------- |
+| bc.expr_exit    | Whether to exit bc   |            1 | BC_EXPR_EXIT         |
+|                 | if an expression or  |              |                      |
+|                 | expression file is   |              |                      |
+|                 | given with the -e or |              |                      |
+|                 | -f options.          |              |                      |
+| --------------- | -------------------- | ------------ | -------------------- |
+| dc.expr_exit    | Whether to exit dc   |            1 | DC_EXPR_EXIT         |
+|                 | if an expression or  |              |                      |
+|                 | expression file is   |              |                      |
+|                 | given with the -e or |              |                      |
+|                 | -f options.          |              |                      |
+| --------------- | -------------------- | ------------ | -------------------- |
+| bc.digit_clamp  | Whether to have bc   |            0 | BC_DIGIT_CLAMP       |
+|                 | clamp digits that    |              |                      |
+|                 | are greater than or  |              |                      |
+|                 | equal to the current |              |                      |
+|                 | ibase when parsing   |              |                      |
+|                 | numbers.             |              |                      |
+| --------------- | -------------------- | ------------ | -------------------- |
+| dc.digit_clamp  | Whether to have dc   |            0 | DC_DIGIT_CLAMP       |
+|                 | clamp digits that    |              |                      |
+|                 | are greater than or  |              |                      |
+|                 | equal to the current |              |                      |
+|                 | ibase when parsing   |              |                      |
+|                 | numbers.             |              |                      |
+| --------------- | -------------------- | ------------ | -------------------- |
+```
+
+These settings are not meant to be changed on a whim. They are meant to ensure
+that this bc and dc will conform to the expectations of the user on each
+platform.
+
+#### Install Options
+
+The relevant `autotools`-style install options are supported in `configure.sh`:
+
+* `--prefix`
+* `--bindir`
+* `--datarootdir`
+* `--datadir`
+* `--mandir`
+* `--man1dir`
+* `--man3dir`
+
+An example is:
+
+```
+./configure.sh --prefix=/usr
+make
+make install
+```
+
+They correspond to the environment variables `$PREFIX`, `$BINDIR`,
+`$DATAROOTDIR`, `$DATADIR`, `$MANDIR`, `$MAN1DIR`, `$MAN3DIR`, and respectively.
+
+***WARNING***: Locales ignore the prefix because they *must* be installed at a
+fixed location to work at all. If you do not want that to happen, you must
+disable locales (NLS) completely.
+
+***WARNING***: If the option is given, the value of the corresponding
+environment variable is overridden.
+
+***WARNING***: If any long command-line options are used, the long form of all
+other command-line options must be used. Mixing long and short options is not
+supported.
+
+##### Manpages
 
 To disable installing manpages, pass either the `-M` flag or the
 `--disable-man-pages` option to `configure.sh` as follows:
@@ -470,57 +745,27 @@ To disable installing manpages, pass either the `-M` flag or the
 
 Both commands are equivalent.
 
-### Karatsuba Length
+##### Locales
 
-The Karatsuba length is the point at which `bc` and `dc` switch from Karatsuba
-multiplication to brute force, `O(n^2)` multiplication. It can be set by passing
-the `-k` flag or the `--karatsuba-len` option to `configure.sh` as follows:
+By default, `bc` and `dc` do not install all locales, but only the enabled
+locales. If `DESTDIR` exists and is not empty, then they will install all of
+the locales that exist on the system. The `-l` flag or `--install-all-locales`
+option skips all of that and just installs all of the locales that `bc` and `dc`
+have, regardless. To enable that behavior, you can pass the `-l` flag or the
+`--install-all-locales` option to `configure.sh`, as follows:
 
 ```
-./configure.sh -k64
-./configure.sh --karatsuba-len 64
+./configure.sh -l
+./configure.sh --install-all-locales
 ```
 
 Both commands are equivalent.
 
-Default is `64`.
+***WARNING***: Locales ignore the prefix because they *must* be installed at a
+fixed location to work at all. If you do not want that to happen, you must
+disable locales (NLS) completely.
 
-***WARNING***: The Karatsuba Length must be a **integer** greater than or equal
-to `16` (to prevent stack overflow). If it is not, `configure.sh` will give an
-error.
-
-### Install Options
-
-The relevant `autotools`-style install options are supported in `configure.sh`:
-
-* `--prefix`
-* `--bindir`
-* `--datarootdir`
-* `--datadir`
-* `--mandir`
-* `--man1dir`
-* `--localedir`
-
-An example is:
-
-```
-./configure.sh --prefix=/usr --localedir /usr/share/nls
-make
-make install
-```
-
-They correspond to the environment variables `$PREFIX`, `$BINDIR`,
-`$DATAROOTDIR`, `$DATADIR`, `$MANDIR`, `$MAN1DIR`, and `$LOCALEDIR`,
-respectively.
-
-***WARNING***: If the option is given, the value of the corresponding
-environment variable is overridden.
-
-***WARNING***: If any long command-line options are used, the long form of all
-other command-line options must be used. Mixing long and short options is not
-supported.
-
-## Optimization
+### Optimization
 
 The `configure.sh` script will accept an optimization level to pass to the
 compiler. Because `bc` is orders of magnitude faster with optimization, I
@@ -554,13 +799,13 @@ make install
 Building with link-time optimization (`-flto` in clang) can further increase the
 performance. I ***highly*** recommend doing so.
 
-I do **NOT*** recommend building with `-march=native`; doing so reduces this
+I do ***NOT*** recommend building with `-march=native`; doing so reduces this
 `bc`'s performance.
 
 Manual stripping is not necessary; non-debug builds are automatically stripped
 in the link stage.
 
-## Debug Builds
+### Debug Builds
 
 Debug builds (which also disable optimization if no optimization level is given
 and if no extra `CFLAGS` are given) can be enabled with either the `-g` flag or
@@ -580,7 +825,7 @@ make
 make install
 ```
 
-## Stripping Binaries
+### Stripping Binaries
 
 By default, when `bc` and `dc` are not built in debug mode, the binaries are
 stripped. Stripping can be disabled with either the `-T` or the
@@ -600,7 +845,26 @@ make
 make install
 ```
 
-## Binary Size
+### Build Type
+
+`bc` and `dc` have 8 build types, affected by the [History][8], [NLS (Locale
+Support)][9], and [Extra Math][10] build options.
+
+The build types are as follows:
+
+* `A`: Nothing disabled.
+* `E`: Extra math disabled.
+* `H`: History disabled.
+* `N`: NLS disabled.
+* `EH`: Extra math and History disabled.
+* `EN`: Extra math and NLS disabled.
+* `HN`: History and NLS disabled.
+* `EHN`: Extra math, History, and NLS all disabled.
+
+These build types correspond to the generated manuals in `manuals/bc` and
+`manuals/dc`.
+
+### Binary Size
 
 When built with both calculators, all available features, and `-Os` using
 `clang` and `musl`, the executable is 140.4 kb (140,386 bytes) on `x86_64`. That
@@ -649,7 +913,7 @@ kb (107,576 bytes) without history and with extra math support, and 95.3 kb
 optimizations. These builds were done on an `x86_64` machine running Gentoo
 Linux.
 
-## Testing
+### Testing
 
 The default test suite can be run with the following command:
 
@@ -702,9 +966,30 @@ Both commands are equivalent.
 ***WARNING***: Both `bc` and `dc` must be built for test coverage. Otherwise,
 `configure.sh` will give an error.
 
+#### Problematic Tests
+
+Some tests are problematic, in that they can cause `SIGKILL` on FreeBSD or
+`SIGSEGV` on Linux from being killed by the "OOM Killer" part of the kernel. On
+Linux, these tests are usually fine, but on FreeBSD, they are usually a problem.
+
+To disable problematic tests, pass the `-P` flag or the
+`--disable-problematic-tests` option to `configure.sh` as follows:
+
+```
+./configure.sh -P
+./configure.sh --disable-problematic-tests
+```
+
+Both commands are equivalent.
+
 [1]: https://pubs.opengroup.org/onlinepubs/9699919799/utilities/bc.html
 [2]: https://www.gnu.org/software/bc/
 [3]: https://www.musl-libc.org/
 [4]: #build-environment-variables
 [5]: #build-options
 [6]: #cross-compiling
+[7]: #build-type
+[8]: #history
+[9]: #nls-locale-support
+[10]: #extra-math
+[11]: #settings

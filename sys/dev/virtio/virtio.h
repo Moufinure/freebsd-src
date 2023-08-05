@@ -35,6 +35,8 @@
 #include <dev/virtio/virtio_ids.h>
 #include <dev/virtio/virtio_config.h>
 
+#ifdef _KERNEL
+
 struct sbuf;
 struct vq_alloc_info;
 
@@ -122,7 +124,7 @@ int	 virtio_child_pnpinfo_str(device_t busdev, device_t child, char *buf,
 void	 virtio_read_device_config(device_t dev, bus_size_t offset,
 	     void *dst, int length);
 void	 virtio_write_device_config(device_t dev, bus_size_t offset,
-	     void *src, int length);
+	     const void *src, int length);
 
 /* Inlined device specific read/write functions for common lengths. */
 #define VIRTIO_RDWR_DEVICE_CONFIG(size, type)				\
@@ -186,5 +188,7 @@ virtio_simple_probe(device_t dev, const struct virtio_pnp_match *match)
 	device_set_desc(dev, match->description);
 	return (BUS_PROBE_DEFAULT);
 }
+
+#endif /* _KERNEL */
 
 #endif /* _VIRTIO_H_ */

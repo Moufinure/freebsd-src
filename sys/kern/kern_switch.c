@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2001 Jake Burkholder <jake@FreeBSD.org>
  * All rights reserved.
@@ -143,7 +143,7 @@ sysctl_stats_reset(SYSCTL_HANDLER_ARGS)
 }
 
 SYSCTL_PROC(_kern_sched_stats, OID_AUTO, reset,
-    CTLTYPE_INT | CTLFLAG_WR | CTLFLAG_NEEDGIANT, NULL, 0,
+    CTLTYPE_INT | CTLFLAG_WR | CTLFLAG_MPSAFE, NULL, 0,
     sysctl_stats_reset, "I",
     "Reset scheduler statistics");
 #endif

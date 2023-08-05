@@ -48,7 +48,6 @@
 #include <sys/avl.h>
 #include <sys/debug.h>
 #include <sys/stat.h>
-#include <stddef.h>
 #include <pthread.h>
 #include <umem.h>
 #include <time.h>
@@ -84,6 +83,9 @@ typedef struct progress_arg {
 	boolean_t pa_parsable;
 	boolean_t pa_estimate;
 	int pa_verbosity;
+	boolean_t pa_astitle;
+	boolean_t pa_progress;
+	uint64_t pa_size;
 } progress_arg_t;
 
 static int
@@ -207,8 +209,9 @@ fsavl_create(nvlist_t *fss)
 			 * Note: if there are multiple snaps with the
 			 * same GUID, we ignore all but one.
 			 */
-			if (avl_find(fsavl, fn, NULL) == NULL)
-				avl_add(fsavl, fn);
+			avl_index_t where = 0;
+			if (avl_find(fsavl, fn, &where) == NULL)
+				avl_insert(fsavl, fn, where);
 			else
 				free(fn);
 		}
@@ -248,6 +251,7 @@ typedef struct send_data {
 	boolean_t raw;
 	boolean_t doall;
 	boolean_t replicate;
+	boolean_t skipmissing;
 	boolean_t verbose;
 	boolean_t backup;
 	boolean_t seenfrom;
@@ -350,12 +354,11 @@ send_iterate_snap(zfs_handle_t *zhp, void *arg)
 	fnvlist_add_nvlist(sd->snapprops, snapname, nv);
 	fnvlist_free(nv);
 	if (sd->holds) {
-		nvlist_t *holds = fnvlist_alloc();
-		int err = lzc_get_holds(zhp->zfs_name, &holds);
-		if (err == 0) {
+		nvlist_t *holds;
+		if (lzc_get_holds(zhp->zfs_name, &holds) == 0) {
 			fnvlist_add_nvlist(sd->snapholds, snapname, holds);
+			fnvlist_free(holds);
 		}
-		fnvlist_free(holds);
 	}
 
 	zfs_close(zhp);
@@ -498,7 +501,8 @@ send_iterate_fs(zfs_handle_t *zhp, void *arg)
 	 * - skip sending the current dataset if it was created later than
 	 *   the parent tosnap
 	 * - return error if the current dataset was created earlier than
-	 *   the parent tosnap
+	 *   the parent tosnap, unless --skip-missing specified. Then
+	 *   just print a warning
 	 */
 	if (sd->tosnap != NULL && tosnap_txg == 0) {
 		if (sd->tosnap_txg != 0 && txg > sd->tosnap_txg) {
@@ -507,6 +511,11 @@ send_iterate_fs(zfs_handle_t *zhp, void *arg)
 				    "skipping dataset %s: snapshot %s does "
 				    "not exist\n"), zhp->zfs_name, sd->tosnap);
 			}
+		} else if (sd->skipmissing) {
+			(void) fprintf(stderr, dgettext(TEXT_DOMAIN,
+			    "WARNING: skipping dataset %s and its children:"
+			    " snapshot %s does not exist\n"),
+			    zhp->zfs_name, sd->tosnap);
 		} else {
 			(void) fprintf(stderr, dgettext(TEXT_DOMAIN,
 			    "cannot send %s@%s%s: snapshot %s@%s does not "
@@ -650,8 +659,9 @@ out:
 static int
 gather_nvlist(libzfs_handle_t *hdl, const char *fsname, const char *fromsnap,
     const char *tosnap, boolean_t recursive, boolean_t raw, boolean_t doall,
-    boolean_t replicate, boolean_t verbose, boolean_t backup, boolean_t holds,
-    boolean_t props, nvlist_t **nvlp, avl_tree_t **avlp)
+    boolean_t replicate, boolean_t skipmissing, boolean_t verbose,
+    boolean_t backup, boolean_t holds, boolean_t props, nvlist_t **nvlp,
+    avl_tree_t **avlp)
 {
 	zfs_handle_t *zhp;
 	send_data_t sd = { 0 };
@@ -669,6 +679,7 @@ gather_nvlist(libzfs_handle_t *hdl, const char *fsname, const char *fromsnap,
 	sd.raw = raw;
 	sd.doall = doall;
 	sd.replicate = replicate;
+	sd.skipmissing = skipmissing;
 	sd.verbose = verbose;
 	sd.backup = backup;
 	sd.holds = holds;
@@ -704,6 +715,7 @@ typedef struct send_dump_data {
 	boolean_t seenfrom, seento, replicate, doall, fromorigin;
 	boolean_t dryrun, parsable, progress, embed_data, std_out;
 	boolean_t large_block, compress, raw, holds;
+	boolean_t progressastitle;
 	int outfd;
 	boolean_t err;
 	nvlist_t *fss;
@@ -760,7 +772,7 @@ zfs_send_space(zfs_handle_t *zhp, const char *snapname, const char *from,
 		case EFAULT:
 		case EROFS:
 		case EINVAL:
-			zfs_error_aux(hdl, strerror(error));
+			zfs_error_aux(hdl, "%s", strerror(error));
 			return (zfs_error(hdl, EZFS_BADBACKUP, errbuf));
 
 		default:
@@ -841,7 +853,8 @@ dump_ioctl(zfs_handle_t *zhp, const char *fromsnap, uint64_t fromsnap_obj,
 		case ERANGE:
 		case EFAULT:
 		case EROFS:
-			zfs_error_aux(hdl, strerror(errno));
+		case EINVAL:
+			zfs_error_aux(hdl, "%s", strerror(errno));
 			return (zfs_error(hdl, EZFS_BADBACKUP, errbuf));
 
 		default:
@@ -895,6 +908,7 @@ send_progress_thread(void *arg)
 	zfs_handle_t *zhp = pa->pa_zhp;
 	uint64_t bytes;
 	uint64_t blocks;
+	uint64_t total = pa->pa_size / 100;
 	char buf[16];
 	time_t t;
 	struct tm *tm;
@@ -913,7 +927,7 @@ send_progress_thread(void *arg)
 			return ((void *)(uintptr_t)err);
 		}
 
-		if (firstloop && !pa->pa_parsable) {
+		if (firstloop && !pa->pa_parsable && pa->pa_progress) {
 			(void) fprintf(stderr,
 			    "TIME       %s   %sSNAPSHOT %s\n",
 			    pa->pa_estimate ? "BYTES" : " SENT",
@@ -924,6 +938,17 @@ send_progress_thread(void *arg)
 
 		(void) time(&t);
 		tm = localtime(&t);
+
+		if (pa->pa_astitle) {
+			char buf_bytes[16];
+			char buf_size[16];
+			int pct;
+			zfs_nicenum(bytes, buf_bytes, sizeof (buf_bytes));
+			zfs_nicenum(pa->pa_size, buf_size, sizeof (buf_size));
+			pct = (total > 0) ? bytes / total : 100;
+			zfs_setproctitle("sending %s (%d%%: %s/%s)",
+			    zhp->zfs_name, MIN(pct, 100), buf_bytes, buf_size);
+		}
 
 		if (pa->pa_verbosity >= 2 && pa->pa_parsable) {
 			(void) fprintf(stderr,
@@ -941,7 +966,7 @@ send_progress_thread(void *arg)
 			(void) fprintf(stderr, "%02d:%02d:%02d\t%llu\t%s\n",
 			    tm->tm_hour, tm->tm_min, tm->tm_sec,
 			    (u_longlong_t)bytes, zhp->zfs_name);
-		} else {
+		} else if (pa->pa_progress) {
 			zfs_nicebytes(bytes, buf, sizeof (buf));
 			(void) fprintf(stderr, "%02d:%02d:%02d   %5s   %s\n",
 			    tm->tm_hour, tm->tm_min, tm->tm_sec,
@@ -1105,12 +1130,15 @@ dump_snapshot(zfs_handle_t *zhp, void *arg)
 		 * If progress reporting is requested, spawn a new thread to
 		 * poll ZFS_IOC_SEND_PROGRESS at a regular interval.
 		 */
-		if (sdd->progress) {
+		if (sdd->progress || sdd->progressastitle) {
 			pa.pa_zhp = zhp;
 			pa.pa_fd = sdd->outfd;
 			pa.pa_parsable = sdd->parsable;
 			pa.pa_estimate = B_FALSE;
 			pa.pa_verbosity = sdd->verbosity;
+			pa.pa_size = sdd->size;
+			pa.pa_astitle = sdd->progressastitle;
+			pa.pa_progress = sdd->progress;
 
 			if ((err = pthread_create(&tid, NULL,
 			    send_progress_thread, &pa)) != 0) {
@@ -1122,7 +1150,7 @@ dump_snapshot(zfs_handle_t *zhp, void *arg)
 		err = dump_ioctl(zhp, sdd->prevsnap, sdd->prevsnap_obj,
 		    fromorigin, sdd->outfd, flags, sdd->debugnv);
 
-		if (sdd->progress) {
+		if (sdd->progress || sdd->progressastitle) {
 			void *status = NULL;
 			(void) pthread_cancel(tid);
 			(void) pthread_join(tid, &status);
@@ -1453,7 +1481,7 @@ lzc_flags_from_sendflags(const sendflags_t *flags)
 static int
 estimate_size(zfs_handle_t *zhp, const char *from, int fd, sendflags_t *flags,
     uint64_t resumeobj, uint64_t resumeoff, uint64_t bytes,
-    const char *redactbook, char *errbuf)
+    const char *redactbook, char *errbuf, uint64_t *sizep)
 {
 	uint64_t size;
 	FILE *fout = flags->dryrun ? stdout : stderr;
@@ -1461,7 +1489,7 @@ estimate_size(zfs_handle_t *zhp, const char *from, int fd, sendflags_t *flags,
 	int err = 0;
 	pthread_t ptid;
 
-	if (flags->progress) {
+	if (flags->progress || flags->progressastitle) {
 		pa.pa_zhp = zhp;
 		pa.pa_fd = fd;
 		pa.pa_parsable = flags->parsable;
@@ -1471,7 +1499,7 @@ estimate_size(zfs_handle_t *zhp, const char *from, int fd, sendflags_t *flags,
 		err = pthread_create(&ptid, NULL,
 		    send_progress_thread, &pa);
 		if (err != 0) {
-			zfs_error_aux(zhp->zfs_hdl, strerror(errno));
+			zfs_error_aux(zhp->zfs_hdl, "%s", strerror(errno));
 			return (zfs_error(zhp->zfs_hdl,
 			    EZFS_THREADCREATEFAILED, errbuf));
 		}
@@ -1480,8 +1508,9 @@ estimate_size(zfs_handle_t *zhp, const char *from, int fd, sendflags_t *flags,
 	err = lzc_send_space_resume_redacted(zhp->zfs_name, from,
 	    lzc_flags_from_sendflags(flags), resumeobj, resumeoff, bytes,
 	    redactbook, fd, &size);
+	*sizep = size;
 
-	if (flags->progress) {
+	if (flags->progress || flags->progressastitle) {
 		void *status = NULL;
 		(void) pthread_cancel(ptid);
 		(void) pthread_join(ptid, &status);
@@ -1496,8 +1525,11 @@ estimate_size(zfs_handle_t *zhp, const char *from, int fd, sendflags_t *flags,
 		}
 	}
 
+	if (!flags->progress && !flags->parsable)
+		return (err);
+
 	if (err != 0) {
-		zfs_error_aux(zhp->zfs_hdl, strerror(err));
+		zfs_error_aux(zhp->zfs_hdl, "%s", strerror(err));
 		return (zfs_error(zhp->zfs_hdl, EZFS_BADBACKUP,
 		    errbuf));
 	}
@@ -1629,6 +1661,7 @@ zfs_send_resume_impl(libzfs_handle_t *hdl, sendflags_t *flags, int outfd,
 	uint64_t *redact_snap_guids = NULL;
 	int num_redact_snaps = 0;
 	char *redact_book = NULL;
+	uint64_t size = 0;
 
 	(void) snprintf(errbuf, sizeof (errbuf), dgettext(TEXT_DOMAIN,
 	    "cannot resume send"));
@@ -1722,7 +1755,7 @@ zfs_send_resume_impl(libzfs_handle_t *hdl, sendflags_t *flags, int outfd,
 		}
 	}
 
-	if (flags->verbosity != 0) {
+	if (flags->verbosity != 0 || flags->progressastitle) {
 		/*
 		 * Some of these may have come from the resume token, set them
 		 * here for size estimate purposes.
@@ -1734,8 +1767,12 @@ zfs_send_resume_impl(libzfs_handle_t *hdl, sendflags_t *flags, int outfd,
 			tmpflags.compress = B_TRUE;
 		if (lzc_flags & LZC_SEND_FLAG_EMBED_DATA)
 			tmpflags.embed_data = B_TRUE;
+		if (lzc_flags & LZC_SEND_FLAG_RAW)
+			tmpflags.raw = B_TRUE;
+		if (lzc_flags & LZC_SEND_FLAG_SAVED)
+			tmpflags.saved = B_TRUE;
 		error = estimate_size(zhp, fromname, outfd, &tmpflags,
-		    resumeobj, resumeoff, bytes, redact_book, errbuf);
+		    resumeobj, resumeoff, bytes, redact_book, errbuf, &size);
 	}
 
 	if (!flags->dryrun) {
@@ -1745,12 +1782,15 @@ zfs_send_resume_impl(libzfs_handle_t *hdl, sendflags_t *flags, int outfd,
 		 * If progress reporting is requested, spawn a new thread to
 		 * poll ZFS_IOC_SEND_PROGRESS at a regular interval.
 		 */
-		if (flags->progress) {
+		if (flags->progress || flags->progressastitle) {
 			pa.pa_zhp = zhp;
 			pa.pa_fd = outfd;
 			pa.pa_parsable = flags->parsable;
 			pa.pa_estimate = B_FALSE;
 			pa.pa_verbosity = flags->verbosity;
+			pa.pa_size = size;
+			pa.pa_astitle = flags->progressastitle;
+			pa.pa_progress = flags->progress;
 
 			error = pthread_create(&tid, NULL,
 			    send_progress_thread, &pa);
@@ -1767,7 +1807,7 @@ zfs_send_resume_impl(libzfs_handle_t *hdl, sendflags_t *flags, int outfd,
 		if (redact_book != NULL)
 			free(redact_book);
 
-		if (flags->progress) {
+		if (flags->progress || flags->progress) {
 			void *status = NULL;
 			(void) pthread_cancel(tid);
 			(void) pthread_join(tid, &status);
@@ -1777,6 +1817,7 @@ zfs_send_resume_impl(libzfs_handle_t *hdl, sendflags_t *flags, int outfd,
 				(void) snprintf(errbuf, sizeof (errbuf),
 				    dgettext(TEXT_DOMAIN,
 				    "progress thread exited nonzero"));
+				zfs_close(zhp);
 				return (zfs_standard_error(hdl, error, errbuf));
 			}
 		}
@@ -1814,7 +1855,7 @@ zfs_send_resume_impl(libzfs_handle_t *hdl, sendflags_t *flags, int outfd,
 		case ERANGE:
 		case EFAULT:
 		case EROFS:
-			zfs_error_aux(hdl, strerror(errno));
+			zfs_error_aux(hdl, "%s", strerror(errno));
 			return (zfs_error(hdl, EZFS_BADBACKUP, errbuf));
 
 		default:
@@ -1976,8 +2017,8 @@ send_conclusion_record(int fd, zio_cksum_t *zc)
 static int
 send_prelim_records(zfs_handle_t *zhp, const char *from, int fd,
     boolean_t gather_props, boolean_t recursive, boolean_t verbose,
-    boolean_t dryrun, boolean_t raw, boolean_t replicate, boolean_t backup,
-    boolean_t holds, boolean_t props, boolean_t doall,
+    boolean_t dryrun, boolean_t raw, boolean_t replicate, boolean_t skipmissing,
+    boolean_t backup, boolean_t holds, boolean_t props, boolean_t doall,
     nvlist_t **fssp, avl_tree_t **fsavlp)
 {
 	int err = 0;
@@ -2023,8 +2064,8 @@ send_prelim_records(zfs_handle_t *zhp, const char *from, int fd,
 		}
 
 		if ((err = gather_nvlist(zhp->zfs_hdl, tofs,
-		    from, tosnap, recursive, raw, doall, replicate, verbose,
-		    backup, holds, props, &fss, fsavlp)) != 0) {
+		    from, tosnap, recursive, raw, doall, replicate, skipmissing,
+		    verbose, backup, holds, props, &fss, fsavlp)) != 0) {
 			return (zfs_error(zhp->zfs_hdl, EZFS_BADBACKUP,
 			    errbuf));
 		}
@@ -2074,13 +2115,13 @@ send_prelim_records(zfs_handle_t *zhp, const char *from, int fd,
 		err = dump_record(&drr, packbuf, buflen, &zc, fd);
 		free(packbuf);
 		if (err != 0) {
-			zfs_error_aux(zhp->zfs_hdl, strerror(err));
+			zfs_error_aux(zhp->zfs_hdl, "%s", strerror(err));
 			return (zfs_error(zhp->zfs_hdl, EZFS_BADBACKUP,
 			    errbuf));
 		}
 		err = send_conclusion_record(fd, &zc);
 		if (err != 0) {
-			zfs_error_aux(zhp->zfs_hdl, strerror(err));
+			zfs_error_aux(zhp->zfs_hdl, "%s", strerror(err));
 			return (zfs_error(zhp->zfs_hdl, EZFS_BADBACKUP,
 			    errbuf));
 		}
@@ -2120,7 +2161,6 @@ zfs_send(zfs_handle_t *zhp, const char *fromsnap, const char *tosnap,
 	avl_tree_t *fsavl = NULL;
 	static uint64_t holdseq;
 	int spa_version;
-	int featureflags = 0;
 	FILE *fout;
 
 	(void) snprintf(errbuf, sizeof (errbuf), dgettext(TEXT_DOMAIN,
@@ -2132,16 +2172,22 @@ zfs_send(zfs_handle_t *zhp, const char *fromsnap, const char *tosnap,
 		return (zfs_error(zhp->zfs_hdl, EZFS_NOENT, errbuf));
 	}
 
-	if (zhp->zfs_type == ZFS_TYPE_FILESYSTEM) {
-		uint64_t version;
-		version = zfs_prop_get_int(zhp, ZFS_PROP_VERSION);
-		if (version >= ZPL_VERSION_SA) {
-			featureflags |= DMU_BACKUP_FEATURE_SA_SPILL;
+	if (fromsnap) {
+		char full_fromsnap_name[ZFS_MAX_DATASET_NAME_LEN];
+		if (snprintf(full_fromsnap_name, sizeof (full_fromsnap_name),
+		    "%s@%s", zhp->zfs_name, fromsnap) >=
+		    sizeof (full_fromsnap_name)) {
+			err = EINVAL;
+			goto stderr_out;
 		}
+		zfs_handle_t *fromsnapn = zfs_open(zhp->zfs_hdl,
+		    full_fromsnap_name, ZFS_TYPE_SNAPSHOT);
+		if (fromsnapn == NULL) {
+			err = -1;
+			goto err_out;
+		}
+		zfs_close(fromsnapn);
 	}
-
-	if (flags->holds)
-		featureflags |= DMU_BACKUP_FEATURE_HOLDS;
 
 	if (flags->replicate || flags->doall || flags->props ||
 	    flags->holds || flags->backup) {
@@ -2161,8 +2207,9 @@ zfs_send(zfs_handle_t *zhp, const char *fromsnap, const char *tosnap,
 		err = send_prelim_records(tosnap, fromsnap, outfd,
 		    flags->replicate || flags->props || flags->holds,
 		    flags->replicate, flags->verbosity > 0, flags->dryrun,
-		    flags->raw, flags->replicate, flags->backup, flags->holds,
-		    flags->props, flags->doall, &fss, &fsavl);
+		    flags->raw, flags->replicate, flags->skipmissing,
+		    flags->backup, flags->holds, flags->props, flags->doall,
+		    &fss, &fsavl);
 		zfs_close(tosnap);
 		if (err != 0)
 			goto err_out;
@@ -2180,6 +2227,7 @@ zfs_send(zfs_handle_t *zhp, const char *fromsnap, const char *tosnap,
 	sdd.verbosity = flags->verbosity;
 	sdd.parsable = flags->parsable;
 	sdd.progress = flags->progress;
+	sdd.progressastitle = flags->progressastitle;
 	sdd.dryrun = flags->dryrun;
 	sdd.large_block = flags->largeblock;
 	sdd.embed_data = flags->embed_data;
@@ -2208,7 +2256,7 @@ zfs_send(zfs_handle_t *zhp, const char *fromsnap, const char *tosnap,
 		++holdseq;
 		(void) snprintf(sdd.holdtag, sizeof (sdd.holdtag),
 		    ".send-%d-%llu", getpid(), (u_longlong_t)holdseq);
-		sdd.cleanup_fd = open(ZFS_DEV, O_RDWR);
+		sdd.cleanup_fd = open(ZFS_DEV, O_RDWR | O_CLOEXEC);
 		if (sdd.cleanup_fd < 0) {
 			err = errno;
 			goto stderr_out;
@@ -2389,9 +2437,9 @@ zfs_send_one(zfs_handle_t *zhp, const char *from, int fd, sendflags_t *flags,
 	int err;
 	libzfs_handle_t *hdl = zhp->zfs_hdl;
 	char *name = zhp->zfs_name;
-	int orig_fd = fd;
 	pthread_t ptid;
 	progress_arg_t pa = { 0 };
+	uint64_t size = 0;
 
 	char errbuf[1024];
 	(void) snprintf(errbuf, sizeof (errbuf), dgettext(TEXT_DOMAIN,
@@ -2465,7 +2513,7 @@ zfs_send_one(zfs_handle_t *zhp, const char *from, int fd, sendflags_t *flags,
 		 */
 		err = send_prelim_records(zhp, NULL, fd, B_TRUE, B_FALSE,
 		    flags->verbosity > 0, flags->dryrun, flags->raw,
-		    flags->replicate, flags->backup, flags->holds,
+		    flags->replicate, B_FALSE, flags->backup, flags->holds,
 		    flags->props, flags->doall, NULL, NULL);
 		if (err != 0)
 			return (err);
@@ -2474,9 +2522,9 @@ zfs_send_one(zfs_handle_t *zhp, const char *from, int fd, sendflags_t *flags,
 	/*
 	 * Perform size estimate if verbose was specified.
 	 */
-	if (flags->verbosity != 0) {
+	if (flags->verbosity != 0 || flags->progressastitle) {
 		err = estimate_size(zhp, from, fd, flags, 0, 0, 0, redactbook,
-		    errbuf);
+		    errbuf, &size);
 		if (err != 0)
 			return (err);
 	}
@@ -2488,17 +2536,20 @@ zfs_send_one(zfs_handle_t *zhp, const char *from, int fd, sendflags_t *flags,
 	 * If progress reporting is requested, spawn a new thread to poll
 	 * ZFS_IOC_SEND_PROGRESS at a regular interval.
 	 */
-	if (flags->progress) {
+	if (flags->progress || flags->progressastitle) {
 		pa.pa_zhp = zhp;
 		pa.pa_fd = fd;
 		pa.pa_parsable = flags->parsable;
 		pa.pa_estimate = B_FALSE;
 		pa.pa_verbosity = flags->verbosity;
+		pa.pa_size = size;
+		pa.pa_astitle = flags->progressastitle;
+		pa.pa_progress = flags->progress;
 
 		err = pthread_create(&ptid, NULL,
 		    send_progress_thread, &pa);
 		if (err != 0) {
-			zfs_error_aux(zhp->zfs_hdl, strerror(errno));
+			zfs_error_aux(zhp->zfs_hdl, "%s", strerror(errno));
 			return (zfs_error(zhp->zfs_hdl,
 			    EZFS_THREADCREATEFAILED, errbuf));
 		}
@@ -2507,24 +2558,20 @@ zfs_send_one(zfs_handle_t *zhp, const char *from, int fd, sendflags_t *flags,
 	err = lzc_send_redacted(name, from, fd,
 	    lzc_flags_from_sendflags(flags), redactbook);
 
-	if (flags->progress) {
+	if (flags->progress || flags->progressastitle) {
 		void *status = NULL;
-		if (err != 0)
-			(void) pthread_cancel(ptid);
+		(void) pthread_cancel(ptid);
 		(void) pthread_join(ptid, &status);
 		int error = (int)(uintptr_t)status;
-		if (error != 0 && status != PTHREAD_CANCELED) {
-			char errbuf[1024];
-			(void) snprintf(errbuf, sizeof (errbuf),
-			    dgettext(TEXT_DOMAIN, "progress thread exited "
-			    "nonzero"));
-			return (zfs_standard_error(hdl, error, errbuf));
-		}
+		if (error != 0 && status != PTHREAD_CANCELED)
+			return (zfs_standard_error_fmt(hdl, error,
+			    dgettext(TEXT_DOMAIN,
+			    "progress thread exited nonzero")));
 	}
 
-	if (flags->props || flags->holds || flags->backup) {
+	if (err == 0 && (flags->props || flags->holds || flags->backup)) {
 		/* Write the final end record. */
-		err = send_conclusion_record(orig_fd, NULL);
+		err = send_conclusion_record(fd, NULL);
 		if (err != 0)
 			return (zfs_standard_error(hdl, err, errbuf));
 	}
@@ -2567,7 +2614,7 @@ zfs_send_one(zfs_handle_t *zhp, const char *from, int fd, sendflags_t *flags,
 		case EPIPE:
 		case ERANGE:
 		case EROFS:
-			zfs_error_aux(hdl, strerror(errno));
+			zfs_error_aux(hdl, "%s", strerror(errno));
 			return (zfs_error(hdl, EZFS_BADBACKUP, errbuf));
 
 		default:
@@ -3237,7 +3284,7 @@ again:
 	deleted = fnvlist_alloc();
 
 	if ((error = gather_nvlist(hdl, tofs, fromsnap, NULL,
-	    recursive, B_TRUE, B_FALSE, recursive, B_FALSE, B_FALSE,
+	    recursive, B_TRUE, B_FALSE, recursive, B_FALSE, B_FALSE, B_FALSE,
 	    B_FALSE, B_TRUE, &local_nv, &local_avl)) != 0)
 		return (error);
 
@@ -3942,24 +3989,6 @@ zfs_setup_cmdline_props(libzfs_handle_t *hdl, zfs_type_t type,
 		if (prop == ZFS_PROP_ORIGIN)
 			continue;
 
-		/*
-		 * we're trying to override or exclude a property that does not
-		 * make sense for this type of dataset, but we don't want to
-		 * fail if the receive is recursive: this comes in handy when
-		 * the send stream contains, for instance, a child ZVOL and
-		 * we're trying to receive it with "-o atime=on"
-		 */
-		if (!zfs_prop_valid_for_type(prop, type, B_FALSE) &&
-		    !zfs_prop_user(name)) {
-			if (recursive)
-				continue;
-			zfs_error_aux(hdl, dgettext(TEXT_DOMAIN,
-			    "property '%s' does not apply to datasets of this "
-			    "type"), name);
-			ret = zfs_error(hdl, EZFS_BADPROP, errbuf);
-			goto error;
-		}
-
 		/* raw streams can't override encryption properties */
 		if ((zfs_prop_encryption_key_param(prop) ||
 		    prop == ZFS_PROP_ENCRYPTION) && raw) {
@@ -3968,6 +3997,15 @@ zfs_setup_cmdline_props(libzfs_handle_t *hdl, zfs_type_t type,
 			    "be set or excluded for raw streams."), name);
 			ret = zfs_error(hdl, EZFS_BADPROP, errbuf);
 			goto error;
+		}
+
+		/*
+		 * For plain replicated send, we can ignore encryption
+		 * properties other than first stream
+		 */
+		if ((zfs_prop_encryption_key_param(prop) || prop ==
+		    ZFS_PROP_ENCRYPTION) && !newfs && recursive && !raw) {
+			continue;
 		}
 
 		/* incremental streams can only exclude encryption properties */
@@ -3988,6 +4026,16 @@ zfs_setup_cmdline_props(libzfs_handle_t *hdl, zfs_type_t type,
 			 * a property: this is done by forcing an explicit
 			 * inherit on the destination so the effective value is
 			 * not the one we received from the send stream.
+			 */
+			if (!zfs_prop_valid_for_type(prop, type, B_FALSE) &&
+			    !zfs_prop_user(name)) {
+				(void) fprintf(stderr, dgettext(TEXT_DOMAIN,
+				    "Warning: %s: property '%s' does not "
+				    "apply to datasets of this type\n"),
+				    fsname, name);
+				continue;
+			}
+			/*
 			 * We do this only if the property is not already
 			 * locally-set, in which case its value will take
 			 * priority over the received anyway.
@@ -4007,14 +4055,32 @@ zfs_setup_cmdline_props(libzfs_handle_t *hdl, zfs_type_t type,
 			 * properties: if we're asked to exclude this kind of
 			 * values we remove them from "recvprops" input nvlist.
 			 */
-			if (!zfs_prop_inheritable(prop) &&
-			    !zfs_prop_user(name) && /* can be inherited too */
+			if (!zfs_prop_user(name) && /* can be inherited too */
+			    !zfs_prop_inheritable(prop) &&
 			    nvlist_exists(recvprops, name))
 				fnvlist_remove(recvprops, name);
 			else
 				fnvlist_add_nvpair(*oxprops, nvp);
 			break;
 		case DATA_TYPE_STRING: /* -o property=value */
+			/*
+			 * we're trying to override a property that does not
+			 * make sense for this type of dataset, but we don't
+			 * want to fail if the receive is recursive: this comes
+			 * in handy when the send stream contains, for
+			 * instance, a child ZVOL and we're trying to receive
+			 * it with "-o atime=on"
+			 */
+			if (!zfs_prop_valid_for_type(prop, type, B_FALSE) &&
+			    !zfs_prop_user(name)) {
+				if (recursive)
+					continue;
+				zfs_error_aux(hdl, dgettext(TEXT_DOMAIN,
+				    "property '%s' does not apply to datasets "
+				    "of this type"), name);
+				ret = zfs_error(hdl, EZFS_BADPROP, errbuf);
+				goto error;
+			}
 			fnvlist_add_nvpair(oprops, nvp);
 			break;
 		default:
@@ -4041,7 +4107,8 @@ zfs_setup_cmdline_props(libzfs_handle_t *hdl, zfs_type_t type,
 		if (cp != NULL)
 			*cp = '\0';
 
-		if (!raw && zfs_crypto_create(hdl, namebuf, voprops, NULL,
+		if (!raw && !(!newfs && recursive) &&
+		    zfs_crypto_create(hdl, namebuf, voprops, NULL,
 		    B_FALSE, wkeydata_out, wkeylen_out) != 0) {
 			fnvlist_free(voprops);
 			ret = zfs_error(hdl, EZFS_CRYPTOFAILED, errbuf);
@@ -4577,26 +4644,6 @@ zfs_receive_one(libzfs_handle_t *hdl, int infd, const char *tosnap,
 		(void) fflush(stdout);
 	}
 
-	if (flags->dryrun) {
-		void *buf = zfs_alloc(hdl, SPA_MAXBLOCKSIZE);
-
-		/*
-		 * We have read the DRR_BEGIN record, but we have
-		 * not yet read the payload. For non-dryrun sends
-		 * this will be done by the kernel, so we must
-		 * emulate that here, before attempting to read
-		 * more records.
-		 */
-		err = recv_read(hdl, infd, buf, drr->drr_payloadlen,
-		    flags->byteswap, NULL);
-		free(buf);
-		if (err != 0)
-			goto out;
-
-		err = recv_skip(hdl, infd, flags->byteswap);
-		goto out;
-	}
-
 	/*
 	 * If this is the top-level dataset, record it so we can use it
 	 * for recursive operations later.
@@ -4639,6 +4686,26 @@ zfs_receive_one(libzfs_handle_t *hdl, int infd, const char *tosnap,
 			oxprops = fnvlist_alloc();
 		fnvlist_add_uint64(oxprops,
 		    zfs_prop_to_name(ZFS_PROP_ENCRYPTION), ZIO_CRYPT_OFF);
+	}
+
+	if (flags->dryrun) {
+		void *buf = zfs_alloc(hdl, SPA_MAXBLOCKSIZE);
+
+		/*
+		 * We have read the DRR_BEGIN record, but we have
+		 * not yet read the payload. For non-dryrun sends
+		 * this will be done by the kernel, so we must
+		 * emulate that here, before attempting to read
+		 * more records.
+		 */
+		err = recv_read(hdl, infd, buf, drr->drr_payloadlen,
+		    flags->byteswap, NULL);
+		free(buf);
+		if (err != 0)
+			goto out;
+
+		err = recv_skip(hdl, infd, flags->byteswap);
+		goto out;
 	}
 
 	err = ioctl_err = lzc_receive_with_cmdprops(destsnap, rcvprops,
@@ -4730,8 +4797,8 @@ zfs_receive_one(libzfs_handle_t *hdl, int infd, const char *tosnap,
 		 */
 		*cp = '\0';
 		if (gather_nvlist(hdl, destsnap, NULL, NULL, B_FALSE, B_TRUE,
-		    B_FALSE, B_FALSE, B_FALSE, B_FALSE, B_FALSE, B_TRUE,
-		    &local_nv, &local_avl) == 0) {
+		    B_FALSE, B_FALSE, B_FALSE, B_FALSE, B_FALSE, B_FALSE,
+		    B_TRUE, &local_nv, &local_avl) == 0) {
 			*cp = '@';
 			fs = fsavl_find(local_avl, drrb->drr_toguid, NULL);
 			fsavl_destroy(local_avl);
@@ -4858,7 +4925,7 @@ zfs_receive_one(libzfs_handle_t *hdl, int infd, const char *tosnap,
 				(void) zfs_error(hdl, EZFS_BUSY, errbuf);
 				break;
 			}
-			/* fallthru */
+			fallthrough;
 		default:
 			(void) zfs_standard_error(hdl, ioctl_errno, errbuf);
 		}
@@ -5059,8 +5126,8 @@ zfs_receive_impl(libzfs_handle_t *hdl, const char *tosnap,
 	if (!DMU_STREAM_SUPPORTED(featureflags) ||
 	    (hdrtype != DMU_SUBSTREAM && hdrtype != DMU_COMPOUNDSTREAM)) {
 		zfs_error_aux(hdl, dgettext(TEXT_DOMAIN,
-		    "stream has unsupported feature, feature flags = %lx"),
-		    featureflags);
+		    "stream has unsupported feature, feature flags = %llx"),
+		    (unsigned long long)featureflags);
 		return (zfs_error(hdl, EZFS_BADSTREAM, errbuf));
 	}
 

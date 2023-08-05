@@ -242,7 +242,7 @@ def HasEVA       :    Predicate<"Subtarget->hasEVA()">,
 def HasMSA : Predicate<"Subtarget->hasMSA()">,
              AssemblerPredicate<(all_of FeatureMSA)>;
 def HasMadd4 : Predicate<"!Subtarget->disableMadd4()">,
-               AssemblerPredicate<(all_of (not FeatureMadd4))>;
+               AssemblerPredicate<(all_of (not FeatureNoMadd4))>;
 def HasMT  : Predicate<"Subtarget->hasMT()">,
              AssemblerPredicate<(all_of FeatureMT)>;
 def UseIndirectJumpsHazard : Predicate<"Subtarget->useIndirectJumpsHazard()">,
@@ -833,22 +833,26 @@ def MipsJumpTargetAsmOperand : AsmOperandClass {
 def jmptarget   : Operand<OtherVT> {
   let EncoderMethod = "getJumpTargetOpValue";
   let ParserMatchClass = MipsJumpTargetAsmOperand;
+  let PrintMethod = "printJumpOperand";
 }
 def brtarget    : Operand<OtherVT> {
   let EncoderMethod = "getBranchTargetOpValue";
   let OperandType = "OPERAND_PCREL";
   let DecoderMethod = "DecodeBranchTarget";
   let ParserMatchClass = MipsJumpTargetAsmOperand;
+  let PrintMethod = "printBranchOperand";
 }
 def brtarget1SImm16 : Operand<OtherVT> {
   let EncoderMethod = "getBranchTargetOpValue1SImm16";
   let OperandType = "OPERAND_PCREL";
   let DecoderMethod = "DecodeBranchTarget1SImm16";
   let ParserMatchClass = MipsJumpTargetAsmOperand;
+  let PrintMethod = "printBranchOperand";
 }
 def calltarget  : Operand<iPTR> {
   let EncoderMethod = "getJumpTargetOpValue";
   let ParserMatchClass = MipsJumpTargetAsmOperand;
+  let PrintMethod = "printJumpOperand";
 }
 
 def imm64: Operand<i64>;

@@ -184,7 +184,8 @@ __elfN(obj_loadfile)(char *filename, uint64_t dest,
 	fp->f_name = strdup(filename);
 	fp->f_type = strdup(__elfN(obj_moduletype));
 
-	printf("%s ", filename);
+	if (module_verbose > MODULE_VERBOSE_SILENT)
+		printf("%s ", filename);
 
 	fp->f_size = __elfN(obj_loadimage)(fp, &ef, dest);
 	if (fp->f_size == 0 || fp->f_addr == 0)
@@ -264,6 +265,8 @@ __elfN(obj_loadimage)(struct preloaded_file *fp, elf_file_t ef, uint64_t off)
 #if defined(__i386__) || defined(__amd64__)
 		case SHT_X86_64_UNWIND:
 #endif
+		case SHT_INIT_ARRAY:
+		case SHT_FINI_ARRAY:
 			if ((shdr[i].sh_flags & SHF_ALLOC) == 0)
 				break;
 			lastaddr = roundup(lastaddr, shdr[i].sh_addralign);
@@ -280,8 +283,6 @@ __elfN(obj_loadimage)(struct preloaded_file *fp, elf_file_t ef, uint64_t off)
 		case SHT_SYMTAB:
 			nsym++;
 			ef->symtabindex = i;
-			shdr[i].sh_addr = (Elf_Addr)lastaddr;
-			lastaddr += shdr[i].sh_size;
 			break;
 		}
 	}
@@ -378,10 +379,12 @@ __elfN(obj_loadimage)(struct preloaded_file *fp, elf_file_t ef, uint64_t off)
 	ret = lastaddr - firstaddr;
 	fp->f_addr = firstaddr;
 
-	printf("size 0x%lx at 0x%lx", (u_long)ret, (u_long)firstaddr);
+	if (module_verbose > MODULE_VERBOSE_SILENT)
+		printf("size 0x%lx at 0x%lx", (u_long)ret, (u_long)firstaddr);
 
 out:
-	printf("\n");
+	if (module_verbose > MODULE_VERBOSE_SILENT)
+		printf("\n");
 	return ret;
 }
 

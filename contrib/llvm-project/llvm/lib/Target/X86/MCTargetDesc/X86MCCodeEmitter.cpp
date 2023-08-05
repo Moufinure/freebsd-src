@@ -24,6 +24,7 @@
 #include "llvm/MC/MCRegisterInfo.h"
 #include "llvm/MC/MCSubtargetInfo.h"
 #include "llvm/MC/MCSymbol.h"
+#include "llvm/Support/Casting.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
 #include <cassert>
@@ -93,7 +94,8 @@ private:
   bool emitOpcodePrefix(int MemOperand, const MCInst &MI,
                         const MCSubtargetInfo &STI, raw_ostream &OS) const;
 
-  bool emitREXPrefix(int MemOperand, const MCInst &MI, raw_ostream &OS) const;
+  bool emitREXPrefix(int MemOperand, const MCInst &MI,
+                     const MCSubtargetInfo &STI, raw_ostream &OS) const;
 };
 
 } // end anonymous namespace
@@ -113,33 +115,28 @@ static void emitConstant(uint64_t Val, unsigned Size, raw_ostream &OS) {
   }
 }
 
-/// \returns true if this signed displacement fits in a 8-bit sign-extended
-/// field.
-static bool isDisp8(int Value) { return Value == (int8_t)Value; }
+/// Determine if this immediate can fit in a disp8 or a compressed disp8 for
+/// EVEX instructions. \p will be set to the value to pass to the ImmOffset
+/// parameter of emitImmediate.
+static bool isDispOrCDisp8(uint64_t TSFlags, int Value, int &ImmOffset) {
+  bool HasEVEX = (TSFlags & X86II::EncodingMask) == X86II::EVEX;
 
-/// \returns true if this signed displacement fits in a 8-bit compressed
-/// dispacement field.
-static bool isCDisp8(uint64_t TSFlags, int Value, int &CValue) {
-  assert(((TSFlags & X86II::EncodingMask) == X86II::EVEX) &&
-         "Compressed 8-bit displacement is only valid for EVEX inst.");
-
-  unsigned CD8_Scale =
+  int CD8_Scale =
       (TSFlags & X86II::CD8_Scale_Mask) >> X86II::CD8_Scale_Shift;
-  if (CD8_Scale == 0) {
-    CValue = Value;
-    return isDisp8(Value);
-  }
+  if (!HasEVEX || CD8_Scale == 0)
+    return isInt<8>(Value);
 
-  unsigned Mask = CD8_Scale - 1;
-  assert((CD8_Scale & Mask) == 0 && "Invalid memory object size.");
-  if (Value & Mask) // Unaligned offset
+  assert(isPowerOf2_32(CD8_Scale) && "Unexpected CD8 scale!");
+  if (Value & (CD8_Scale - 1)) // Unaligned offset
     return false;
-  Value /= (int)CD8_Scale;
-  bool Ret = (Value == (int8_t)Value);
 
-  if (Ret)
-    CValue = Value;
-  return Ret;
+  int CDisp8 = Value / CD8_Scale;
+  if (!isInt<8>(CDisp8))
+    return false;
+
+  // ImmOffset will be added to Value in emitImmediate leaving just CDisp8.
+  ImmOffset = CDisp8 - Value;
+  return true;
 }
 
 /// \returns the appropriate fixup kind to use for an immediate in an
@@ -158,64 +155,6 @@ static MCFixupKind getImmFixupKind(uint64_t TSFlags) {
   }
   return MCFixup::getKindForSize(Size, isPCRel);
 }
-
-/// \param Op operand # of the memory operand.
-///
-/// \returns true if the specified instruction has a 16-bit memory operand.
-static bool is16BitMemOperand(const MCInst &MI, unsigned Op,
-                              const MCSubtargetInfo &STI) {
-  const MCOperand &BaseReg = MI.getOperand(Op + X86::AddrBaseReg);
-  const MCOperand &IndexReg = MI.getOperand(Op + X86::AddrIndexReg);
-  const MCOperand &Disp = MI.getOperand(Op + X86::AddrDisp);
-
-  if (STI.hasFeature(X86::Mode16Bit) && BaseReg.getReg() == 0 && Disp.isImm() &&
-      Disp.getImm() < 0x10000)
-    return true;
-  if ((BaseReg.getReg() != 0 &&
-       X86MCRegisterClasses[X86::GR16RegClassID].contains(BaseReg.getReg())) ||
-      (IndexReg.getReg() != 0 &&
-       X86MCRegisterClasses[X86::GR16RegClassID].contains(IndexReg.getReg())))
-    return true;
-  return false;
-}
-
-/// \param Op operand # of the memory operand.
-///
-/// \returns true if the specified instruction has a 32-bit memory operand.
-static bool is32BitMemOperand(const MCInst &MI, unsigned Op) {
-  const MCOperand &BaseReg = MI.getOperand(Op + X86::AddrBaseReg);
-  const MCOperand &IndexReg = MI.getOperand(Op + X86::AddrIndexReg);
-
-  if ((BaseReg.getReg() != 0 &&
-       X86MCRegisterClasses[X86::GR32RegClassID].contains(BaseReg.getReg())) ||
-      (IndexReg.getReg() != 0 &&
-       X86MCRegisterClasses[X86::GR32RegClassID].contains(IndexReg.getReg())))
-    return true;
-  if (BaseReg.getReg() == X86::EIP) {
-    assert(IndexReg.getReg() == 0 && "Invalid eip-based address.");
-    return true;
-  }
-  if (IndexReg.getReg() == X86::EIZ)
-    return true;
-  return false;
-}
-
-/// \param Op operand # of the memory operand.
-///
-/// \returns true if the specified instruction has a 64-bit memory operand.
-#ifndef NDEBUG
-static bool is64BitMemOperand(const MCInst &MI, unsigned Op) {
-  const MCOperand &BaseReg = MI.getOperand(Op + X86::AddrBaseReg);
-  const MCOperand &IndexReg = MI.getOperand(Op + X86::AddrIndexReg);
-
-  if ((BaseReg.getReg() != 0 &&
-       X86MCRegisterClasses[X86::GR64RegClassID].contains(BaseReg.getReg())) ||
-      (IndexReg.getReg() != 0 &&
-       X86MCRegisterClasses[X86::GR64RegClassID].contains(IndexReg.getReg())))
-    return true;
-  return false;
-}
-#endif
 
 enum GlobalOffsetTableExprKind { GOT_None, GOT_Normal, GOT_SymDiff };
 
@@ -390,28 +329,44 @@ void X86MCCodeEmitter::emitMemModRMByte(const MCInst &MI, unsigned Op,
   const MCOperand &Scale = MI.getOperand(Op + X86::AddrScaleAmt);
   const MCOperand &IndexReg = MI.getOperand(Op + X86::AddrIndexReg);
   unsigned BaseReg = Base.getReg();
-  bool HasEVEX = (TSFlags & X86II::EncodingMask) == X86II::EVEX;
 
   // Handle %rip relative addressing.
   if (BaseReg == X86::RIP ||
       BaseReg == X86::EIP) { // [disp32+rIP] in X86-64 mode
-    assert(STI.hasFeature(X86::Mode64Bit) &&
+    assert(STI.hasFeature(X86::Is64Bit) &&
            "Rip-relative addressing requires 64-bit mode");
     assert(IndexReg.getReg() == 0 && !ForceSIB &&
            "Invalid rip-relative address");
     emitByte(modRMByte(0, RegOpcodeField, 5), OS);
 
     unsigned Opcode = MI.getOpcode();
-    // movq loads are handled with a special relocation form which allows the
-    // linker to eliminate some loads for GOT references which end up in the
-    // same linkage unit.
-    unsigned FixupKind = [=]() {
+    unsigned FixupKind = [&]() {
+      // Enable relaxed relocation only for a MCSymbolRefExpr.  We cannot use a
+      // relaxed relocation if an offset is present (e.g. x@GOTPCREL+4).
+      if (!(Disp.isExpr() && isa<MCSymbolRefExpr>(Disp.getExpr())))
+        return X86::reloc_riprel_4byte;
+
+      // Certain loads for GOT references can be relocated against the symbol
+      // directly if the symbol ends up in the same linkage unit.
       switch (Opcode) {
       default:
         return X86::reloc_riprel_4byte;
       case X86::MOV64rm:
+        // movq loads is a subset of reloc_riprel_4byte_relax_rex. It is a
+        // special case because COFF and Mach-O don't support ELF's more
+        // flexible R_X86_64_REX_GOTPCRELX relaxation.
         assert(HasREX);
         return X86::reloc_riprel_4byte_movq_load;
+      case X86::ADC32rm:
+      case X86::ADD32rm:
+      case X86::AND32rm:
+      case X86::CMP32rm:
+      case X86::MOV32rm:
+      case X86::OR32rm:
+      case X86::SBB32rm:
+      case X86::SUB32rm:
+      case X86::TEST32mr:
+      case X86::XOR32rm:
       case X86::CALL64m:
       case X86::JMP64m:
       case X86::TAILJMPm64:
@@ -449,7 +404,7 @@ void X86MCCodeEmitter::emitMemModRMByte(const MCInst &MI, unsigned Op,
 
   // 16-bit addressing forms of the ModR/M byte have a different encoding for
   // the R/M field and are far more limited in which registers can be used.
-  if (is16BitMemOperand(MI, Op, STI)) {
+  if (X86_MC::is16BitMemOperand(MI, Op, STI)) {
     if (BaseReg) {
       // For 32-bit addressing, the row and column values in Table 2-2 are
       // basically the same. It's AX/CX/DX/BX/SP/BP/SI/DI in that order, with
@@ -484,7 +439,7 @@ void X86MCCodeEmitter::emitMemModRMByte(const MCInst &MI, unsigned Op,
           RMfield = (IndexReg16 & 1) | ((7 - RMfield) << 1);
       }
 
-      if (Disp.isImm() && isDisp8(Disp.getImm())) {
+      if (Disp.isImm() && isInt<8>(Disp.getImm())) {
         if (Disp.getImm() == 0 && RMfield != 6) {
           // There is no displacement; just the register.
           emitByte(modRMByte(0, RegOpcodeField, RMfield), OS);
@@ -498,6 +453,7 @@ void X86MCCodeEmitter::emitMemModRMByte(const MCInst &MI, unsigned Op,
       // This is the [REG]+disp16 case.
       emitByte(modRMByte(2, RegOpcodeField, RMfield), OS);
     } else {
+      assert(IndexReg.getReg() == 0 && "Unexpected index register!");
       // There is no BaseReg; this is the plain [disp16] case.
       emitByte(modRMByte(0, RegOpcodeField, 6), OS);
     }
@@ -507,12 +463,18 @@ void X86MCCodeEmitter::emitMemModRMByte(const MCInst &MI, unsigned Op,
     return;
   }
 
-  // Determine whether a SIB byte is needed.
-  // If no BaseReg, issue a RIP relative instruction only if the MCE can
-  // resolve addresses on-the-fly, otherwise use SIB (Intel Manual 2A, table
-  // 2-7) and absolute references.
+  // Check for presence of {disp8} or {disp32} pseudo prefixes.
+  bool UseDisp8 = MI.getFlags() & X86::IP_USE_DISP8;
+  bool UseDisp32 = MI.getFlags() & X86::IP_USE_DISP32;
 
-  if ( // The SIB byte must be used if there is an index register.
+  // We only allow no displacement if no pseudo prefix is present.
+  bool AllowNoDisp = !UseDisp8 && !UseDisp32;
+  // Disp8 is allowed unless the {disp32} prefix is present.
+  bool AllowDisp8 = !UseDisp32;
+
+  // Determine whether a SIB byte is needed.
+  if (// The SIB byte must be used if there is an index register or the
+      // encoding requires a SIB byte.
       !ForceSIB && IndexReg.getReg() == 0 &&
       // The SIB byte must be used if the base is ESP/RSP/R12, all of which
       // encode to an R/M value of 4, which indicates that a SIB byte is
@@ -520,7 +482,7 @@ void X86MCCodeEmitter::emitMemModRMByte(const MCInst &MI, unsigned Op,
       BaseRegNo != N86::ESP &&
       // If there is no base register and we're in 64-bit mode, we need a SIB
       // byte to emit an addr that is just 'disp32' (the non-RIP relative form).
-      (!STI.hasFeature(X86::Mode64Bit) || BaseReg != 0)) {
+      (!STI.hasFeature(X86::Is64Bit) || BaseReg != 0)) {
 
     if (BaseReg == 0) { // [disp32]     in X86-32 mode
       emitByte(modRMByte(0, RegOpcodeField, 5), OS);
@@ -528,12 +490,12 @@ void X86MCCodeEmitter::emitMemModRMByte(const MCInst &MI, unsigned Op,
       return;
     }
 
-    // If the base is not EBP/ESP and there is no displacement, use simple
-    // indirect register encoding, this handles addresses like [EAX].  The
-    // encoding for [EBP] with no displacement means [disp32] so we handle it
-    // by emitting a displacement of 0 below.
+    // If the base is not EBP/ESP/R12/R13 and there is no displacement, use
+    // simple indirect register encoding, this handles addresses like [EAX].
+    // The encoding for [EBP] or[R13] with no displacement means [disp32] so we
+    // handle it by emitting a displacement of 0 later.
     if (BaseRegNo != N86::EBP) {
-      if (Disp.isImm() && Disp.getImm() == 0) {
+      if (Disp.isImm() && Disp.getImm() == 0 && AllowNoDisp) {
         emitByte(modRMByte(0, RegOpcodeField, BaseRegNo), OS);
         return;
       }
@@ -552,24 +514,22 @@ void X86MCCodeEmitter::emitMemModRMByte(const MCInst &MI, unsigned Op,
     }
 
     // Otherwise, if the displacement fits in a byte, encode as [REG+disp8].
-    if (Disp.isImm()) {
-      if (!HasEVEX && isDisp8(Disp.getImm())) {
-        emitByte(modRMByte(1, RegOpcodeField, BaseRegNo), OS);
-        emitImmediate(Disp, MI.getLoc(), 1, FK_Data_1, StartByte, OS, Fixups);
-        return;
-      }
-      // Try EVEX compressed 8-bit displacement first; if failed, fall back to
-      // 32-bit displacement.
-      int CDisp8 = 0;
-      if (HasEVEX && isCDisp8(TSFlags, Disp.getImm(), CDisp8)) {
+    // Including a compressed disp8 for EVEX instructions that support it.
+    // This also handles the 0 displacement for [EBP] or [R13]. We can't use
+    // disp8 if the {disp32} pseudo prefix is present.
+    if (Disp.isImm() && AllowDisp8) {
+      int ImmOffset = 0;
+      if (isDispOrCDisp8(TSFlags, Disp.getImm(), ImmOffset)) {
         emitByte(modRMByte(1, RegOpcodeField, BaseRegNo), OS);
         emitImmediate(Disp, MI.getLoc(), 1, FK_Data_1, StartByte, OS, Fixups,
-                      CDisp8 - Disp.getImm());
+                      ImmOffset);
         return;
       }
     }
 
-    // Otherwise, emit the most general non-SIB encoding: [REG+disp32]
+    // Otherwise, emit the most general non-SIB encoding: [REG+disp32].
+    // Displacement may be 0 for [EBP] or [R13] case if {disp32} pseudo prefix
+    // prevented using disp8 above.
     emitByte(modRMByte(2, RegOpcodeField, BaseRegNo), OS);
     unsigned Opcode = MI.getOpcode();
     unsigned FixupKind = Opcode == X86::MOV32rm ? X86::reloc_signed_4byte_relax
@@ -585,64 +545,47 @@ void X86MCCodeEmitter::emitMemModRMByte(const MCInst &MI, unsigned Op,
 
   bool ForceDisp32 = false;
   bool ForceDisp8 = false;
-  int CDisp8 = 0;
   int ImmOffset = 0;
   if (BaseReg == 0) {
     // If there is no base register, we emit the special case SIB byte with
     // MOD=0, BASE=5, to JUST get the index, scale, and displacement.
+    BaseRegNo = 5;
     emitByte(modRMByte(0, RegOpcodeField, 4), OS);
     ForceDisp32 = true;
-  } else if (!Disp.isImm()) {
-    // Emit the normal disp32 encoding.
-    emitByte(modRMByte(2, RegOpcodeField, 4), OS);
-    ForceDisp32 = true;
-  } else if (Disp.getImm() == 0 &&
-             // Base reg can't be anything that ends up with '5' as the base
-             // reg, it is the magic [*] nomenclature that indicates no base.
+  } else if (Disp.isImm() && Disp.getImm() == 0 && AllowNoDisp &&
+             // Base reg can't be EBP/RBP/R13 as that would end up with '5' as
+             // the base field, but that is the magic [*] nomenclature that
+             // indicates no base when mod=0. For these cases we'll emit a 0
+             // displacement instead.
              BaseRegNo != N86::EBP) {
     // Emit no displacement ModR/M byte
     emitByte(modRMByte(0, RegOpcodeField, 4), OS);
-  } else if (!HasEVEX && isDisp8(Disp.getImm())) {
-    // Emit the disp8 encoding.
+  } else if (Disp.isImm() && AllowDisp8 &&
+             isDispOrCDisp8(TSFlags, Disp.getImm(), ImmOffset)) {
+    // Displacement fits in a byte or matches an EVEX compressed disp8, use
+    // disp8 encoding. This also handles EBP/R13 base with 0 displacement unless
+    // {disp32} pseudo prefix was used.
     emitByte(modRMByte(1, RegOpcodeField, 4), OS);
-    ForceDisp8 = true; // Make sure to force 8 bit disp if Base=EBP
-  } else if (HasEVEX && isCDisp8(TSFlags, Disp.getImm(), CDisp8)) {
-    // Emit the disp8 encoding.
-    emitByte(modRMByte(1, RegOpcodeField, 4), OS);
-    ForceDisp8 = true; // Make sure to force 8 bit disp if Base=EBP
-    ImmOffset = CDisp8 - Disp.getImm();
+    ForceDisp8 = true;
   } else {
-    // Emit the normal disp32 encoding.
+    // Otherwise, emit the normal disp32 encoding.
     emitByte(modRMByte(2, RegOpcodeField, 4), OS);
+    ForceDisp32 = true;
   }
 
   // Calculate what the SS field value should be...
   static const unsigned SSTable[] = {~0U, 0, 1, ~0U, 2, ~0U, ~0U, ~0U, 3};
   unsigned SS = SSTable[Scale.getImm()];
 
-  if (BaseReg == 0) {
-    // Handle the SIB byte for the case where there is no base, see Intel
-    // Manual 2A, table 2-7. The displacement has already been output.
-    unsigned IndexRegNo;
-    if (IndexReg.getReg())
-      IndexRegNo = getX86RegNum(IndexReg);
-    else // Examples: [ESP+1*<noreg>+4] or [scaled idx]+disp32 (MOD=0,BASE=5)
-      IndexRegNo = 4;
-    emitSIBByte(SS, IndexRegNo, 5, OS);
-  } else {
-    unsigned IndexRegNo;
-    if (IndexReg.getReg())
-      IndexRegNo = getX86RegNum(IndexReg);
-    else
-      IndexRegNo = 4; // For example [ESP+1*<noreg>+4]
-    emitSIBByte(SS, IndexRegNo, getX86RegNum(Base), OS);
-  }
+  unsigned IndexRegNo = IndexReg.getReg() ? getX86RegNum(IndexReg) : 4;
+
+  emitSIBByte(SS, IndexRegNo, BaseRegNo, OS);
 
   // Do we need to output a displacement?
   if (ForceDisp8)
     emitImmediate(Disp, MI.getLoc(), 1, FK_Data_1, StartByte, OS, Fixups,
                   ImmOffset);
-  else if (ForceDisp32 || Disp.getImm() != 0)
+  else if (ForceDisp32)
     emitImmediate(Disp, MI.getLoc(), 4, MCFixupKind(X86::reloc_signed_4byte),
                   StartByte, OS, Fixups);
 }
@@ -670,75 +613,29 @@ bool X86MCCodeEmitter::emitPrefixImpl(unsigned &CurOp, const MCInst &MI,
     emitByte(0xF2, OS);
 
   // Emit the address size opcode prefix as needed.
-  bool NeedAddressOverride;
-  uint64_t AdSize = TSFlags & X86II::AdSizeMask;
-  if ((STI.hasFeature(X86::Mode16Bit) && AdSize == X86II::AdSize32) ||
-      (STI.hasFeature(X86::Mode32Bit) && AdSize == X86II::AdSize16) ||
-      (STI.hasFeature(X86::Mode64Bit) && AdSize == X86II::AdSize32)) {
-    NeedAddressOverride = true;
-  } else if (MemoryOperand < 0) {
-    NeedAddressOverride = false;
-  } else if (STI.hasFeature(X86::Mode64Bit)) {
-    assert(!is16BitMemOperand(MI, MemoryOperand, STI));
-    NeedAddressOverride = is32BitMemOperand(MI, MemoryOperand);
-  } else if (STI.hasFeature(X86::Mode32Bit)) {
-    assert(!is64BitMemOperand(MI, MemoryOperand));
-    NeedAddressOverride = is16BitMemOperand(MI, MemoryOperand, STI);
-  } else {
-    assert(STI.hasFeature(X86::Mode16Bit));
-    assert(!is64BitMemOperand(MI, MemoryOperand));
-    NeedAddressOverride = !is16BitMemOperand(MI, MemoryOperand, STI);
-  }
-
-  if (NeedAddressOverride)
+  if (X86_MC::needsAddressSizeOverride(MI, STI, MemoryOperand, TSFlags) ||
+      Flags & X86::IP_HAS_AD_SIZE)
     emitByte(0x67, OS);
-
-  // Encoding type for this instruction.
-  uint64_t Encoding = TSFlags & X86II::EncodingMask;
-  bool HasREX = false;
-  if (Encoding)
-    emitVEXOpcodePrefix(MemoryOperand, MI, OS);
-  else
-    HasREX = emitOpcodePrefix(MemoryOperand, MI, STI, OS);
 
   uint64_t Form = TSFlags & X86II::FormMask;
   switch (Form) {
   default:
     break;
   case X86II::RawFrmDstSrc: {
-    unsigned siReg = MI.getOperand(1).getReg();
-    assert(((siReg == X86::SI && MI.getOperand(0).getReg() == X86::DI) ||
-            (siReg == X86::ESI && MI.getOperand(0).getReg() == X86::EDI) ||
-            (siReg == X86::RSI && MI.getOperand(0).getReg() == X86::RDI)) &&
-           "SI and DI register sizes do not match");
     // Emit segment override opcode prefix as needed (not for %ds).
     if (MI.getOperand(2).getReg() != X86::DS)
       emitSegmentOverridePrefix(2, MI, OS);
-    // Emit AdSize prefix as needed.
-    if ((!STI.hasFeature(X86::Mode32Bit) && siReg == X86::ESI) ||
-        (STI.hasFeature(X86::Mode32Bit) && siReg == X86::SI))
-      emitByte(0x67, OS);
     CurOp += 3; // Consume operands.
     break;
   }
   case X86II::RawFrmSrc: {
-    unsigned siReg = MI.getOperand(0).getReg();
     // Emit segment override opcode prefix as needed (not for %ds).
     if (MI.getOperand(1).getReg() != X86::DS)
       emitSegmentOverridePrefix(1, MI, OS);
-    // Emit AdSize prefix as needed.
-    if ((!STI.hasFeature(X86::Mode32Bit) && siReg == X86::ESI) ||
-        (STI.hasFeature(X86::Mode32Bit) && siReg == X86::SI))
-      emitByte(0x67, OS);
     CurOp += 2; // Consume operands.
     break;
   }
   case X86II::RawFrmDst: {
-    unsigned siReg = MI.getOperand(0).getReg();
-    // Emit AdSize prefix as needed.
-    if ((!STI.hasFeature(X86::Mode32Bit) && siReg == X86::EDI) ||
-        (STI.hasFeature(X86::Mode32Bit) && siReg == X86::DI))
-      emitByte(0x67, OS);
     ++CurOp; // Consume operand.
     break;
   }
@@ -748,6 +645,15 @@ bool X86MCCodeEmitter::emitPrefixImpl(unsigned &CurOp, const MCInst &MI,
     break;
   }
   }
+
+  // REX prefix is optional, but if used must be immediately before the opcode
+  // Encoding type for this instruction.
+  uint64_t Encoding = TSFlags & X86II::EncodingMask;
+  bool HasREX = false;
+  if (Encoding)
+    emitVEXOpcodePrefix(MemoryOperand, MI, OS);
+  else
+    HasREX = emitOpcodePrefix(MemoryOperand, MI, STI, OS);
 
   return HasREX;
 }
@@ -798,7 +704,10 @@ void X86MCCodeEmitter::emitVEXOpcodePrefix(int MemOperand, const MCInst &MI,
   //  0b00001: implied 0F leading opcode
   //  0b00010: implied 0F 38 leading opcode bytes
   //  0b00011: implied 0F 3A leading opcode bytes
-  //  0b00100-0b11111: Reserved for future use
+  //  0b00100: Reserved for future use
+  //  0b00101: VEX MAP5
+  //  0b00110: VEX MAP6
+  //  0b00111-0b11111: Reserved for future use
   //  0b01000: XOP map select - 08h instructions with imm byte
   //  0b01001: XOP map select - 09h instructions with no imm byte
   //  0b01010: XOP map select - 0Ah instructions with imm dword
@@ -823,6 +732,12 @@ void X86MCCodeEmitter::emitVEXOpcodePrefix(int MemOperand, const MCInst &MI,
     break;
   case X86II::XOPA:
     VEX_5M = 0xA;
+    break;
+  case X86II::T_MAP5:
+    VEX_5M = 0x5;
+    break;
+  case X86II::T_MAP6:
+    VEX_5M = 0x6;
     break;
   }
 
@@ -886,6 +801,23 @@ void X86MCCodeEmitter::emitVEXOpcodePrefix(int MemOperand, const MCInst &MI,
   switch (TSFlags & X86II::FormMask) {
   default:
     llvm_unreachable("Unexpected form in emitVEXOpcodePrefix!");
+  case X86II::MRMDestMem4VOp3CC: {
+    //  MemAddr, src1(ModR/M), src2(VEX_4V)
+    unsigned BaseRegEnc = getX86RegEncoding(MI, MemOperand + X86::AddrBaseReg);
+    VEX_B = ~(BaseRegEnc >> 3) & 1;
+    unsigned IndexRegEnc =
+        getX86RegEncoding(MI, MemOperand + X86::AddrIndexReg);
+    VEX_X = ~(IndexRegEnc >> 3) & 1;
+
+    CurOp += X86::AddrNumOperands;
+
+    unsigned RegEnc = getX86RegEncoding(MI, ++CurOp);
+    VEX_R = ~(RegEnc >> 3) & 1;
+
+    unsigned VRegEnc = getX86RegEncoding(MI, CurOp++);
+    VEX_4V = ~VRegEnc & 0xf;
+    break;
+  }
   case X86II::MRM_C0:
   case X86II::RawFrm:
   case X86II::PrefixByte:
@@ -1172,10 +1104,10 @@ void X86MCCodeEmitter::emitVEXOpcodePrefix(int MemOperand, const MCInst &MI,
     // EVEX opcode prefix can have 4 bytes
     //
     // +-----+ +--------------+ +-------------------+ +------------------------+
-    // | 62h | | RXBR' | 00mm | | W | vvvv | U | pp | | z | L'L | b | v' | aaa |
+    // | 62h | | RXBR' | 0mmm | | W | vvvv | U | pp | | z | L'L | b | v' | aaa |
     // +-----+ +--------------+ +-------------------+ +------------------------+
-    assert((VEX_5M & 0x3) == VEX_5M &&
-           "More than 2 significant bits in VEX.m-mmmm fields for EVEX!");
+    assert((VEX_5M & 0x7) == VEX_5M &&
+           "More than 3 significant bits in VEX.m-mmmm fields for EVEX!");
 
     emitByte(0x62, OS);
     emitByte((VEX_R << 7) | (VEX_X << 6) | (VEX_B << 5) | (EVEX_R2 << 4) |
@@ -1200,6 +1132,7 @@ void X86MCCodeEmitter::emitVEXOpcodePrefix(int MemOperand, const MCInst &MI,
 ///
 /// \returns true if REX prefix is used, otherwise returns false.
 bool X86MCCodeEmitter::emitREXPrefix(int MemOperand, const MCInst &MI,
+                                     const MCSubtargetInfo &STI,
                                      raw_ostream &OS) const {
   uint8_t REX = [&, MemOperand]() {
     uint8_t REX = 0;
@@ -1220,15 +1153,27 @@ bool X86MCCodeEmitter::emitREXPrefix(int MemOperand, const MCInst &MI,
     // If it accesses SPL, BPL, SIL, or DIL, then it requires a 0x40 REX prefix.
     for (unsigned i = CurOp; i != NumOps; ++i) {
       const MCOperand &MO = MI.getOperand(i);
-      if (!MO.isReg())
-        continue;
-      unsigned Reg = MO.getReg();
-      if (Reg == X86::AH || Reg == X86::BH || Reg == X86::CH || Reg == X86::DH)
-        UsesHighByteReg = true;
-      if (X86II::isX86_64NonExtLowByteReg(Reg))
-        // FIXME: The caller of determineREXPrefix slaps this prefix onto
-        // anything that returns non-zero.
-        REX |= 0x40; // REX fixed encoding prefix
+      if (MO.isReg()) {
+        unsigned Reg = MO.getReg();
+        if (Reg == X86::AH || Reg == X86::BH || Reg == X86::CH ||
+            Reg == X86::DH)
+          UsesHighByteReg = true;
+        if (X86II::isX86_64NonExtLowByteReg(Reg))
+          // FIXME: The caller of determineREXPrefix slaps this prefix onto
+          // anything that returns non-zero.
+          REX |= 0x40; // REX fixed encoding prefix
+      } else if (MO.isExpr() && STI.getTargetTriple().isX32()) {
+        // GOTTPOFF and TLSDESC relocations require a REX prefix to allow
+        // linker optimizations: even if the instructions we see may not require
+        // any prefix, they may be replaced by instructions that do. This is
+        // handled as a special case here so that it also works for hand-written
+        // assembly without the user needing to write REX, as with GNU as.
+        const auto *Ref = dyn_cast<MCSymbolRefExpr>(MO.getExpr());
+        if (Ref && (Ref->getKind() == MCSymbolRefExpr::VK_GOTTPOFF ||
+                    Ref->getKind() == MCSymbolRefExpr::VK_TLSDESC)) {
+          REX |= 0x40; // REX fixed encoding prefix
+        }
+      }
     }
 
     switch (TSFlags & X86II::FormMask) {
@@ -1324,7 +1269,7 @@ bool X86MCCodeEmitter::emitOpcodePrefix(int MemOperand, const MCInst &MI,
 
   // Emit the operand size opcode prefix as needed.
   if ((TSFlags & X86II::OpSizeMask) ==
-      (STI.hasFeature(X86::Mode16Bit) ? X86II::OpSize32 : X86II::OpSize16))
+      (STI.hasFeature(X86::Is16Bit) ? X86II::OpSize32 : X86II::OpSize16))
     emitByte(0x66, OS);
 
   // Emit the LOCK opcode prefix.
@@ -1348,10 +1293,10 @@ bool X86MCCodeEmitter::emitOpcodePrefix(int MemOperand, const MCInst &MI,
   }
 
   // Handle REX prefix.
-  assert((STI.hasFeature(X86::Mode64Bit) || !(TSFlags & X86II::REX_W)) &&
+  assert((STI.hasFeature(X86::Is64Bit) || !(TSFlags & X86II::REX_W)) &&
          "REX.W requires 64bit mode.");
-  bool HasREX = STI.hasFeature(X86::Mode64Bit)
-                    ? emitREXPrefix(MemOperand, MI, OS)
+  bool HasREX = STI.hasFeature(X86::Is64Bit)
+                    ? emitREXPrefix(MemOperand, MI, STI, OS)
                     : false;
 
   // 0x0F escape code must be emitted just before the opcode.
@@ -1445,11 +1390,11 @@ void X86MCCodeEmitter::encodeInstruction(const MCInst &MI, raw_ostream &OS,
     OpcodeOffset = MI.getOperand(NumOps - 1).getImm();
     assert(OpcodeOffset < 16 && "Unexpected opcode offset!");
     --NumOps; // Drop the operand from the end.
-    LLVM_FALLTHROUGH;
+    [[fallthrough]];
   case X86II::RawFrm:
     emitByte(BaseOpcode + OpcodeOffset, OS);
 
-    if (!STI.hasFeature(X86::Mode64Bit) || !isPCRel32Branch(MI, MCII))
+    if (!STI.hasFeature(X86::Is64Bit) || !isPCRel32Branch(MI, MCII))
       break;
 
     const MCOperand &Op = MI.getOperand(CurOp++);
@@ -1499,6 +1444,15 @@ void X86MCCodeEmitter::encodeInstruction(const MCInst &MI, raw_ostream &OS,
     emitRegModRMByte(MI.getOperand(CurOp),
                      getX86RegNum(MI.getOperand(SrcRegNum)), OS);
     CurOp = SrcRegNum + 1;
+    break;
+  }
+  case X86II::MRMDestMem4VOp3CC: {
+    unsigned CC = MI.getOperand(8).getImm();
+    emitByte(BaseOpcode + CC, OS);
+    unsigned SrcRegNum = CurOp + X86::AddrNumOperands;
+    emitMemModRMByte(MI, CurOp + 1, getX86RegNum(MI.getOperand(0)), TSFlags,
+                    HasREX, StartByte, OS, Fixups, STI, false);
+    CurOp = SrcRegNum + 3; // skip reg, VEX_V4 and CC
     break;
   }
   case X86II::MRMDestMemFSIB:
@@ -1819,7 +1773,6 @@ void X86MCCodeEmitter::encodeInstruction(const MCInst &MI, raw_ostream &OS,
 }
 
 MCCodeEmitter *llvm::createX86MCCodeEmitter(const MCInstrInfo &MCII,
-                                            const MCRegisterInfo &MRI,
                                             MCContext &Ctx) {
   return new X86MCCodeEmitter(MCII, Ctx);
 }

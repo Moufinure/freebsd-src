@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2009 Alexander Motin <mav@FreeBSD.org>
  * All rights reserved.
@@ -1094,7 +1094,7 @@ adastrategy(struct bio *bp)
 }
 
 static int
-adadump(void *arg, void *virtual, vm_offset_t physical, off_t offset, size_t length)
+adadump(void *arg, void *virtual, off_t offset, size_t length)
 {
 	struct	    cam_periph *periph;
 	struct	    ada_softc *softc;
@@ -1483,7 +1483,7 @@ adasysctlinit(void *context, int pending)
 
 	SYSCTL_ADD_PROC(&softc->sysctl_ctx, SYSCTL_CHILDREN(softc->sysctl_tree),
 		OID_AUTO, "delete_method",
-		CTLTYPE_STRING | CTLFLAG_RW | CTLFLAG_NEEDGIANT,
+		CTLTYPE_STRING | CTLFLAG_RW | CTLFLAG_MPSAFE,
 		softc, 0, adadeletemethodsysctl, "A",
 		"BIO_DELETE execution method");
 	SYSCTL_ADD_UQUAD(&softc->sysctl_ctx,
@@ -1506,12 +1506,12 @@ adasysctlinit(void *context, int pending)
 		&softc->write_cache, 0, "Enable disk write cache.");
 	SYSCTL_ADD_PROC(&softc->sysctl_ctx, SYSCTL_CHILDREN(softc->sysctl_tree),
 		OID_AUTO, "zone_mode",
-		CTLTYPE_STRING | CTLFLAG_RD | CTLFLAG_NEEDGIANT,
+		CTLTYPE_STRING | CTLFLAG_RD | CTLFLAG_MPSAFE,
 		softc, 0, adazonemodesysctl, "A",
 		"Zone Mode");
 	SYSCTL_ADD_PROC(&softc->sysctl_ctx, SYSCTL_CHILDREN(softc->sysctl_tree),
 		OID_AUTO, "zone_support",
-		CTLTYPE_STRING | CTLFLAG_RD | CTLFLAG_NEEDGIANT,
+		CTLTYPE_STRING | CTLFLAG_RD | CTLFLAG_MPSAFE,
 		softc, 0, adazonesupsysctl, "A",
 		"Zone Support");
 	SYSCTL_ADD_UQUAD(&softc->sysctl_ctx,
@@ -1835,9 +1835,11 @@ adaregister(struct cam_periph *periph, void *arg)
 	TASK_INIT(&softc->sysctl_task, 0, adasysctlinit, periph);
 
 	/*
-	 * Register this media as a disk
+	 * Take a reference on the periph while adastart is called to finish
+	 * the probe.  The reference will be dropped in adaprobedone at the
+	 * end of probe.
 	 */
-	(void)cam_periph_hold(periph, PRIBIO);
+	(void)cam_periph_acquire(periph);
 	cam_periph_unlock(periph);
 	snprintf(announce_buf, ADA_ANNOUNCETMP_SZ,
 	    "kern.cam.ada.%d.quirks", periph->unit_number);
@@ -1880,24 +1882,12 @@ adaregister(struct cam_periph *periph, void *arg)
 	softc->disk->d_close = adaclose;
 	softc->disk->d_strategy = adastrategy;
 	softc->disk->d_getattr = adagetattr;
-	softc->disk->d_dump = adadump;
+	if (cam_sim_pollable(periph->sim))
+		softc->disk->d_dump = adadump;
 	softc->disk->d_gone = adadiskgonecb;
 	softc->disk->d_name = "ada";
 	softc->disk->d_drv1 = periph;
 	softc->disk->d_unit = periph->unit_number;
-
-	/*
-	 * Acquire a reference to the periph before we register with GEOM.
-	 * We'll release this reference once GEOM calls us back (via
-	 * adadiskgonecb()) telling us that our provider has been freed.
-	 */
-	if (cam_periph_acquire(periph) != 0) {
-		xpt_print(periph->path, "%s: lost periph during "
-			  "registration!\n", __func__);
-		cam_periph_lock(periph);
-		return (CAM_REQ_CMP_ERR);
-	}
-	disk_create(softc->disk, DISK_VERSION);
 	cam_periph_lock(periph);
 
 	dp = &softc->params;
@@ -1936,9 +1926,12 @@ adaregister(struct cam_periph *periph, void *arg)
 	 * ordered tag to a device.
 	 */
 	callout_init_mtx(&softc->sendordered_c, cam_periph_mtx(periph), 0);
-	callout_reset(&softc->sendordered_c,
-	    (ada_default_timeout * hz) / ADA_ORDEREDTAG_INTERVAL,
-	    adasendorderedtag, softc);
+	callout_reset_sbt(&softc->sendordered_c,
+	    SBT_1S / ADA_ORDEREDTAG_INTERVAL * ada_default_timeout, 0,
+	    adasendorderedtag, softc, C_PREL(1));
+
+	/* Released after probe when disk_create() call pass it to GEOM. */
+	cam_periph_hold_boot(periph);
 
 	if (ADA_RA >= 0 && softc->flags & ADA_FLAG_CAN_RAHEAD) {
 		softc->state = ADA_STATE_RAHEAD;
@@ -1957,7 +1950,6 @@ adaregister(struct cam_periph *periph, void *arg)
 	}
 
 	xpt_schedule(periph, CAM_PRIORITY_DEV);
-
 	return(CAM_REQ_CMP);
 }
 
@@ -2679,10 +2671,17 @@ adaprobedone(struct cam_periph *periph, union ccb *ccb)
 	adaschedule(periph);
 	if ((softc->flags & ADA_FLAG_ANNOUNCED) == 0) {
 		softc->flags |= ADA_FLAG_ANNOUNCED;
-		cam_periph_unhold(periph);
-	} else {
-		cam_periph_release_locked(periph);
+
+		/*
+		 * We'll release this reference once GEOM calls us back via
+		 * adadiskgonecb(), telling us that our provider has been freed.
+		 */
+		if (cam_periph_acquire(periph) == 0)
+			disk_create(softc->disk, DISK_VERSION);
+
+		cam_periph_release_boot(periph);
 	}
+	cam_periph_release_locked(periph);
 }
 
 static void
@@ -3504,10 +3503,11 @@ adasendorderedtag(void *arg)
 			softc->flags &= ~ADA_FLAG_WAS_OTAG;
 		}
 	}
+
 	/* Queue us up again */
-	callout_reset(&softc->sendordered_c,
-	    (ada_default_timeout * hz) / ADA_ORDEREDTAG_INTERVAL,
-	    adasendorderedtag, softc);
+	callout_schedule_sbt(&softc->sendordered_c,
+	    SBT_1S / ADA_ORDEREDTAG_INTERVAL * ada_default_timeout, 0,
+	    C_PREL(1));
 }
 
 /*
@@ -3525,10 +3525,10 @@ adaflush(void)
 	CAM_PERIPH_FOREACH(periph, &adadriver) {
 		softc = (struct ada_softc *)periph->softc;
 		if (SCHEDULER_STOPPED()) {
-			/* If we paniced with the lock held, do not recurse. */
+			/* If we panicked with the lock held, do not recurse. */
 			if (!cam_periph_owned(periph) &&
 			    (softc->flags & ADA_FLAG_OPEN)) {
-				adadump(softc->disk, NULL, 0, 0, 0);
+				adadump(softc->disk, NULL, 0, 0);
 			}
 			continue;
 		}
@@ -3574,9 +3574,10 @@ adaspindown(uint8_t cmd, int flags)
 	struct ada_softc *softc;
 	struct ccb_ataio local_ccb;
 	int error;
+	int mode;
 
 	CAM_PERIPH_FOREACH(periph, &adadriver) {
-		/* If we paniced with lock held - not recurse here. */
+		/* If we panicked with lock held - not recurse here. */
 		if (cam_periph_owned(periph))
 			continue;
 		cam_periph_lock(periph);
@@ -3587,6 +3588,52 @@ adaspindown(uint8_t cmd, int flags)
 		if ((softc->flags & ADA_FLAG_CAN_POWERMGT) == 0) {
 			cam_periph_unlock(periph);
 			continue;
+		}
+
+		/*
+		 * Additionally check if we would spin up the drive instead of
+		 * spinning it down.
+		 */
+		if (cmd == ATA_IDLE_IMMEDIATE) {
+			memset(&local_ccb, 0, sizeof(local_ccb));
+			xpt_setup_ccb(&local_ccb.ccb_h, periph->path,
+			    CAM_PRIORITY_NORMAL);
+			local_ccb.ccb_h.ccb_state = ADA_CCB_DUMP;
+
+			cam_fill_ataio(&local_ccb, 0, NULL, CAM_DIR_NONE,
+			    0, NULL, 0, ada_default_timeout * 1000);
+			ata_28bit_cmd(&local_ccb, ATA_CHECK_POWER_MODE,
+			    0, 0, 0);
+			local_ccb.cmd.flags |= CAM_ATAIO_NEEDRESULT;
+
+			error = cam_periph_runccb((union ccb *)&local_ccb,
+			    adaerror, /*cam_flags*/0,
+			    /*sense_flags*/ SF_NO_RECOVERY | SF_NO_RETRY,
+			    softc->disk->d_devstat);
+			if (error != 0) {
+				xpt_print(periph->path,
+				    "Failed to read current power mode\n");
+			} else {
+				mode = local_ccb.res.sector_count;
+#ifdef DIAGNOSTIC
+				if (bootverbose) {
+					xpt_print(periph->path,
+					    "disk power mode 0x%02x\n", mode);
+				}
+#endif
+				switch (mode) {
+				case ATA_PM_STANDBY:
+				case ATA_PM_STANDBY_Y:
+					if (bootverbose) {
+						xpt_print(periph->path,
+						    "already spun down\n");
+					}
+					cam_periph_unlock(periph);
+					continue;
+				default:
+					break;
+				}
+			}
 		}
 
 		if (bootverbose)
@@ -3618,6 +3665,9 @@ static void
 adashutdown(void *arg, int howto)
 {
 	int how;
+
+	if ((howto & RB_NOSYNC) != 0)
+		return;
 
 	adaflush();
 

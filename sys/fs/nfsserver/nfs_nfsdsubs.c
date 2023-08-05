@@ -45,15 +45,22 @@ __FBSDID("$FreeBSD$");
 
 extern u_int32_t newnfs_true, newnfs_false;
 extern int nfs_pubfhset;
-extern struct nfsclienthashhead *nfsclienthash;
 extern int nfsrv_clienthashsize;
-extern struct nfslockhashhead *nfslockhash;
 extern int nfsrv_lockhashsize;
-extern struct nfssessionhash *nfssessionhash;
 extern int nfsrv_sessionhashsize;
 extern int nfsrv_useacl;
 extern uid_t nfsrv_defaultuid;
 extern gid_t nfsrv_defaultgid;
+
+NFSD_VNET_DECLARE(struct nfsclienthashhead *, nfsclienthash);
+NFSD_VNET_DECLARE(struct nfslockhashhead *, nfslockhash);
+NFSD_VNET_DECLARE(struct nfssessionhash *, nfssessionhash);
+NFSD_VNET_DECLARE(int, nfs_rootfhset);
+NFSD_VNET_DECLARE(uid_t, nfsrv_defaultuid);
+NFSD_VNET_DECLARE(gid_t, nfsrv_defaultgid);
+
+NFSD_VNET_DEFINE(struct nfsdontlisthead, nfsrv_dontlisthead);
+
 
 char nfs_v2pubfh[NFSX_V2FH];
 struct nfsdontlisthead nfsrv_dontlisthead;
@@ -1432,13 +1439,13 @@ nfsrv_fillattr(struct nfsrv_descript *nd, struct nfsvattr *nvap)
 	if (nd->nd_flag & ND_NFSV3) {
 		fp->fa_type = vtonfsv34_type(nvap->na_type);
 		fp->fa_mode = vtonfsv34_mode(nvap->na_mode);
-		txdr_hyper(nvap->na_size, &fp->fa3_size);
-		txdr_hyper(nvap->na_bytes, &fp->fa3_used);
+		txdr_hyper(nvap->na_size, (uint32_t*)&fp->fa3_size);
+		txdr_hyper(nvap->na_bytes, (uint32_t*)&fp->fa3_used);
 		fp->fa3_rdev.specdata1 = txdr_unsigned(NFSMAJOR(nvap->na_rdev));
 		fp->fa3_rdev.specdata2 = txdr_unsigned(NFSMINOR(nvap->na_rdev));
 		fp->fa3_fsid.nfsuquad[0] = 0;
 		fp->fa3_fsid.nfsuquad[1] = txdr_unsigned(nvap->na_fsid);
-		txdr_hyper(nvap->na_fileid, &fp->fa3_fileid);
+		txdr_hyper(nvap->na_fileid, (uint32_t*)&fp->fa3_fileid);
 		txdr_nfsv3time(&nvap->na_atime, &fp->fa3_atime);
 		txdr_nfsv3time(&nvap->na_mtime, &fp->fa3_mtime);
 		txdr_nfsv3time(&nvap->na_ctime, &fp->fa3_ctime);
@@ -1543,6 +1550,8 @@ nfsd_errmap(struct nfsrv_descript *nd)
 
 	if (!nd->nd_repstat)
 		return (0);
+	if ((nd->nd_repstat & NFSERR_AUTHERR) != 0)
+		return (txdr_unsigned(NFSERR_ACCES));
 	if (nd->nd_flag & (ND_NFSV3 | ND_NFSV4)) {
 		if (nd->nd_procnum == NFSPROC_NOOP)
 			return (txdr_unsigned(nd->nd_repstat & 0xffff));
@@ -1553,6 +1562,8 @@ nfsd_errmap(struct nfsrv_descript *nd)
 		else if (nd->nd_repstat == NFSERR_MINORVERMISMATCH ||
 			 nd->nd_repstat == NFSERR_OPILLEGAL)
 			return (txdr_unsigned(nd->nd_repstat));
+		else if (nd->nd_repstat == NFSERR_REPLYFROMCACHE)
+			return (txdr_unsigned(NFSERR_IO));
 		else if ((nd->nd_flag & ND_NFSV41) != 0) {
 			if (nd->nd_repstat == EOPNOTSUPP)
 				nd->nd_repstat = NFSERR_NOTSUPP;
@@ -1602,10 +1613,12 @@ nfsrv_checkuidgid(struct nfsrv_descript *nd, struct nfsvattr *nvap)
 	 */
 	if (NFSVNO_NOTSETUID(nvap) && NFSVNO_NOTSETGID(nvap))
 		goto out;
-	if ((NFSVNO_ISSETUID(nvap) && nvap->na_uid == nfsrv_defaultuid &&
-           enable_nobodycheck == 1)
-	    || (NFSVNO_ISSETGID(nvap) && nvap->na_gid == nfsrv_defaultgid &&
-           enable_nogroupcheck == 1)) {
+	if ((NFSVNO_ISSETUID(nvap) &&
+	     nvap->na_uid == NFSD_VNET(nfsrv_defaultuid) &&
+             enable_nobodycheck == 1) ||
+	    (NFSVNO_ISSETGID(nvap) &&
+	     nvap->na_gid == NFSD_VNET(nfsrv_defaultgid) &&
+             enable_nogroupcheck == 1)) {
 		error = NFSERR_BADOWNER;
 		goto out;
 	}
@@ -1888,7 +1901,8 @@ nfsrv_parsename(struct nfsrv_descript *nd, char *bufp, u_long *hashp,
 	 * For V4, check for lookup parent.
 	 * Otherwise, get the component name.
 	 */
-	if ((nd->nd_flag & ND_NFSV4) && nd->nd_procnum == NFSV4OP_LOOKUPP) {
+	if ((nd->nd_flag & ND_NFSV4) && (nd->nd_procnum == NFSV4OP_LOOKUPP ||
+	    nd->nd_procnum == NFSV4OP_SECINFONONAME)) {
 	    *tocp++ = '.';
 	    hash += ((u_char)'.');
 	    *tocp++ = '.';
@@ -2062,7 +2076,7 @@ nfsrv_parsename(struct nfsrv_descript *nd, char *bufp, u_long *hashp,
 	    }
 	}
 	*tocp = '\0';
-	*outlenp = (size_t)outlen;
+	*outlenp = (size_t)outlen + 1;
 	if (hashp != NULL)
 		*hashp = hash;
 nfsmout:
@@ -2074,29 +2088,26 @@ void
 nfsd_init(void)
 {
 	int i;
-	static int inited = 0;
 
-	if (inited)
-		return;
-	inited = 1;
 
 	/*
 	 * Initialize client queues. Don't free/reinitialize
 	 * them when nfsds are restarted.
 	 */
-	nfsclienthash = malloc(sizeof(struct nfsclienthashhead) *
+	NFSD_VNET(nfsclienthash) = malloc(sizeof(struct nfsclienthashhead) *
 	    nfsrv_clienthashsize, M_NFSDCLIENT, M_WAITOK | M_ZERO);
 	for (i = 0; i < nfsrv_clienthashsize; i++)
-		LIST_INIT(&nfsclienthash[i]);
-	nfslockhash = malloc(sizeof(struct nfslockhashhead) *
+		LIST_INIT(&NFSD_VNET(nfsclienthash)[i]);
+	NFSD_VNET(nfslockhash) = malloc(sizeof(struct nfslockhashhead) *
 	    nfsrv_lockhashsize, M_NFSDLOCKFILE, M_WAITOK | M_ZERO);
 	for (i = 0; i < nfsrv_lockhashsize; i++)
-		LIST_INIT(&nfslockhash[i]);
-	nfssessionhash = malloc(sizeof(struct nfssessionhash) *
+		LIST_INIT(&NFSD_VNET(nfslockhash)[i]);
+	NFSD_VNET(nfssessionhash) = malloc(sizeof(struct nfssessionhash) *
 	    nfsrv_sessionhashsize, M_NFSDSESSION, M_WAITOK | M_ZERO);
 	for (i = 0; i < nfsrv_sessionhashsize; i++) {
-		mtx_init(&nfssessionhash[i].mtx, "nfssm", NULL, MTX_DEF);
-		LIST_INIT(&nfssessionhash[i].list);
+		mtx_init(&NFSD_VNET(nfssessionhash)[i].mtx, "nfssm", NULL,
+		    MTX_DEF);
+		LIST_INIT(&NFSD_VNET(nfssessionhash)[i].list);
 	}
 	LIST_INIT(&nfsrv_dontlisthead);
 	TAILQ_INIT(&nfsrv_recalllisthead);
@@ -2113,6 +2124,16 @@ int
 nfsd_checkrootexp(struct nfsrv_descript *nd)
 {
 
+	if (NFSD_VNET(nfs_rootfhset) == 0)
+		return (NFSERR_AUTHERR | AUTH_FAILED);
+	/*
+	 * For NFSv4.1/4.2, if the client specifies SP4_NONE, then these
+	 * operations are allowed regardless of the value of the "sec=XXX"
+	 * field in the V4: exports line.
+	 * As such, these Kerberos checks only apply to NFSv4.0 mounts.
+	 */
+	if ((nd->nd_flag & ND_NFSV41) != 0)
+		goto checktls;
 	if ((nd->nd_flag & (ND_GSS | ND_EXAUTHSYS)) == ND_EXAUTHSYS)
 		goto checktls;
 	if ((nd->nd_flag & (ND_GSSINTEGRITY | ND_EXGSSINTEGRITY)) ==
@@ -2124,7 +2145,7 @@ nfsd_checkrootexp(struct nfsrv_descript *nd)
 	if ((nd->nd_flag & (ND_GSS | ND_GSSINTEGRITY | ND_GSSPRIVACY |
 	     ND_EXGSS)) == (ND_GSS | ND_EXGSS))
 		goto checktls;
-	return (1);
+	return (NFSERR_AUTHERR | AUTH_TOOWEAK);
 checktls:
 	if ((nd->nd_flag & ND_EXTLS) == 0)
 		return (0);
@@ -2137,7 +2158,13 @@ checktls:
 	if ((nd->nd_flag & (ND_TLS | ND_EXTLSCERTUSER | ND_EXTLSCERT)) ==
 	    ND_TLS)
 		return (0);
-	return (1);
+#ifdef notnow
+	/* There is currently no auth_stat for this. */
+	if ((nd->nd_flag & ND_TLS) == 0)
+		return (NFSERR_AUTHERR | AUTH_NEEDS_TLS);
+	return (NFSERR_AUTHERR | AUTH_NEEDS_TLS_MUTUAL_HOST);
+#endif
+	return (NFSERR_AUTHERR | AUTH_TOOWEAK);
 }
 
 /*

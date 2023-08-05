@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2019 The FreeBSD Foundation
  *
@@ -159,6 +159,7 @@ union fuse_payloads_in {
 	];
 	fuse_copy_file_range_in	copy_file_range;
 	fuse_create_in	create;
+	fuse_fallocate_in fallocate;
 	fuse_flush_in	flush;
 	fuse_fsync_in	fsync;
 	fuse_fsync_in	fsyncdir;
@@ -205,7 +206,7 @@ union fuse_payloads_out {
 	 * The protocol places no limits on the size of bytes.  Choose
 	 * a size big enough for anything we'll test.
 	 */
-	uint8_t			bytes[0x20000];
+	uint8_t			bytes[0x40000];
 	fuse_entry_out		entry;
 	fuse_entry_out_7_8	entry_7_8;
 	fuse_lk_out		getlk;
@@ -232,6 +233,8 @@ union fuse_payloads_out {
 struct mockfs_buf_out {
 	fuse_out_header		header;
 	union fuse_payloads_out	body;
+	/* the expected errno of the write to /dev/fuse */
+	int			expected_errno;
 
 	/* Default constructor: zero everything */
 	mockfs_buf_out() {
@@ -284,7 +287,7 @@ class MockFS {
 	pthread_t m_daemon_id;
 
 	/* file descriptor of /dev/fuse control device */
-	int m_fuse_fd;
+	volatile int m_fuse_fd;
 	
 	/* The minor version of the kernel API that this mock daemon targets */
 	uint32_t m_kernel_minor_version;
@@ -296,6 +299,9 @@ class MockFS {
 
 	/* pid of the test process */
 	pid_t m_pid;
+
+	/* The unique value of the header of the last received operation */
+	uint64_t m_last_unique;
 
 	/* Method the daemon should use for I/O to and from /dev/fuse */
 	enum poll_method m_pm;
@@ -329,10 +335,10 @@ class MockFS {
 	 */
 	void read_request(mockfs_buf_in& in, ssize_t& res);
 
+	public:
 	/* Write a single response back to the kernel */
 	void write_response(const mockfs_buf_out &out);
 
-	public:
 	/* pid of child process, for two-process test cases */
 	pid_t m_child_pid;
 
@@ -353,7 +359,8 @@ class MockFS {
 		bool default_permissions, bool push_symlinks_in, bool ro,
 		enum poll_method pm, uint32_t flags,
 		uint32_t kernel_minor_version, uint32_t max_write, bool async,
-		bool no_clusterr, unsigned time_gran, bool nointr);
+		bool no_clusterr, unsigned time_gran, bool nointr,
+		bool noatime, const char *fsname, const char *subtype);
 
 	virtual ~MockFS();
 

@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2007-2009 Sam Leffler, Errno Consulting
  * Copyright (c) 2007-2008 Marvell Semiconductor, Inc.
@@ -3447,7 +3447,7 @@ mwl_tx_draintxq(struct mwl_softc *sc, struct mwl_txq *txq)
 {
 	struct ieee80211_node *ni;
 	struct mwl_txbuf *bf;
-	u_int ix;
+	u_int ix __unused;
 
 	/*
 	 * NB: this assumes output has been stopped and

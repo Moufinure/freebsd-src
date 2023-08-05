@@ -59,7 +59,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/sysctl.h>
 #include <sys/sysent.h>
 #include <sys/time.h>
-#include <sys/umtx.h>
+#include <sys/umtxvar.h>
 
 #include <vm/vm.h>
 #include <vm/vm_param.h>
@@ -284,7 +284,8 @@ donice(struct thread *td, struct proc *p, int n)
 
 static int unprivileged_idprio;
 SYSCTL_INT(_security_bsd, OID_AUTO, unprivileged_idprio, CTLFLAG_RW,
-    &unprivileged_idprio, 0, "Allow non-root users to set an idle priority");
+    &unprivileged_idprio, 0,
+    "Allow non-root users to set an idle priority (deprecated)");
 
 /*
  * Set realtime priority for LWP.
@@ -350,13 +351,13 @@ sys_rtprio_thread(struct thread *td, struct rtprio_thread_args *uap)
 		 * easier to lock a resource indefinitely, but it is not the
 		 * only thing that makes it possible.
 		 */
-		if (RTP_PRIO_BASE(rtp.type) == RTP_PRIO_REALTIME ||
-		    (RTP_PRIO_BASE(rtp.type) == RTP_PRIO_IDLE &&
-		    unprivileged_idprio == 0)) {
-			error = priv_check(td, PRIV_SCHED_RTPRIO);
-			if (error)
-				break;
-		}
+		if (RTP_PRIO_BASE(rtp.type) == RTP_PRIO_REALTIME &&
+		    (error = priv_check(td, PRIV_SCHED_RTPRIO)) != 0)
+			break;
+		if (RTP_PRIO_BASE(rtp.type) == RTP_PRIO_IDLE &&
+		    unprivileged_idprio == 0 &&
+		    (error = priv_check(td, PRIV_SCHED_IDPRIO)) != 0)
+			break;
 		error = rtp_to_pri(&rtp, td1);
 		break;
 	default:
@@ -440,13 +441,13 @@ sys_rtprio(struct thread *td, struct rtprio_args *uap)
 		 * See the comment in sys_rtprio_thread about idprio
 		 * threads holding a lock.
 		 */
-		if (RTP_PRIO_BASE(rtp.type) == RTP_PRIO_REALTIME ||
-		    (RTP_PRIO_BASE(rtp.type) == RTP_PRIO_IDLE &&
-		    !unprivileged_idprio)) {
-			error = priv_check(td, PRIV_SCHED_RTPRIO);
-			if (error)
-				break;
-		}
+		if (RTP_PRIO_BASE(rtp.type) == RTP_PRIO_REALTIME &&
+		    (error = priv_check(td, PRIV_SCHED_RTPRIO)) != 0)
+			break;
+		if (RTP_PRIO_BASE(rtp.type) == RTP_PRIO_IDLE &&
+		    unprivileged_idprio == 0 &&
+		    (error = priv_check(td, PRIV_SCHED_IDPRIO)) != 0)
+			break;
 
 		/*
 		 * If we are setting our own priority, set just our
@@ -759,12 +760,12 @@ kern_proc_setrlimit(struct thread *td, struct proc *p, u_int which,
 			if (limp->rlim_cur > oldssiz.rlim_cur) {
 				prot = p->p_sysent->sv_stackprot;
 				size = limp->rlim_cur - oldssiz.rlim_cur;
-				addr = p->p_sysent->sv_usrstack -
+				addr = round_page(p->p_vmspace->vm_stacktop) -
 				    limp->rlim_cur;
 			} else {
 				prot = VM_PROT_NONE;
 				size = oldssiz.rlim_cur - limp->rlim_cur;
-				addr = p->p_sysent->sv_usrstack -
+				addr = round_page(p->p_vmspace->vm_stacktop) -
 				    oldssiz.rlim_cur;
 			}
 			addr = trunc_page(addr);
@@ -1198,7 +1199,7 @@ rufetchcalc(struct proc *p, struct rusage *ru, struct timeval *up,
  * reference count and mutex pointer.
  */
 struct plimit *
-lim_alloc()
+lim_alloc(void)
 {
 	struct plimit *limp;
 
@@ -1331,7 +1332,7 @@ lim_rlimit_proc(struct proc *p, int which, struct rlimit *rlp)
 }
 
 void
-uihashinit()
+uihashinit(void)
 {
 
 	uihashtbl = hashinit(maxproc / 16, M_UIDINFO, &uihash);

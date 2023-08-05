@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2020 Jeffrey Roberson <jeff@FreeBSD.org>
  *
@@ -123,6 +123,7 @@ smrs_thread(void *arg)
 	else
 		smrs_read();
 	atomic_add_int(&smrs_completed, 1);
+	kthread_exit();
 }
 
 static void

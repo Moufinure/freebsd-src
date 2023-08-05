@@ -3,7 +3,7 @@
  */
 
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2001-2003 Maksim Yevmenkin <m_evmenkin@yahoo.com>
  * All rights reserved.
@@ -2000,7 +2000,7 @@ ng_btsocket_rfcomm_receive_sabm(ng_btsocket_rfcomm_session_p s, int dlci)
 	/* Make sure multiplexor channel is open */
 	if (s->state != NG_BTSOCKET_RFCOMM_SESSION_OPEN) {
 		NG_BTSOCKET_RFCOMM_ERR(
-"%s: Got SABM for dlci=%d with mulitplexor channel closed, state=%d, " \
+"%s: Got SABM for dlci=%d with multiplexor channel closed, state=%d, " \
 "flags=%#x\n",		__func__, dlci, s->state, s->flags);
 
 		return (EINVAL);
@@ -3398,8 +3398,7 @@ ng_btsocket_rfcomm_pcb_listener(bdaddr_p src, int channel)
 	mtx_lock(&ng_btsocket_rfcomm_sockets_mtx);
 
 	LIST_FOREACH(pcb, &ng_btsocket_rfcomm_sockets, next) {
-		if (pcb->channel != channel ||
-		    !(pcb->so->so_options & SO_ACCEPTCONN))
+		if (pcb->channel != channel || !SOLISTENING(pcb->so))
 			continue;
 
 		if (bcmp(&pcb->src, src, sizeof(*src)) == 0)

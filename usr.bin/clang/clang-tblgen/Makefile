@@ -17,10 +17,16 @@ SRCS+=		ClangOpcodesEmitter.cpp
 SRCS+=		ClangOpenCLBuiltinEmitter.cpp
 SRCS+=		ClangOptionDocEmitter.cpp
 SRCS+=		ClangSACheckersEmitter.cpp
+SRCS+=		ClangSyntaxEmitter.cpp
 SRCS+=		ClangTypeNodesEmitter.cpp
 SRCS+=		MveEmitter.cpp
 SRCS+=		NeonEmitter.cpp
+SRCS+=		RISCVVEmitter.cpp
 SRCS+=		SveEmitter.cpp
 SRCS+=		TableGen.cpp
 
-.include "../llvm.prog.mk"
+.include "${SRCTOP}/lib/clang/clang.pre.mk"
+
+CFLAGS.RISCVVEmitter.cpp+=	-I${CLANG_SRCS}/include
+
+.include "../clang.prog.mk"

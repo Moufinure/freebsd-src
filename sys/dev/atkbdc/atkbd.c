@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 1999 Kazutaka YOKOTA <yokota@zodiac.mech.utsunomiya-u.ac.jp>
  * All rights reserved.
@@ -42,6 +42,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/proc.h>
 #include <sys/limits.h>
 #include <sys/malloc.h>
+#include <sys/sysctl.h>
 
 #include <machine/bus.h>
 #include <machine/resource.h>
@@ -72,6 +73,13 @@ typedef struct atkbd_state {
 	int		ks_evdev_state;
 #endif
 } atkbd_state_t;
+
+static SYSCTL_NODE(_hw, OID_AUTO, atkbd, CTLFLAG_RD | CTLFLAG_MPSAFE, 0,
+    "AT keyboard");
+
+static int atkbdhz = 1;
+SYSCTL_INT(_hw_atkbd, OID_AUTO, hz, CTLFLAG_RWTUN, &atkbdhz, 0,
+    "Polling frequency (in hz)");
 
 static void		atkbd_timeout(void *arg);
 static int		atkbd_reset(KBDC kbdc, int flags, int c);
@@ -198,8 +206,11 @@ atkbd_timeout(void *arg)
 			kbdd_intr(kbd, NULL);
 	}
 	splx(s);
-	state = (atkbd_state_t *)kbd->kb_data;
-	callout_reset(&state->ks_timer, hz / 10, atkbd_timeout, arg);
+	if (atkbdhz > 0) {
+		state = (atkbd_state_t *)kbd->kb_data;
+		callout_reset_sbt(&state->ks_timer, SBT_1S / atkbdhz, 0,
+		    atkbd_timeout, arg, C_PREL(1));
+	}
 }
 
 /* LOW-LEVEL */
@@ -673,6 +684,16 @@ next_code:
 #ifdef EVDEV_SUPPORT
 	/* push evdev event */
 	if (evdev_rcpt_mask & EVDEV_RCPT_HW_KBD && state->ks_evdev != NULL) {
+		/* "hancha" and "han/yong" korean keys handling */
+		if (state->ks_evdev_state == 0 &&
+		    (scancode == 0xF1 || scancode == 0xF2)) {
+			keycode = evdev_scancode2key(&state->ks_evdev_state,
+				scancode & 0x7F);
+			evdev_push_event(state->ks_evdev, EV_KEY,
+			    (uint16_t)keycode, 1);
+			evdev_sync(state->ks_evdev);
+		}
+
 		keycode = evdev_scancode2key(&state->ks_evdev_state,
 		    scancode);
 
@@ -682,6 +703,9 @@ next_code:
 			evdev_sync(state->ks_evdev);
 		}
 	}
+
+	if (state->ks_evdev != NULL && evdev_is_grabbed(state->ks_evdev))
+		return (NOKEY);
 #endif
 
 	/* return the byte as is for the K_RAW mode */
@@ -1067,6 +1091,7 @@ atkbd_ioctl(keyboard_t *kbd, u_long cmd, caddr_t arg)
 	case OPIO_KEYMAP:	/* set keyboard translation table (compat) */
 	case PIO_KEYMAPENT:	/* set keyboard translation table entry */
 	case PIO_DEADKEYMAP:	/* set accent key translation table */
+	case OPIO_DEADKEYMAP:	/* set accent key translation table (compat) */
 		state->ks_accents = 0;
 		/* FALLTHROUGH */
 	default:

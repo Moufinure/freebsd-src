@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2011 Nathan Whitehorn
  * All rights reserved.
@@ -29,7 +29,6 @@
  */
 
 #include <sys/param.h>
-#include <sys/sysctl.h>
 #include <errno.h>
 #include <inttypes.h>
 #include <libutil.h>
@@ -44,7 +43,6 @@
 #define MIN_FREE_SPACE		(1024*1024*1024) /* 1 GB */
 #define SWAP_SIZE(available)	MIN(available/20, 4*1024*1024*1024LL)
 
-static char *boot_disk(struct gmesh *mesh);
 static char *wizard_partition(struct gmesh *mesh, const char *disk);
 
 int
@@ -65,7 +63,7 @@ startwizard:
 
 	dlg_put_backtitle();
 	error = geom_gettree(&mesh);
-	disk = boot_disk(&mesh);
+	disk = boot_disk_select(&mesh);
 	if (disk == NULL)
 		return (1);
 
@@ -91,8 +89,8 @@ startwizard:
 	return (0);
 }
 
-static char *
-boot_disk(struct gmesh *mesh)
+char *
+boot_disk_select(struct gmesh *mesh)
 {
 	struct gclass *classp;
 	struct gconfig *gc;

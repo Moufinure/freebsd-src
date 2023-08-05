@@ -1,6 +1,5 @@
 /*-
  * Copyright (c) 2015-2016 The FreeBSD Foundation
- * All rights reserved.
  *
  * This software was developed by Andrew Turner under
  * sponsorship from the FreeBSD Foundation.
@@ -41,6 +40,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/bus.h>
 #include <sys/cpu.h>
 #include <sys/csan.h>
+#include <sys/domainset.h>
 #include <sys/kernel.h>
 #include <sys/ktr.h>
 #include <sys/malloc.h>
@@ -80,6 +80,8 @@ __FBSDID("$FreeBSD$");
 #include <dev/psci/psci.h>
 
 #include "pic_if.h"
+
+#define	MP_BOOTSTACK_SIZE	(kstack_pages * PAGE_SIZE)
 
 #define	MP_QUIRK_CPULIST	0x01	/* The list of cpus may be wrong, */
 					/* don't panic if one fails to start */
@@ -152,7 +154,7 @@ static bool
 is_boot_cpu(uint64_t target_cpu)
 {
 
-	return (__pcpu[0].pc_mpidr == (target_cpu & CPU_AFF_MASK));
+	return (PCPU_GET_MPIDR(cpuid_to_pcpu[0]) == (target_cpu & CPU_AFF_MASK));
 }
 
 static void
@@ -182,7 +184,7 @@ release_aps(void *dummy __unused)
 
 	started = 0;
 	for (i = 0; i < 2000; i++) {
-		if (smp_started) {
+		if (atomic_load_acq_int(&smp_started) != 0) {
 			printf("done\n");
 			return;
 		}
@@ -206,7 +208,7 @@ init_secondary(uint64_t cpu)
 {
 	struct pcpu *pcpup;
 	pmap_t pmap0;
-	u_int mpidr;
+	uint64_t mpidr;
 
 	/*
 	 * Verify that the value passed in 'cpu' argument (aka context_id) is
@@ -214,15 +216,17 @@ init_secondary(uint64_t cpu)
 	 * they can pass random value in it.
 	 */
 	mpidr = READ_SPECIALREG(mpidr_el1) & CPU_AFF_MASK;
-	if  (cpu >= MAXCPU || __pcpu[cpu].pc_mpidr != mpidr) {
+	if (cpu >= MAXCPU || cpuid_to_pcpu[cpu] == NULL ||
+	    PCPU_GET_MPIDR(cpuid_to_pcpu[cpu]) != mpidr) {
 		for (cpu = 0; cpu < mp_maxid; cpu++)
-			if (__pcpu[cpu].pc_mpidr == mpidr)
+			if (cpuid_to_pcpu[cpu] != NULL &&
+			    PCPU_GET_MPIDR(cpuid_to_pcpu[cpu]) == mpidr)
 				break;
 		if ( cpu >= MAXCPU)
 			panic("MPIDR for this CPU is not in pcpu table");
 	}
 
-	pcpup = &__pcpu[cpu];
+	pcpup = cpuid_to_pcpu[cpu];
 	/*
 	 * Set the pcpu pointer with a backup in tpidr_el1 to be
 	 * loaded when entering the kernel from userland.
@@ -239,6 +243,7 @@ init_secondary(uint64_t cpu)
 	 * We need this before signalling the CPU is ready to
 	 * let the boot CPU use the results.
 	 */
+	pcpup->pc_midr = get_midr();
 	identify_cpu(cpu);
 
 	/* Ensure the stores in identify_cpu have completed */
@@ -249,11 +254,10 @@ init_secondary(uint64_t cpu)
 	while (!atomic_load_int(&aps_ready))
 		__asm __volatile("wfe");
 
-	pcpup->pc_midr = get_midr();
-
 	/* Initialize curthread */
 	KASSERT(PCPU_GET(idlethread) != NULL, ("no idle thread"));
 	pcpup->pc_curthread = pcpup->pc_idlethread;
+	schedinit_ap();
 
 	/* Initialize curpmap to match TTBR0's current setting. */
 	pmap0 = vmspace_pmap(&vmspace0);
@@ -285,11 +289,6 @@ init_secondary(uint64_t cpu)
 
 	kcsan_cpu_init(cpu);
 
-	/*
-	 * Assert that smp_after_idle_runnable condition is reasonable.
-	 */
-	MPASS(PCPU_GET(curpcb) == NULL);
-
 	/* Enter the scheduler */
 	sched_throw(NULL);
 
@@ -300,16 +299,25 @@ init_secondary(uint64_t cpu)
 static void
 smp_after_idle_runnable(void *arg __unused)
 {
-	struct pcpu *pc;
 	int cpu;
 
+	if (mp_ncpus == 1)
+		return;
+
+	KASSERT(smp_started != 0, ("%s: SMP not started yet", __func__));
+
+	/*
+	 * Wait for all APs to handle an interrupt.  After that, we know that
+	 * the APs have entered the scheduler at least once, so the boot stacks
+	 * are safe to free.
+	 */
+	smp_rendezvous(smp_no_rendezvous_barrier, NULL,
+	    smp_no_rendezvous_barrier, NULL);
+
 	for (cpu = 1; cpu < mp_ncpus; cpu++) {
-		if (bootstacks[cpu] != NULL) {
-			pc = pcpu_find(cpu);
-			while (atomic_load_ptr(&pc->pc_curpcb) == NULL)
-				cpu_spinwait();
-			kmem_free((vm_offset_t)bootstacks[cpu], PAGE_SIZE);
-		}
+		if (bootstacks[cpu] != NULL)
+			kmem_free((vm_offset_t)bootstacks[cpu],
+			    MP_BOOTSTACK_SIZE);
 	}
 }
 SYSINIT(smp_after_idle_runnable, SI_SUB_SMP, SI_ORDER_ANY,
@@ -364,6 +372,8 @@ intr_pic_ipi_setup(u_int ipi, const char *name, intr_ipi_handler_t *hand,
 	ii->ii_send_arg = isrc;
 	strlcpy(ii->ii_name, name, INTR_IPI_NAMELEN);
 	ii->ii_count = intr_ipi_setup_counters(name);
+
+	PIC_ENABLE_INTR(intr_irq_root_dev, isrc);
 }
 
 static void
@@ -477,14 +487,58 @@ cpu_mp_probe(void)
 	return (1);
 }
 
+static int
+enable_cpu_psci(uint64_t target_cpu, vm_paddr_t entry, u_int cpuid)
+{
+	int err;
+
+	err = psci_cpu_on(target_cpu, entry, cpuid);
+	if (err != PSCI_RETVAL_SUCCESS) {
+		/*
+		 * Panic here if INVARIANTS are enabled and PSCI failed to
+		 * start the requested CPU.  psci_cpu_on() returns PSCI_MISSING
+		 * to indicate we are unable to use it to start the given CPU.
+		 */
+		KASSERT(err == PSCI_MISSING ||
+		    (mp_quirks & MP_QUIRK_CPULIST) == MP_QUIRK_CPULIST,
+		    ("Failed to start CPU %u (%lx), error %d\n",
+		    cpuid, target_cpu, err));
+		return (EINVAL);
+	}
+
+	return (0);
+}
+
+static int
+enable_cpu_spin(uint64_t cpu, vm_paddr_t entry, vm_paddr_t release_paddr)
+{
+	vm_paddr_t *release_addr;
+
+	release_addr = pmap_mapdev(release_paddr, sizeof(*release_addr));
+	if (release_addr == NULL)
+		return (ENOMEM);
+
+	*release_addr = entry;
+	pmap_unmapdev((vm_offset_t)release_addr, sizeof(*release_addr));
+
+	__asm __volatile(
+	    "dsb sy	\n"
+	    "sev	\n"
+	    ::: "memory");
+
+	return (0);
+}
+
 /*
  * Starts a given CPU. If the CPU is already running, i.e. it is the boot CPU,
  * do nothing. Returns true if the CPU is present and running.
  */
 static bool
-start_cpu(u_int cpuid, uint64_t target_cpu)
+start_cpu(u_int cpuid, uint64_t target_cpu, int domain, vm_paddr_t release_addr)
 {
 	struct pcpu *pcpup;
+	vm_offset_t pcpu_mem;
+	vm_size_t size;
 	vm_paddr_t pa;
 	int err, naps;
 
@@ -498,36 +552,44 @@ start_cpu(u_int cpuid, uint64_t target_cpu)
 
 	KASSERT(cpuid < MAXCPU, ("Too many CPUs"));
 
-	pcpup = &__pcpu[cpuid];
-	pcpu_init(pcpup, cpuid, sizeof(struct pcpu));
-	pcpup->pc_mpidr = target_cpu & CPU_AFF_MASK;
+	size = round_page(sizeof(*pcpup) + DPCPU_SIZE);
+	pcpu_mem = kmem_malloc_domainset(DOMAINSET_PREF(domain), size,
+	    M_WAITOK | M_ZERO);
+	pmap_disable_promotion(pcpu_mem, size);
 
-	dpcpu[cpuid - 1] = (void *)kmem_malloc(DPCPU_SIZE, M_WAITOK | M_ZERO);
+	pcpup = (struct pcpu *)pcpu_mem;
+	pcpu_init(pcpup, cpuid, sizeof(struct pcpu));
+	pcpup->pc_mpidr_low = target_cpu & CPU_AFF_MASK;
+	pcpup->pc_mpidr_high = (target_cpu & CPU_AFF_MASK) >> 32;
+
+	dpcpu[cpuid - 1] = (void *)(pcpup + 1);
 	dpcpu_init(dpcpu[cpuid - 1], cpuid);
 
-	bootstacks[cpuid] = (void *)kmem_malloc(PAGE_SIZE, M_WAITOK | M_ZERO);
+	bootstacks[cpuid] = (void *)kmem_malloc_domainset(
+	    DOMAINSET_PREF(domain), MP_BOOTSTACK_SIZE, M_WAITOK | M_ZERO);
 
 	naps = atomic_load_int(&aps_started);
-	bootstack = (char *)bootstacks[cpuid] + PAGE_SIZE;
+	bootstack = (char *)bootstacks[cpuid] + MP_BOOTSTACK_SIZE;
 
 	printf("Starting CPU %u (%lx)\n", cpuid, target_cpu);
 	pa = pmap_extract(kernel_pmap, (vm_offset_t)mpentry);
-	err = psci_cpu_on(target_cpu, pa, cpuid);
-	if (err != PSCI_RETVAL_SUCCESS) {
-		/*
-		 * Panic here if INVARIANTS are enabled and PSCI failed to
-		 * start the requested CPU.  psci_cpu_on() returns PSCI_MISSING
-		 * to indicate we are unable to use it to start the given CPU.
-		 */
-		KASSERT(err == PSCI_MISSING ||
-		    (mp_quirks & MP_QUIRK_CPULIST) == MP_QUIRK_CPULIST,
-		    ("Failed to start CPU %u (%lx), error %d\n",
-		    cpuid, target_cpu, err));
 
+	/*
+	 * A limited set of hardware we support can only do spintables and
+	 * remain useful, due to lack of EL3.  Thus, we'll usually fall into the
+	 * PSCI branch here.
+	 */
+	MPASS(release_addr == 0 || !psci_present);
+	if (release_addr != 0)
+		err = enable_cpu_spin(target_cpu, pa, release_addr);
+	else
+		err = enable_cpu_psci(target_cpu, pa, cpuid);
+
+	if (err != 0) {
 		pcpu_destroy(pcpup);
-		kmem_free((vm_offset_t)dpcpu[cpuid - 1], DPCPU_SIZE);
 		dpcpu[cpuid - 1] = NULL;
-		kmem_free((vm_offset_t)bootstacks[cpuid], PAGE_SIZE);
+		kmem_free((vm_offset_t)bootstacks[cpuid], MP_BOOTSTACK_SIZE);
+		kmem_free(pcpu_mem, size);
 		bootstacks[cpuid] = NULL;
 		mp_ncpus--;
 		return (false);
@@ -548,6 +610,7 @@ madt_handler(ACPI_SUBTABLE_HEADER *entry, void *arg)
 	ACPI_MADT_GENERIC_INTERRUPT *intr;
 	u_int *cpuid;
 	u_int id;
+	int domain;
 
 	switch(entry->Type) {
 	case ACPI_MADT_TYPE_GENERIC_INTERRUPT:
@@ -559,8 +622,14 @@ madt_handler(ACPI_SUBTABLE_HEADER *entry, void *arg)
 		else
 			id = *cpuid;
 
-		if (start_cpu(id, intr->ArmMpidr)) {
-			__pcpu[id].pc_acpi_id = intr->Uid;
+		domain = 0;
+#ifdef NUMA
+		if (vm_ndomains > 1)
+			domain = acpi_pxm_get_cpu_locality(intr->Uid);
+#endif
+		if (start_cpu(id, intr->ArmMpidr, domain, 0)) {
+			MPASS(cpuid_to_pcpu[id] != NULL);
+			cpuid_to_pcpu[id]->pc_acpi_id = intr->Uid;
 			/*
 			 * Don't increment for the boot CPU, its CPU ID is
 			 * reserved.
@@ -605,10 +674,27 @@ cpu_init_acpi(void)
 #endif
 
 #ifdef FDT
+/*
+ * Failure is indicated by failing to populate *release_addr.
+ */
+static void
+populate_release_addr(phandle_t node, vm_paddr_t *release_addr)
+{
+	pcell_t buf[2];
+
+	if (OF_getencprop(node, "cpu-release-addr", buf, sizeof(buf)) !=
+	    sizeof(buf))
+		return;
+
+	*release_addr = (((uintptr_t)buf[0] << 32) | buf[1]);
+}
+
 static boolean_t
 start_cpu_fdt(u_int id, phandle_t node, u_int addr_size, pcell_t *reg)
 {
 	uint64_t target_cpu;
+	vm_paddr_t release_addr;
+	char *enable_method;
 	int domain;
 	int cpuid;
 
@@ -623,7 +709,32 @@ start_cpu_fdt(u_int id, phandle_t node, u_int addr_size, pcell_t *reg)
 	else
 		cpuid = fdt_cpuid;
 
-	if (!start_cpu(cpuid, target_cpu))
+	/*
+	 * If PSCI is present, we'll always use that -- the cpu_on method is
+	 * mandated in both v0.1 and v0.2.  We'll check the enable-method if
+	 * we don't have PSCI and use spin table if it's provided.
+	 */
+	release_addr = 0;
+	if (!psci_present && cpuid != 0) {
+		if (OF_getprop_alloc(node, "enable-method",
+		    (void **)&enable_method) <= 0)
+			return (FALSE);
+
+		if (strcmp(enable_method, "spin-table") != 0) {
+			OF_prop_free(enable_method);
+			return (FALSE);
+		}
+
+		OF_prop_free(enable_method);
+		populate_release_addr(node, &release_addr);
+		if (release_addr == 0) {
+			printf("Failed to fetch release address for CPU %u",
+			    cpuid);
+			return (FALSE);
+		}
+	}
+
+	if (!start_cpu(cpuid, target_cpu, 0, release_addr))
 		return (FALSE);
 
 	/*
@@ -636,7 +747,7 @@ start_cpu_fdt(u_int id, phandle_t node, u_int addr_size, pcell_t *reg)
 	if (vm_ndomains == 1 ||
 	    OF_getencprop(node, "numa-node-id", &domain, sizeof(domain)) <= 0)
 		domain = 0;
-	__pcpu[cpuid].pc_domain = domain;
+	cpuid_to_pcpu[cpuid]->pc_domain = domain;
 	if (domain < MAXMEMDOM)
 		CPU_SET(cpuid, &cpuset_domain[domain]);
 	return (TRUE);
@@ -663,11 +774,15 @@ cpu_init_fdt(void)
 void
 cpu_mp_start(void)
 {
+	uint64_t mpidr;
+
 	mtx_init(&ap_boot_mtx, "ap boot", NULL, MTX_SPIN);
 
 	/* CPU 0 is always boot CPU. */
 	CPU_SET(0, &all_cpus);
-	__pcpu[0].pc_mpidr = READ_SPECIALREG(mpidr_el1) & CPU_AFF_MASK;
+	mpidr = READ_SPECIALREG(mpidr_el1) & CPU_AFF_MASK;
+	cpuid_to_pcpu[0]->pc_mpidr_low = mpidr;
+	cpuid_to_pcpu[0]->pc_mpidr_high = mpidr >> 32;
 
 	switch(arm64_bus_method) {
 #ifdef DEV_ACPI

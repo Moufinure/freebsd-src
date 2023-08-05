@@ -158,7 +158,7 @@ sfstat_sysctl(SYSCTL_HANDLER_ARGS)
 	return (SYSCTL_OUT(req, &s, sizeof(s)));
 }
 SYSCTL_PROC(_kern_ipc, OID_AUTO, sfstat,
-    CTLTYPE_OPAQUE | CTLFLAG_RW | CTLFLAG_NEEDGIANT, NULL, 0,
+    CTLTYPE_OPAQUE | CTLFLAG_RW | CTLFLAG_MPSAFE, NULL, 0,
     sfstat_sysctl, "I",
     "sendfile statistics");
 
@@ -571,6 +571,7 @@ sendfile_getobj(struct thread *td, struct file *fp, vm_object_t *obj_res,
 	struct shmfd *shmfd;
 	int error;
 
+	error = 0;
 	vp = *vp_res = NULL;
 	obj = NULL;
 	shmfd = *shmfd_res = NULL;
@@ -610,7 +611,6 @@ sendfile_getobj(struct thread *td, struct file *fp, vm_object_t *obj_res,
 			VM_OBJECT_RLOCK(obj);
 		}
 	} else if (fp->f_type == DTYPE_SHM) {
-		error = 0;
 		shmfd = fp->f_data;
 		obj = shmfd->shm_object;
 		VM_OBJECT_RLOCK(obj);
@@ -741,7 +741,9 @@ vn_sendfile(struct file *fp, int sockfd, struct uio *hdr_uio,
 	 * XXXRW: Historically this has assumed non-interruptibility, so now
 	 * we implement that, but possibly shouldn't.
 	 */
-	(void)sblock(&so->so_snd, SBL_WAIT | SBL_NOINTR);
+	error = SOCK_IO_SEND_LOCK(so, SBL_WAIT | SBL_NOINTR);
+	if (error != 0)
+		goto out;
 #ifdef KERN_TLS
 	tls = ktls_hold(so->so_snd.sb_tls_info);
 #endif
@@ -1175,8 +1177,12 @@ prepend_header:
 			if (tls != NULL && tls->mode == TCP_TLS_MODE_SW) {
 				error = (*so->so_proto->pr_usrreqs->pru_send)
 				    (so, PRUS_NOTREADY, m, NULL, NULL, td);
-				soref(so);
-				ktls_enqueue(m, so, tls_enq_cnt);
+				if (error != 0) {
+					m_freem(m);
+				} else {
+					soref(so);
+					ktls_enqueue(m, so, tls_enq_cnt);
+				}
 			} else
 #endif
 				error = (*so->so_proto->pr_usrreqs->pru_send)
@@ -1187,11 +1193,11 @@ prepend_header:
 			soref(so);
 			error = (*so->so_proto->pr_usrreqs->pru_send)
 			    (so, PRUS_NOTREADY, m, NULL, NULL, td);
-			sendfile_iodone(sfio, NULL, 0, 0);
+			sendfile_iodone(sfio, NULL, 0, error);
 		}
 		CURVNET_RESTORE();
 
-		m = NULL;	/* pru_send always consumes */
+		m = NULL;
 		if (error)
 			goto done;
 		sbytes += space + hdrlen;
@@ -1207,7 +1213,7 @@ prepend_header:
 	 * Send trailers. Wimp out and use writev(2).
 	 */
 	if (trl_uio != NULL) {
-		sbunlock(&so->so_snd);
+		SOCK_IO_SEND_UNLOCK(so);
 		error = kern_writev(td, sockfd, trl_uio);
 		if (error == 0)
 			sbytes += td->td_retval[0];
@@ -1215,7 +1221,7 @@ prepend_header:
 	}
 
 done:
-	sbunlock(&so->so_snd);
+	SOCK_IO_SEND_UNLOCK(so);
 out:
 	/*
 	 * If there was no error we have to clear td->td_retval[0]

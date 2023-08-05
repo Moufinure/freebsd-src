@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (C) 2001 Julian Elischer <julian@freebsd.org>.
  *  All rights reserved.
@@ -56,7 +56,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/taskqueue.h>
 #include <sys/ktr.h>
 #include <sys/rwlock.h>
-#include <sys/umtx.h>
+#include <sys/umtxvar.h>
 #include <sys/vmmeter.h>
 #include <sys/cpuset.h>
 #ifdef	HWPMC_HOOKS
@@ -468,7 +468,7 @@ proc_linkup(struct proc *p, struct thread *td)
 {
 
 	sigqueue_init(&p->p_sigqueue, p);
-	p->p_ksi = ksiginfo_alloc(1);
+	p->p_ksi = ksiginfo_alloc(M_WAITOK);
 	if (p->p_ksi != NULL) {
 		/* XXX p_ksi may be null if ksiginfo zone is not ready */
 		p->p_ksi->ksi_flags = KSI_EXT | KSI_INS;
@@ -541,7 +541,8 @@ threadinit(void)
 
 	TASK_INIT(&thread_reap_task, 0, thread_reap_task_cb, NULL);
 	callout_init(&thread_reap_callout, 1);
-	callout_reset(&thread_reap_callout, 5 * hz, thread_reap_callout_cb, NULL);
+	callout_reset(&thread_reap_callout, 5 * hz,
+	    thread_reap_callout_cb, NULL);
 }
 
 /*
@@ -704,7 +705,37 @@ thread_reap_callout_cb(void *arg __unused)
 
 	if (wantreap)
 		taskqueue_enqueue(taskqueue_thread, &thread_reap_task);
-	callout_reset(&thread_reap_callout, 5 * hz, thread_reap_callout_cb, NULL);
+	callout_reset(&thread_reap_callout, 5 * hz,
+	    thread_reap_callout_cb, NULL);
+}
+
+/*
+ * Calling this function guarantees that any thread that exited before
+ * the call is reaped when the function returns.  By 'exited' we mean
+ * a thread removed from the process linkage with thread_unlink().
+ * Practically this means that caller must lock/unlock corresponding
+ * process lock before the call, to synchronize with thread_exit().
+ */
+void
+thread_reap_barrier(void)
+{
+	struct task *t;
+
+	/*
+	 * First do context switches to each CPU to ensure that all
+	 * PCPU pc_deadthreads are moved to zombie list.
+	 */
+	quiesce_all_cpus("", PDROP);
+
+	/*
+	 * Second, fire the task in the same thread as normal
+	 * thread_reap() is done, to serialize reaping.
+	 */
+	t = malloc(sizeof(*t), M_TEMP, M_WAITOK);
+	TASK_INIT(t, 0, thread_reap_task_cb, t);
+	taskqueue_enqueue(taskqueue_thread, t);
+	taskqueue_drain(taskqueue_thread, t);
+	free(t, M_TEMP);
 }
 
 /*
@@ -730,6 +761,7 @@ thread_alloc(int pages)
 		return (NULL);
 	}
 	td->td_tid = tid;
+	bzero(&td->td_sa.args, sizeof(td->td_sa.args));
 	cpu_thread_alloc(td);
 	EVENTHANDLER_DIRECT_INVOKE(thread_ctor, td);
 	return (td);
@@ -1100,24 +1132,20 @@ restart:
 		 * ALLPROC suspend tries to avoid spurious EINTR for
 		 * threads sleeping interruptable, by suspending the
 		 * thread directly, similarly to sig_suspend_threads().
-		 * Since such sleep is not performed at the user
-		 * boundary, TDF_BOUNDARY flag is not set, and TDF_ALLPROCSUSP
-		 * is used to avoid immediate un-suspend.
+		 * Since such sleep is not neccessary performed at the user
+		 * boundary, TDF_ALLPROCSUSP is used to avoid immediate
+		 * un-suspend.
 		 */
-		if (TD_IS_SUSPENDED(td2) && (td2->td_flags & (TDF_BOUNDARY |
-		    TDF_ALLPROCSUSP)) == 0) {
+		if (TD_IS_SUSPENDED(td2) && (td2->td_flags &
+		    TDF_ALLPROCSUSP) == 0) {
 			wakeup_swapper |= thread_unsuspend_one(td2, p, false);
 			thread_lock(td2);
 			goto restart;
 		}
 		if (TD_CAN_ABORT(td2)) {
-			if ((td2->td_flags & TDF_SBDRY) == 0) {
-				thread_suspend_one(td2);
-				td2->td_flags |= TDF_ALLPROCSUSP;
-			} else {
-				wakeup_swapper |= sleepq_abort(td2, ERESTART);
-				return (wakeup_swapper);
-			}
+			td2->td_flags |= TDF_ALLPROCSUSP;
+			wakeup_swapper |= sleepq_abort(td2, ERESTART);
+			return (wakeup_swapper);
 		}
 		break;
 	default:
@@ -1163,10 +1191,18 @@ thread_single(struct proc *p, int mode)
 	mtx_assert(&Giant, MA_NOTOWNED);
 	PROC_LOCK_ASSERT(p, MA_OWNED);
 
-	if ((p->p_flag & P_HADTHREADS) == 0 && mode != SINGLE_ALLPROC)
+	/*
+	 * Is someone already single threading?
+	 * Or may be singlethreading is not needed at all.
+	 */
+	if (mode == SINGLE_ALLPROC) {
+		while ((p->p_flag & P_STOPPED_SINGLE) != 0) {
+			if ((p->p_flag2 & P2_WEXIT) != 0)
+				return (1);
+			msleep(&p->p_flag, &p->p_mtx, PCATCH, "thrsgl", 0);
+		}
+	} else if ((p->p_flag & P_HADTHREADS) == 0)
 		return (0);
-
-	/* Is someone already single threading? */
 	if (p->p_singlethread != NULL && p->p_singlethread != td)
 		return (1);
 
@@ -1198,7 +1234,7 @@ thread_single(struct proc *p, int mode)
 			if (TD_IS_INHIBITED(td2)) {
 				wakeup_swapper |= weed_inhib(mode, td2, p);
 #ifdef SMP
-			} else if (TD_IS_RUNNING(td2) && td != td2) {
+			} else if (TD_IS_RUNNING(td2)) {
 				forward_signal(td2);
 				thread_unlock(td2);
 #endif
@@ -1514,6 +1550,31 @@ thread_unsuspend_one(struct thread *td, struct proc *p, bool boundary)
 	return (setrunnable(td, 0));
 }
 
+void
+thread_run_flash(struct thread *td)
+{
+	struct proc *p;
+
+	p = td->td_proc;
+	PROC_LOCK_ASSERT(p, MA_OWNED);
+
+	if (TD_ON_SLEEPQ(td))
+		sleepq_remove_nested(td);
+	else
+		thread_lock(td);
+
+	THREAD_LOCK_ASSERT(td, MA_OWNED);
+	KASSERT(TD_IS_SUSPENDED(td), ("Thread not suspended"));
+
+	TD_CLR_SUSPENDED(td);
+	PROC_SLOCK(p);
+	MPASS(p->p_suspcount > 0);
+	p->p_suspcount--;
+	PROC_SUNLOCK(p);
+	if (setrunnable(td, 0))
+		kick_proc0();
+}
+
 /*
  * Allow all threads blocked by single threading to continue running.
  */
@@ -1529,10 +1590,10 @@ thread_unsuspend(struct proc *p)
 	if (!P_SHOULDSTOP(p)) {
                 FOREACH_THREAD_IN_PROC(p, td) {
 			thread_lock(td);
-			if (TD_IS_SUSPENDED(td)) {
+			if (TD_IS_SUSPENDED(td))
 				wakeup_swapper |= thread_unsuspend_one(td, p,
 				    true);
-			} else
+			else
 				thread_unlock(td);
 		}
 	} else if (P_SHOULDSTOP(p) == P_STOPPED_SINGLE &&
@@ -1590,7 +1651,7 @@ thread_single_end(struct proc *p, int mode)
 			thread_lock(td);
 			if (TD_IS_SUSPENDED(td)) {
 				wakeup_swapper |= thread_unsuspend_one(td, p,
-				    mode == SINGLE_BOUNDARY);
+				    true);
 			} else
 				thread_unlock(td);
 		}
@@ -1600,6 +1661,7 @@ thread_single_end(struct proc *p, int mode)
 	PROC_SUNLOCK(p);
 	if (wakeup_swapper)
 		kick_proc0();
+	wakeup(&p->p_flag);
 }
 
 /*

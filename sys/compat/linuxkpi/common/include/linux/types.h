@@ -28,8 +28,8 @@
  *
  * $FreeBSD$
  */
-#ifndef	_LINUX_TYPES_H_
-#define	_LINUX_TYPES_H_
+#ifndef	_LINUXKPI_LINUX_TYPES_H_
+#define	_LINUXKPI_LINUX_TYPES_H_
 
 #include <sys/cdefs.h>
 #include <sys/types.h>
@@ -72,11 +72,20 @@ typedef unsigned __poll_t;
 typedef uint64_t phys_addr_t;
 
 typedef size_t __kernel_size_t;
+typedef	unsigned long	kernel_ulong_t;
 
 #define	DECLARE_BITMAP(n, bits)						\
 	unsigned long n[howmany(bits, sizeof(long) * 8)]
 
 typedef unsigned long irq_hw_number_t;
+
+#ifndef LIST_HEAD_DEF
+#define	LIST_HEAD_DEF
+struct list_head {
+	struct list_head *next;
+	struct list_head *prev;
+};
+#endif
 
 struct rcu_head {
 	void *raw[2];
@@ -86,4 +95,4 @@ typedef void (*rcu_callback_t)(struct rcu_head *head);
 typedef void (*call_rcu_func_t)(struct rcu_head *head, rcu_callback_t func);
 typedef int linux_task_fn_t(void *data);
 
-#endif	/* _LINUX_TYPES_H_ */
+#endif	/* _LINUXKPI_LINUX_TYPES_H_ */

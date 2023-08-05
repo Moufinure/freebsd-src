@@ -390,6 +390,7 @@ enum {
 	MLX5_OPCODE_RCHECK_PSV		= 0x27,
 
 	MLX5_OPCODE_UMR			= 0x25,
+	MLX5_OPCODE_QOS_REMAP		= 0x2a,
 
 	MLX5_OPCODE_SIGNATURE_CANCELED	= (1 << 15),
 };
@@ -662,8 +663,9 @@ struct mlx5_err_cqe {
 };
 
 struct mlx5_cqe64 {
-	u8		tunneled_etc;
-	u8		rsvd0[3];
+	u8		tls_outer_l3_tunneled;
+	u8		rsvd0;
+	__be16		wqe_id;
 	u8		lro_tcppsh_abort_dupack;
 	u8		lro_min_ttl;
 	__be16		lro_tcp_win;
@@ -690,6 +692,11 @@ struct mlx5_cqe64 {
 };
 
 #define	MLX5_CQE_TSTMP_PTP	(1ULL << 63)
+
+static inline u8 get_cqe_opcode(struct mlx5_cqe64 *cqe)
+{
+	return (cqe->op_own >> 4);
+}
 
 static inline bool get_cqe_lro_timestamp_valid(struct mlx5_cqe64 *cqe)
 {
@@ -724,7 +731,7 @@ static inline bool cqe_has_vlan(struct mlx5_cqe64 *cqe)
 
 static inline bool cqe_is_tunneled(struct mlx5_cqe64 *cqe)
 {
-	return cqe->tunneled_etc & 0x1;
+	return cqe->tls_outer_l3_tunneled & 0x1;
 }
 
 enum {
@@ -1014,6 +1021,12 @@ enum mlx5_mcam_feature_groups {
 
 #define MLX5_CAP_FLOWTABLE_MAX(mdev, cap) \
 	MLX5_GET(flow_table_nic_cap, mdev->hca_caps_max[MLX5_CAP_FLOW_TABLE], cap)
+
+#define MLX5_CAP_FLOWTABLE_NIC_RX(mdev, cap) \
+	MLX5_CAP_FLOWTABLE(mdev, flow_table_properties_nic_receive.cap)
+
+#define MLX5_CAP_FLOWTABLE_NIC_RX_MAX(mdev, cap) \
+	MLX5_CAP_FLOWTABLE_MAX(mdev, flow_table_properties_nic_receive.cap)
 
 #define MLX5_CAP_ESW_FLOWTABLE(mdev, cap) \
 	MLX5_GET(flow_table_eswitch_cap, \

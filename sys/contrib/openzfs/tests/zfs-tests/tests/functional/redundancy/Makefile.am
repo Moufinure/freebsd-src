@@ -2,9 +2,12 @@ pkgdatadir = $(datadir)/@PACKAGE@/zfs-tests/tests/functional/redundancy
 dist_pkgdata_SCRIPTS = \
 	setup.ksh \
 	cleanup.ksh \
+	redundancy_draid.ksh \
 	redundancy_draid1.ksh \
 	redundancy_draid2.ksh \
 	redundancy_draid3.ksh \
+	redundancy_draid_damaged1.ksh \
+	redundancy_draid_damaged2.ksh \
 	redundancy_draid_spare1.ksh \
 	redundancy_draid_spare2.ksh \
 	redundancy_draid_spare3.ksh \

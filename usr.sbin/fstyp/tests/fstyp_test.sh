@@ -1,6 +1,6 @@
 #!/bin/sh
 #
-# SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+# SPDX-License-Identifier: BSD-2-Clause
 #
 # Copyright (c) 2015 Alan Somers
 #
@@ -26,6 +26,16 @@
 # SUCH DAMAGE.
 
 # $FreeBSD$
+
+atf_test_case befs
+befs_head() {
+	atf_set "descr" "fstyp(8) can detect BeFS and label filesystem"
+}
+befs_body() {
+	bzcat $(atf_get_srcdir)/befs.img.bz2 > befs.img
+	atf_check -s exit:0 -o inline:"befs\n" fstyp befs.img
+	atf_check -s exit:0 -o inline:"befs BeFS\n" fstyp -l befs.img
+}
 
 atf_test_case cd9660
 cd9660_head() {
@@ -257,6 +267,7 @@ zeros_body() {
 
 
 atf_init_test_cases() {
+	atf_add_test_case befs
 	atf_add_test_case cd9660
 	atf_add_test_case cd9660_label
 	atf_add_test_case dir

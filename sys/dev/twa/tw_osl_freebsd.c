@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2004-07 Applied Micro Circuits Corporation.
  * Copyright (c) 2004-05 Vinod Kashyap.
@@ -413,7 +413,7 @@ twa_attach(device_t dev)
 	callout_init(&(sc->watchdog_callout[0]), 1);
 	callout_init(&(sc->watchdog_callout[1]), 1);
 	callout_reset(&(sc->watchdog_callout[0]), 5*hz, twa_watchdog, &sc->ctlr_handle);
-	gone_in_dev(dev, 13, "twa(4) removed");
+	gone_in_dev(dev, 14, "twa(4) removed");
 
 	return(0);
 }

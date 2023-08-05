@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2004 Pawel Jakub Dawidek <pjd@FreeBSD.org>
  * Copyright (c) 2006 Tobias Reifenberger
@@ -152,6 +152,12 @@ g_label_msdosfs_taste(struct g_consumer *cp, char *label, size_t size)
 		G_LABEL_DEBUG(2,
 		    "MSDOSFS: FAT_FirstDataSector=0x%x, FAT_BytesPerSector=%d",
 		    fat_FirstDataSector, fat_BytesPerSector);
+		if (fat_BytesPerSector == 0 ||
+		    fat_BytesPerSector % pp->sectorsize != 0) {
+			G_LABEL_DEBUG(1, "MSDOSFS: %s: corrupted BPB",
+			    pp->name);
+			goto error;
+		}
 
 		for (offset = fat_BytesPerSector * fat_FirstDataSector;;
 		    offset += fat_BytesPerSector) {
@@ -203,10 +209,8 @@ endofchecks:
 	g_label_rtrim(label, size);
 
 error:
-	if (sector0 != NULL)
-		g_free(sector0);
-	if (sector != NULL)
-		g_free(sector);
+	g_free(sector0);
+	g_free(sector);
 }
 
 struct g_label_desc g_label_msdosfs = {

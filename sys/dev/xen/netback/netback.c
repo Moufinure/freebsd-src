@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2009-2011 Spectra Logic Corporation
  * All rights reserved.
@@ -1392,8 +1392,8 @@ xnb_frontend_changed(device_t dev, XenbusState frontend_state)
 
 	switch (frontend_state) {
 	case XenbusStateInitialising:
-		break;
 	case XenbusStateInitialised:
+		break;
 	case XenbusStateConnected:
 		xnb_connect(xnb);
 		break;
@@ -2296,6 +2296,7 @@ xnb_ioctl(struct ifnet *ifp, u_long cmd, caddr_t data)
 			break;
 		case SIOCADDMULTI:
 		case SIOCDELMULTI:
+			break;
 		case SIOCSIFMEDIA:
 		case SIOCGIFMEDIA:
 			error = ifmedia_ioctl(ifp, ifr, &xnb->sc_media, cmd);

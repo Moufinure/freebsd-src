@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2017 Netflix, Inc.
  * Copyright (C) 2018-2019 Alexander Motin <mav@FreeBSD.org>
@@ -198,7 +198,7 @@ static struct delete_options {
 	uint32_t	nsid;
 	const char	*dev;
 } delete_opt = {
-	.nsid = NONE,
+	.nsid = NONE - 1,
 	.dev = NULL,
 };
 
@@ -371,7 +371,7 @@ static struct ns_result_str ns_result[] = {
 	{ 0x2,  "Invalid Field"},
 	{ 0xa,  "Invalid Format"},
 	{ 0xb,  "Invalid Namespace or format"},
-	{ 0x15, "Namespace insufficent capacity"},
+	{ 0x15, "Namespace insufficient capacity"},
 	{ 0x16, "Namespace ID unavaliable"},
 	{ 0x18, "Namespace already attached"},
 	{ 0x19, "Namespace is private"},
@@ -577,30 +577,48 @@ nscreate(const struct cmd *f, int argc, char *argv[])
 	    NVME_CTRLR_DATA_OACS_NSMGMT_MASK) == 0)
 		errx(EX_UNAVAILABLE, "controller does not support namespace management");
 
-	/* Allow namespaces sharing if Multi-Path I/O is supported. */
-	if (create_opt.nmic == NONE) {
-		create_opt.nmic = cd.mic ? (NVME_NS_DATA_NMIC_MAY_BE_SHARED_MASK <<
-		     NVME_NS_DATA_NMIC_MAY_BE_SHARED_SHIFT) : 0;
-	}
-
 	memset(&nsdata, 0, sizeof(nsdata));
 	nsdata.nsze = create_opt.nsze;
 	nsdata.ncap = create_opt.cap;
-	if (create_opt.flbas == NONE)
-		nsdata.flbas = ((create_opt.lbaf & NVME_NS_DATA_FLBAS_FORMAT_MASK)
-		    << NVME_NS_DATA_FLBAS_FORMAT_SHIFT) |
-		    ((create_opt.mset & NVME_NS_DATA_FLBAS_EXTENDED_MASK)
-			<< NVME_NS_DATA_FLBAS_EXTENDED_SHIFT);
-	else
+	if (create_opt.flbas != NONE) {
 		nsdata.flbas = create_opt.flbas;
-	if (create_opt.dps == NONE)
-		nsdata.dps = ((create_opt.pi & NVME_NS_DATA_DPS_MD_START_MASK)
-		    << NVME_NS_DATA_DPS_MD_START_SHIFT) |
-		    ((create_opt.pil & NVME_NS_DATA_DPS_PIT_MASK)
-			<< NVME_NS_DATA_DPS_PIT_SHIFT);
-	else
+	} else {
+		/* Default to the first format, whatever it is. */
+		nsdata.flbas = 0;
+		if (create_opt.lbaf != NONE) {
+			nsdata.flbas |= (create_opt.lbaf &
+			    NVME_NS_DATA_FLBAS_FORMAT_MASK)
+			    << NVME_NS_DATA_FLBAS_FORMAT_SHIFT;
+		}
+		if (create_opt.mset != NONE) {
+			nsdata.flbas |= (create_opt.mset &
+			    NVME_NS_DATA_FLBAS_EXTENDED_MASK)
+			    << NVME_NS_DATA_FLBAS_EXTENDED_SHIFT;
+		}
+	}
+	if (create_opt.dps != NONE) {
 		nsdata.dps = create_opt.dps;
-	nsdata.nmic = create_opt.nmic;
+	} else {
+		/* Default to protection disabled. */
+		nsdata.dps = 0;
+		if (create_opt.pi != NONE) {
+			nsdata.dps |= (create_opt.pi &
+			    NVME_NS_DATA_DPS_MD_START_MASK)
+			    << NVME_NS_DATA_DPS_MD_START_SHIFT;
+		}
+		if (create_opt.pil != NONE) {
+			nsdata.dps |= (create_opt.pil &
+			    NVME_NS_DATA_DPS_PIT_MASK)
+			    << NVME_NS_DATA_DPS_PIT_SHIFT;
+		}
+	}
+	if (create_opt.nmic != NONE) {
+		nsdata.nmic = create_opt.nmic;
+	} else {
+		/* Allow namespaces sharing if Multi-Path I/O is supported. */
+		nsdata.nmic = cd.mic ? (NVME_NS_DATA_NMIC_MAY_BE_SHARED_MASK <<
+		     NVME_NS_DATA_NMIC_MAY_BE_SHARED_SHIFT) : 0;
+	}
 	nvme_namespace_data_swapbytes(&nsdata);
 
 	memset(&pt, 0, sizeof(pt));
@@ -639,12 +657,12 @@ nsdelete(const struct cmd *f, int argc, char *argv[])
 	if (nsid != 0) {
 		close(fd);
 		open_dev(path, &fd, 1, 1);
-	} else if (delete_opt.nsid == NONE) {
+	} else if (delete_opt.nsid == NONE - 1) {
 		close(fd);
 		fprintf(stderr, "No NSID specified");
 		arg_help(argc, argv, f);
 	}
-	if (delete_opt.nsid != NONE)
+	if (delete_opt.nsid != NONE - 1)
 		nsid = delete_opt.nsid;
 	free(path);
 	if (read_controller_data(fd, &cd))

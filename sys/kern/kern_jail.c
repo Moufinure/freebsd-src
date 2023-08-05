@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 1999 Poul-Henning Kamp.
  * Copyright (c) 2008 Bjoern A. Zeeb.
@@ -34,6 +34,7 @@ __FBSDID("$FreeBSD$");
 #include "opt_ddb.h"
 #include "opt_inet.h"
 #include "opt_inet6.h"
+#include "opt_nfs.h"
 
 #include <sys/param.h>
 #include <sys/types.h>
@@ -50,6 +51,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/jail.h>
 #include <sys/linker.h>
 #include <sys/lock.h>
+#include <sys/mman.h>
 #include <sys/mutex.h>
 #include <sys/racct.h>
 #include <sys/rctl.h>
@@ -76,7 +78,6 @@ __FBSDID("$FreeBSD$");
 
 #include <security/mac/mac_framework.h>
 
-#define	DEFAULT_HOSTUUID	"00000000-0000-0000-0000-000000000000"
 #define	PRISON0_HOSTUUID_MODULE	"hostuuid"
 
 MALLOC_DEFINE(M_PRISON, "prison", "Prison structures");
@@ -143,6 +144,7 @@ static void prison_complete(void *context, int pending);
 static void prison_deref(struct prison *pr, int flags);
 static void prison_deref_kill(struct prison *pr, struct prisonlist *freeprison);
 static int prison_lock_xlock(struct prison *pr, int flags);
+static void prison_cleanup(struct prison *pr);
 static void prison_free_not_last(struct prison *pr);
 static void prison_proc_free_not_last(struct prison *pr);
 static void prison_set_allow_locked(struct prison *pr, unsigned flag,
@@ -214,6 +216,9 @@ static struct bool_flags pr_flag_allow[NBBY * NBPW] = {
 	{"allow.unprivileged_proc_debug", "allow.nounprivileged_proc_debug",
 	 PR_ALLOW_UNPRIV_DEBUG},
 	{"allow.suser", "allow.nosuser", PR_ALLOW_SUSER},
+#ifdef VIMAGE
+	{"allow.nfsd", "allow.nonfsd", PR_ALLOW_NFSD},
+#endif
 };
 static unsigned pr_allow_all = PR_ALLOW_ALL_STATIC;
 const size_t pr_flag_allow_size = sizeof(pr_flag_allow);
@@ -240,6 +245,8 @@ prison0_init(void)
 {
 	uint8_t *file, *data;
 	size_t size;
+	char buf[sizeof(prison0.pr_hostuuid)];
+	bool valid;
 
 	prison0.pr_cpuset = cpuset_ref(thread0.td_cpuset);
 	prison0.pr_osreldate = osreldate;
@@ -257,14 +264,35 @@ prison0_init(void)
 			 * non-printable characters to be safe.
 			 */
 			while (size > 0 && data[size - 1] <= 0x20) {
-				data[size--] = '\0';
+				size--;
 			}
-			if (validate_uuid(data, size, NULL, 0) == 0) {
-				(void)strlcpy(prison0.pr_hostuuid, data,
-				    size + 1);
-			} else if (bootverbose) {
-				printf("hostuuid: preload data malformed: '%s'",
-				    data);
+
+			valid = false;
+
+			/*
+			 * Not NUL-terminated when passed from loader, but
+			 * validate_uuid requires that due to using sscanf (as
+			 * does the subsequent strlcpy, since it still reads
+			 * past the given size to return the true length);
+			 * bounce to a temporary buffer to fix.
+			 */
+			if (size >= sizeof(buf))
+				goto done;
+
+			memcpy(buf, data, size);
+			buf[size] = '\0';
+
+			if (validate_uuid(buf, size, NULL, 0) != 0)
+				goto done;
+
+			valid = true;
+			(void)strlcpy(prison0.pr_hostuuid, buf,
+			    sizeof(prison0.pr_hostuuid));
+
+done:
+			if (bootverbose && !valid) {
+				printf("hostuuid: preload data malformed: '%.*s'\n",
+				    (int)size, data);
 			}
 		}
 	}
@@ -1305,7 +1333,7 @@ kern_jail_set(struct thread *td, struct uio *optuio, int flags)
 #endif
 		/*
 		 * Allocate a dedicated cpuset for each jail.
-		 * Unlike other initial settings, this may return an erorr.
+		 * Unlike other initial settings, this may return an error.
 		 */
 		error = cpuset_create_root(ppr, &pr->pr_cpuset);
 		if (error)
@@ -1859,6 +1887,11 @@ kern_jail_set(struct thread *td, struct uio *optuio, int flags)
 		prison_racct_modify(pr);
 	}
 #endif
+
+	if (born && pr != &prison0 && (pr->pr_allow & PR_ALLOW_NFSD) != 0 &&
+	    (pr->pr_root->v_vflag & VV_ROOT) == 0)
+		printf("Warning jail jid=%d: mountd/nfsd requires a separate"
+		   " file system\n", pr->pr_id);
 
 	drflags &= ~PD_KILL;
 	td->td_retval[0] = pr->pr_id;
@@ -2604,7 +2637,7 @@ prison_free_not_last(struct prison *pr)
 }
 
 /*
- * Hold a a prison for user visibility, by incrementing pr_uref.
+ * Hold a prison for user visibility, by incrementing pr_uref.
  * It is generally an error to hold a prison that isn't already
  * user-visible, except through the the jail system calls.  It is also
  * an error to hold an invalid prison.  A prison record will remain
@@ -2754,8 +2787,7 @@ prison_deref(struct prison *pr, int flags)
 					pr->pr_state = PRISON_STATE_DYING;
 					mtx_unlock(&pr->pr_mtx);
 					flags &= ~PD_LOCKED;
-					(void)osd_jail_call(pr,
-					    PR_METHOD_REMOVE, NULL);
+					prison_cleanup(pr);
 				}
 			}
 		}
@@ -2910,7 +2942,7 @@ prison_deref_kill(struct prison *pr, struct prisonlist *freeprison)
 		}
 		if (!(cpr->pr_flags & PR_REMOVE))
 			continue;
-		(void)osd_jail_call(cpr, PR_METHOD_REMOVE, NULL);
+		prison_cleanup(cpr);
 		mtx_lock(&cpr->pr_mtx);
 		cpr->pr_flags &= ~PR_REMOVE;
 		if (cpr->pr_flags & PR_PERSIST) {
@@ -2946,7 +2978,7 @@ prison_deref_kill(struct prison *pr, struct prisonlist *freeprison)
 	if (rpr != NULL)
 		LIST_REMOVE(rpr, pr_sibling);
 
-	(void)osd_jail_call(pr, PR_METHOD_REMOVE, NULL);
+	prison_cleanup(pr);
 	mtx_lock(&pr->pr_mtx);
 	if (pr->pr_flags & PR_PERSIST) {
 		pr->pr_flags &= ~PR_PERSIST;
@@ -2990,6 +3022,20 @@ prison_lock_xlock(struct prison *pr, int flags)
 		flags |= PD_LOCKED;
 	}
 	return flags;
+}
+
+/*
+ * Release a prison's resources when it starts dying (when the last user
+ * reference is dropped, or when it is killed).
+ */
+static void
+prison_cleanup(struct prison *pr)
+{
+	sx_assert(&allprison_lock, SA_XLOCKED);
+	mtx_assert(&pr->pr_mtx, MA_NOTOWNED);
+	vfs_exjail_delete(pr);
+	shm_remove_prison(pr);
+	(void)osd_jail_call(pr, PR_METHOD_REMOVE, NULL);
 }
 
 /*
@@ -3138,6 +3184,31 @@ prison_check(struct ucred *cred1, struct ucred *cred2)
 
 	return ((cred1->cr_prison == cred2->cr_prison ||
 	    prison_ischild(cred1->cr_prison, cred2->cr_prison)) ? 0 : ESRCH);
+}
+
+/*
+ * For mountd/nfsd to run within a prison, it must be:
+ * - A vnet prison.
+ * - PR_ALLOW_NFSD must be set on it.
+ * - The root directory (pr_root) of the prison must be
+ *   a file system mount point, so the mountd can hang
+ *   export information on it.
+ * - The prison's enforce_statfs cannot be 0, so that
+ *   mountd(8) can do exports.
+ */
+bool
+prison_check_nfsd(struct ucred *cred)
+{
+
+	if (jailed_without_vnet(cred))
+		return (false);
+	if (!prison_allow(cred, PR_ALLOW_NFSD))
+		return (false);
+	if ((cred->cr_prison->pr_root->v_vflag & VV_ROOT) == 0)
+		return (false);
+	if (cred->cr_prison->pr_enforce_statfs == 0)
+		return (false);
+	return (true);
 }
 
 /*
@@ -3394,11 +3465,15 @@ prison_priv_check(struct ucred *cred, int priv)
 	 * is only granted conditionally in the legacy jail case.
 	 */
 	switch (priv) {
-#ifdef notyet
 		/*
 		 * NFS-specific privileges.
 		 */
 	case PRIV_NFS_DAEMON:
+	case PRIV_VFS_GETFH:
+	case PRIV_VFS_MOUNT_EXPORTED:
+		if (!prison_check_nfsd(cred))
+			return (EPERM);
+#ifdef notyet
 	case PRIV_NFS_LOCKD:
 #endif
 		/*
@@ -3433,6 +3508,8 @@ prison_priv_check(struct ucred *cred, int priv)
 	case PRIV_NET_GIF:
 	case PRIV_NET_SETIFVNET:
 	case PRIV_NET_SETIFFIB:
+	case PRIV_NET_ME:
+	case PRIV_NET_WG:
 
 		/*
 		 * 802.11-related privileges.
@@ -3619,7 +3696,7 @@ prison_priv_check(struct ucred *cred, int priv)
 
 		/*
 		 * As in the non-jail case, non-root users are expected to be
-		 * able to read kernel/phyiscal memory (provided /dev/[k]mem
+		 * able to read kernel/physical memory (provided /dev/[k]mem
 		 * exists in the jail and they have permission to access it).
 		 */
 	case PRIV_KMEM_READ:
@@ -4146,6 +4223,10 @@ SYSCTL_JAIL_PARAM(_allow, unprivileged_proc_debug, CTLTYPE_INT | CTLFLAG_RW,
     "B", "Unprivileged processes may use process debugging facilities");
 SYSCTL_JAIL_PARAM(_allow, suser, CTLTYPE_INT | CTLFLAG_RW,
     "B", "Processes in jail with uid 0 have privilege");
+#ifdef VIMAGE
+SYSCTL_JAIL_PARAM(_allow, nfsd, CTLTYPE_INT | CTLFLAG_RW,
+    "B", "Mountd/nfsd may run in the jail");
+#endif
 
 SYSCTL_JAIL_PARAM_SUBNODE(allow, mount, "Jail mount/unmount permission flags");
 SYSCTL_JAIL_PARAM(_allow_mount, , CTLTYPE_INT | CTLFLAG_RW,
@@ -4229,7 +4310,7 @@ prison_add_allow(const char *prefix, const char *name, const char *prefix_descr,
 	mtx_unlock(&prison0.pr_mtx);
 
 	/*
-	 * Create sysctls for the paramter, and the back-compat global
+	 * Create sysctls for the parameter, and the back-compat global
 	 * permission.
 	 */
 	parent = prefix

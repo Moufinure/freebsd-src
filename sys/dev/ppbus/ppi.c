@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 1997, 1998, 1999 Nicolas Souchu, Michael Smith
  * All rights reserved.
@@ -149,12 +149,8 @@ ppi_identify(driver_t *driver, device_t parent)
 static int
 ppi_probe(device_t dev)
 {
-	struct ppi_data *ppi;
-
 	/* probe is always ok */
 	device_set_desc(dev, "Parallel I/O");
-
-	ppi = DEVTOSOFTC(dev);
 
 	return (0);
 }

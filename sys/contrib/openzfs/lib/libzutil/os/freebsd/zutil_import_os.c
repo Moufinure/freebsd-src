@@ -127,7 +127,7 @@ zpool_open_func(void *arg)
 	/*
 	 * O_NONBLOCK so we don't hang trying to open things like serial ports.
 	 */
-	if ((fd = open(rn->rn_name, O_RDONLY|O_NONBLOCK)) < 0)
+	if ((fd = open(rn->rn_name, O_RDONLY|O_NONBLOCK|O_CLOEXEC)) < 0)
 		return;
 
 	/*
@@ -246,4 +246,9 @@ int
 zfs_dev_flush(int fd __unused)
 {
 	return (0);
+}
+
+void
+update_vdevs_config_dev_sysfs_path(nvlist_t *config)
+{
 }

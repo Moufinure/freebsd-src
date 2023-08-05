@@ -52,7 +52,10 @@ __FBSDID("$FreeBSD$");
 #include "opt_verbose_sysinit.h"
 
 #include <sys/param.h>
-#include <sys/kernel.h>
+#include <sys/systm.h>
+#include <sys/conf.h>
+#include <sys/cpuset.h>
+#include <sys/dtrace_bsd.h>
 #include <sys/epoch.h>
 #include <sys/eventhandler.h>
 #include <sys/exec.h>
@@ -60,30 +63,27 @@ __FBSDID("$FreeBSD$");
 #include <sys/filedesc.h>
 #include <sys/imgact.h>
 #include <sys/jail.h>
+#include <sys/kernel.h>
 #include <sys/ktr.h>
 #include <sys/lock.h>
 #include <sys/loginclass.h>
+#include <sys/malloc.h>
 #include <sys/mount.h>
 #include <sys/mutex.h>
-#include <sys/dtrace_bsd.h>
-#include <sys/syscallsubr.h>
-#include <sys/sysctl.h>
 #include <sys/proc.h>
 #include <sys/racct.h>
-#include <sys/resourcevar.h>
-#include <sys/systm.h>
-#include <sys/signalvar.h>
-#include <sys/vnode.h>
-#include <sys/sysent.h>
 #include <sys/reboot.h>
+#include <sys/resourcevar.h>
 #include <sys/sched.h>
+#include <sys/signalvar.h>
 #include <sys/sx.h>
+#include <sys/syscallsubr.h>
+#include <sys/sysctl.h>
+#include <sys/sysent.h>
 #include <sys/sysproto.h>
-#include <sys/vmmeter.h>
 #include <sys/unistd.h>
-#include <sys/malloc.h>
-#include <sys/conf.h>
-#include <sys/cpuset.h>
+#include <sys/vmmeter.h>
+#include <sys/vnode.h>
 
 #include <machine/cpu.h>
 
@@ -402,10 +402,15 @@ null_set_syscall_retval(struct thread *td __unused, int error __unused)
 	panic("null_set_syscall_retval");
 }
 
+static void
+null_set_fork_retval(struct thread *td __unused)
+{
+
+}
+
 struct sysentvec null_sysvec = {
 	.sv_size	= 0,
 	.sv_table	= NULL,
-	.sv_transtrap	= NULL,
 	.sv_fixup	= NULL,
 	.sv_sendsig	= NULL,
 	.sv_sigcode	= NULL,
@@ -418,6 +423,7 @@ struct sysentvec null_sysvec = {
 	.sv_maxuser	= VM_MAXUSER_ADDRESS,
 	.sv_usrstack	= USRSTACK,
 	.sv_psstrings	= PS_STRINGS,
+	.sv_psstringssz	= sizeof(struct ps_strings),
 	.sv_stackprot	= VM_PROT_ALL,
 	.sv_copyout_strings	= NULL,
 	.sv_setregs	= NULL,
@@ -430,6 +436,9 @@ struct sysentvec null_sysvec = {
 	.sv_schedtail	= NULL,
 	.sv_thread_detach = NULL,
 	.sv_trap	= NULL,
+	.sv_regset_begin = NULL,
+	.sv_regset_end  = NULL,
+	.sv_set_fork_retval = null_set_fork_retval,
 };
 
 /*
@@ -524,6 +533,7 @@ proc0_init(void *dummy __unused)
 	callout_init_mtx(&p->p_itcallout, &p->p_mtx, 0);
 	callout_init_mtx(&p->p_limco, &p->p_mtx, 0);
 	callout_init(&td->td_slpcallout, 1);
+	TAILQ_INIT(&p->p_kqtim_stop);
 
 	/* Create credentials. */
 	newcred = crget();
@@ -765,7 +775,7 @@ start_init(void *dummy)
 		 */
 		KASSERT((td->td_pflags & TDP_EXECVMSPC) == 0,
 		    ("nested execve"));
-		oldvmspace = td->td_proc->p_vmspace;
+		oldvmspace = p->p_vmspace;
 		error = kern_execve(td, &args, NULL, oldvmspace);
 		KASSERT(error != 0,
 		    ("kern_execve returned success, not EJUSTRETURN"));

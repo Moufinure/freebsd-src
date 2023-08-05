@@ -863,7 +863,7 @@ mpr_user_pass_thru(struct mpr_softc *sc, mpr_pass_thru_t *data)
 			}
 			mpr_unlock(sc);
 			copyout(cm->cm_reply, PTRIN(data->PtrReply),
-			    data->ReplySize);
+			    MIN(sz, data->ReplySize));
 			mpr_lock(sc);
 		}
 		mprsas_free_tm(sc, cm);
@@ -1087,7 +1087,8 @@ mpr_user_pass_thru(struct mpr_softc *sc, mpr_pass_thru_t *data)
 			    data->ReplySize, sz);
 		}
 		mpr_unlock(sc);
-		copyout(cm->cm_reply, PTRIN(data->PtrReply), data->ReplySize);
+		copyout(cm->cm_reply, PTRIN(data->PtrReply),
+		    MIN(sz, data->ReplySize));
 		mpr_lock(sc);
 
 		if ((function == MPI2_FUNCTION_SCSI_IO_REQUEST) ||
@@ -1311,7 +1312,7 @@ mpr_post_fw_diag_buffer(struct mpr_softc *sc,
 	reply = (MPI2_DIAG_BUFFER_POST_REPLY *)cm->cm_reply;
 	if (reply == NULL) {
 		mpr_printf(sc, "%s: reply is NULL, probably due to "
-		    "reinitialization", __func__);
+		    "reinitialization\n", __func__);
 		status = MPR_DIAG_FAILURE;
 		goto done;
 	}
@@ -1405,7 +1406,7 @@ mpr_release_fw_diag_buffer(struct mpr_softc *sc,
 	reply = (MPI2_DIAG_RELEASE_REPLY *)cm->cm_reply;
 	if (reply == NULL) {
 		mpr_printf(sc, "%s: reply is NULL, probably due to "
-		    "reinitialization", __func__);
+		    "reinitialization\n", __func__);
 		status = MPR_DIAG_FAILURE;
 		goto done;
 	}
@@ -2065,7 +2066,7 @@ mpr_user_event_report(struct mpr_softc *sc, mpr_event_report_t *data)
 	if ((size >= sizeof(sc->recorded_events)) && (status == 0)) {
 		mpr_unlock(sc);
 		if (copyout((void *)sc->recorded_events,
-		    PTRIN(data->PtrEvents), size) != 0)
+		    PTRIN(data->PtrEvents), sizeof(sc->recorded_events)) != 0)
 			status = EFAULT;
 		mpr_lock(sc);
 	} else {
@@ -2266,6 +2267,10 @@ mpr_ioctl(struct cdev *dev, u_long cmd, void *arg, int flag,
 		mpr_unlock(sc);
 		break;
 	case MPRIO_READ_CFG_PAGE:
+		if (page_req->len < (int)sizeof(MPI2_CONFIG_PAGE_HEADER)) {
+			error = EINVAL;
+			break;
+		}
 		mpr_page = malloc(page_req->len, M_MPRUSER, M_WAITOK | M_ZERO);
 		error = copyin(page_req->buf, mpr_page,
 		    sizeof(MPI2_CONFIG_PAGE_HEADER));
@@ -2284,6 +2289,11 @@ mpr_ioctl(struct cdev *dev, u_long cmd, void *arg, int flag,
 		mpr_unlock(sc);
 		break;
 	case MPRIO_READ_EXT_CFG_PAGE:
+		if (ext_page_req->len <
+		    (int)sizeof(MPI2_CONFIG_EXTENDED_PAGE_HEADER)) {
+			error = EINVAL;
+			break;
+		}
 		mpr_page = malloc(ext_page_req->len, M_MPRUSER,
 		    M_WAITOK | M_ZERO);
 		error = copyin(ext_page_req->buf, mpr_page,
@@ -2298,6 +2308,10 @@ mpr_ioctl(struct cdev *dev, u_long cmd, void *arg, int flag,
 		error = copyout(mpr_page, ext_page_req->buf, ext_page_req->len);
 		break;
 	case MPRIO_WRITE_CFG_PAGE:
+		if (page_req->len < (int)sizeof(MPI2_CONFIG_PAGE_HEADER)) {
+			error = EINVAL;
+			break;
+		}
 		mpr_page = malloc(page_req->len, M_MPRUSER, M_WAITOK|M_ZERO);
 		error = copyin(page_req->buf, mpr_page, page_req->len);
 		if (error)

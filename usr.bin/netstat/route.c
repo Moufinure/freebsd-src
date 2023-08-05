@@ -329,6 +329,8 @@ p_rtentry_sysctl(const char *name, struct rt_msghdr *rtm)
 	snprintf(buffer, sizeof(buffer), "{[:-%d}{:flags/%%s}{]:} ",
 	    wid_flags - protrusion);
 	p_flags(rtm->rtm_flags, buffer);
+	/* Output path weight as non-visual property */
+	xo_emit("{e:weight/%u}", rtm->rtm_rmx.rmx_weight);
 	if (Wflag) {
 		/* XXX: use=0? */
 		xo_emit("{t:nhop/%*lu} ", wid_mtu, rtm->rtm_rmx.rmx_nhidx);
@@ -699,19 +701,13 @@ void
 rt_stats(void)
 {
 	struct rtstat rtstat;
-	u_long rtsaddr, rttaddr;
-	int rttrash;
+	u_long rtsaddr;
 
 	if ((rtsaddr = nl[N_RTSTAT].n_value) == 0) {
 		xo_emit("{W:rtstat: symbol not in namelist}\n");
 		return;
 	}
-	if ((rttaddr = nl[N_RTTRASH].n_value) == 0) {
-		xo_emit("{W:rttrash: symbol not in namelist}\n");
-		return;
-	}
 	kread_counters(rtsaddr, (char *)&rtstat, sizeof (rtstat));
-	kread(rttaddr, (char *)&rttrash, sizeof (rttrash));
 	xo_emit("{T:routing}:\n");
 
 #define	p(f, m) if (rtstat.f || sflag <= 1) \
@@ -728,9 +724,4 @@ rt_stats(void)
 	p(rts_wildcard, "\t{:wildcard-uses/%ju} "
 	    "{N:/use%s of a wildcard route}\n");
 #undef p
-
-	if (rttrash || sflag <= 1)
-		xo_emit("\t{:unused-but-not-freed/%u} "
-		    "{N:/route%s not in table but not freed}\n",
-		    rttrash, plural(rttrash));
 }

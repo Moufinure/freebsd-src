@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 1984-2020  Mark Nudelman
+ * Copyright (C) 1984-2023  Mark Nudelman
  *
  * You may distribute under the terms of either the GNU General Public
  * License or the Less License, as specified in the README file.
@@ -23,7 +23,7 @@
 #if MSDOS_COMPILER==DJGPPC
 #include <glob.h>
 #include <dir.h>
-#define _MAX_PATH	PATH_MAX
+#define _MAX_PATH      PATH_MAX
 #endif
 #endif
 #ifdef _OSK
@@ -36,10 +36,10 @@
 #if HAVE_STAT
 #include <sys/stat.h>
 #ifndef S_ISDIR
-#define	S_ISDIR(m)	(((m) & S_IFMT) == S_IFDIR)
+#define S_ISDIR(m)      (((m) & S_IFMT) == S_IFDIR)
 #endif
 #ifndef S_ISREG
-#define	S_ISREG(m)	(((m) & S_IFMT) == S_IFREG)
+#define S_ISREG(m)      (((m) & S_IFMT) == S_IFREG)
 #endif
 #endif
 
@@ -54,13 +54,15 @@ extern IFILE old_ifile;
 extern char openquote;
 extern char closequote;
 #endif
+#if HAVE_STAT_INO
+extern ino_t curr_ino;
+extern dev_t curr_dev;
+#endif
 
 /*
  * Remove quotes around a filename.
  */
-	public char *
-shell_unquote(str)
-	char *str;
+public char * shell_unquote(char *str)
 {
 	char *name;
 	char *p;
@@ -97,8 +99,7 @@ shell_unquote(str)
 /*
  * Get the shell's escape character.
  */
-	public char *
-get_meta_escape(VOID_PARAM)
+public char * get_meta_escape(void)
 {
 	char *s;
 
@@ -111,8 +112,7 @@ get_meta_escape(VOID_PARAM)
 /*
  * Get the characters which the shell considers to be "metacharacters".
  */
-	static char *
-metachars(VOID_PARAM)
+static char * metachars(void)
 {
 	static char *mchars = NULL;
 
@@ -128,9 +128,7 @@ metachars(VOID_PARAM)
 /*
  * Is this a shell metacharacter?
  */
-	static int
-metachar(c)
-	char c;
+static int metachar(char c)
 {
 	return (strchr(metachars(), c) != NULL);
 }
@@ -138,9 +136,7 @@ metachar(c)
 /*
  * Insert a backslash before each metacharacter in a string.
  */
-	public char *
-shell_quote(s)
-	char *s;
+public char * shell_quote(char *s)
 {
 	char *p;
 	char *newstr;
@@ -216,10 +212,7 @@ shell_quote(s)
  * Return a pathname that points to a specified file in a specified directory.
  * Return NULL if the file does not exist in the directory.
  */
-	static char *
-dirfile(dirname, filename)
-	char *dirname;
-	char *filename;
+public char * dirfile(char *dirname, char *filename, int must_exist)
 {
 	char *pathname;
 	int len;
@@ -235,17 +228,20 @@ dirfile(dirname, filename)
 	if (pathname == NULL)
 		return (NULL);
 	SNPRINTF3(pathname, len, "%s%s%s", dirname, PATHNAME_SEP, filename);
-	/*
-	 * Make sure the file exists.
-	 */
-	f = open(pathname, OPEN_READ);
-	if (f < 0)
+	if (must_exist)
 	{
-		free(pathname);
-		pathname = NULL;
-	} else
-	{
-		close(f);
+		/*
+		 * Make sure the file exists.
+		 */
+		f = open(pathname, OPEN_READ);
+		if (f < 0)
+		{
+			free(pathname);
+			pathname = NULL;
+		} else
+		{
+			close(f);
+		}
 	}
 	return (pathname);
 }
@@ -253,31 +249,23 @@ dirfile(dirname, filename)
 /*
  * Return the full pathname of the given file in the "home directory".
  */
-	public char *
-homefile(filename)
-	char *filename;
+public char * homefile(char *filename)
 {
 	char *pathname;
 
-	/*
-	 * Try $HOME/filename.
-	 */
-	pathname = dirfile(lgetenv("HOME"), filename);
+	/* Try $HOME/filename. */
+	pathname = dirfile(lgetenv("HOME"), filename, 1);
 	if (pathname != NULL)
 		return (pathname);
 #if OS2
-	/*
-	 * Try $INIT/filename.
-	 */
-	pathname = dirfile(lgetenv("INIT"), filename);
+	/* Try $INIT/filename. */
+	pathname = dirfile(lgetenv("INIT"), filename, 1);
 	if (pathname != NULL)
 		return (pathname);
 #endif
 #if MSDOS_COMPILER || OS2
-	/*
-	 * Look for the file anywhere on search path.
-	 */
-	pathname = (char *) calloc(_MAX_PATH, sizeof(char));
+	/* Look for the file anywhere on search path. */
+	pathname = (char *) ecalloc(_MAX_PATH, sizeof(char));
 #if MSDOS_COMPILER==DJGPPC
 	{
 		char *res = searchpath(filename);
@@ -303,16 +291,14 @@ homefile(filename)
  * Likewise for a string of N "#"s.
  * {{ This is a lot of work just to support % and #. }}
  */
-	public char *
-fexpand(s)
-	char *s;
+public char * fexpand(char *s)
 {
 	char *fr, *to;
 	int n;
 	char *e;
 	IFILE ifile;
 
-#define	fchar_ifile(c) \
+#define fchar_ifile(c) \
 	((c) == '%' ? curr_ifile : \
 	 (c) == '#' ? old_ifile : NULL_IFILE)
 
@@ -399,9 +385,7 @@ fexpand(s)
  * Return a blank-separated list of filenames which "complete"
  * the given string.
  */
-	public char *
-fcomplete(s)
-	char *s;
+public char * fcomplete(char *s)
 {
 	char *fpat;
 	char *qs;
@@ -459,9 +443,7 @@ fcomplete(s)
  * Try to determine if a file is "binary".
  * This is just a guess, and we need not try too hard to make it accurate.
  */
-	public int
-bin_file(f)
-	int f;
+public int bin_file(int f)
 {
 	int n;
 	int bin_count = 0;
@@ -479,16 +461,19 @@ bin_file(f)
 	edata = &data[n];
 	for (p = data;  p < edata;  )
 	{
-		if (utf_mode && !is_utf8_well_formed(p, edata-data))
+		if (utf_mode && !is_utf8_well_formed(p, edata-p))
 		{
 			bin_count++;
 			utf_skip_to_lead(&p, edata);
 		} else 
 		{
 			LWCHAR c = step_char(&p, +1, edata);
-			if (ctldisp == OPT_ONPLUS && IS_CSI_START(c))
-				skip_ansi(&p, edata);
-			else if (binary_char(c))
+			struct ansi_state *pansi;
+			if (ctldisp == OPT_ONPLUS && (pansi = ansi_start(c)) != NULL)
+			{
+				skip_ansi(pansi, &p, edata);
+				ansi_done(pansi);
+			} else if (binary_char(c))
 				bin_count++;
 		}
 	}
@@ -502,9 +487,7 @@ bin_file(f)
 /*
  * Try to determine the size of a file by seeking to the end.
  */
-	static POSITION
-seek_filesize(f)
-	int f;
+static POSITION seek_filesize(int f)
 {
 	off_t spos;
 
@@ -514,13 +497,12 @@ seek_filesize(f)
 	return ((POSITION) spos);
 }
 
+#if HAVE_POPEN
 /*
  * Read a string from a file.
  * Return a pointer to the string in memory.
  */
-	static char *
-readfd(fd)
-	FILE *fd;
+static char * readfd(FILE *fd)
 {
 	int len;
 	int ch;
@@ -557,17 +539,11 @@ readfd(fd)
 	return (buf);
 }
 
-
-
-#if HAVE_POPEN
-
 /*
  * Execute a shell command.
  * Return a pointer to a pipe connected to the shell command's standard output.
  */
-	static FILE *
-shellcmd(cmd)
-	char *cmd;
+static FILE * shellcmd(char *cmd)
 {
 	FILE *fd;
 
@@ -616,9 +592,7 @@ shellcmd(cmd)
 /*
  * Expand a filename, doing any system-specific metacharacter substitutions.
  */
-	public char *
-lglob(filename)
-	char *filename;
+public char * lglob(char *filename)
 {
 	char *gfilename;
 
@@ -648,7 +622,7 @@ lglob(filename)
 		qfilename = shell_quote(p);
 		if (qfilename != NULL)
 		{
-	  		length += strlen(qfilename) + 1;
+			length += strlen(qfilename) + 1;
 			free(qfilename);
 		}
 	}
@@ -759,10 +733,11 @@ lglob(filename)
 	 */
 	len = (int) (strlen(lessecho) + strlen(filename) + (7*strlen(metachars())) + 24);
 	cmd = (char *) ecalloc(len, sizeof(char));
-	SNPRINTF4(cmd, len, "%s -p0x%x -d0x%x -e%s ", lessecho, openquote, closequote, esc);
+	SNPRINTF4(cmd, len, "%s -p0x%x -d0x%x -e%s ", lessecho,
+		(unsigned char) openquote, (unsigned char) closequote, esc);
 	free(esc);
 	for (s = metachars();  *s != '\0';  s++)
-		sprintf(cmd + strlen(cmd), "-n0x%x ", *s);
+		sprintf(cmd + strlen(cmd), "-n0x%x ", (unsigned char) *s);
 	sprintf(cmd + strlen(cmd), "-- %s", filename);
 	fd = shellcmd(cmd);
 	free(cmd);
@@ -795,27 +770,36 @@ lglob(filename)
 }
 
 /*
+ * Does path not represent something in the file system?
+ */
+public int is_fake_pathname(char *path)
+{
+	return (strcmp(path, "-") == 0 ||
+	        strcmp(path, FAKE_HELPFILE) == 0 || strcmp(path, FAKE_EMPTYFILE) == 0);
+}
+
+/*
  * Return canonical pathname.
  */
-	public char *
-lrealpath(path)
-	char *path;
+public char * lrealpath(char *path)
 {
+	if (!is_fake_pathname(path))
+	{
 #if HAVE_REALPATH
-	char rpath[PATH_MAX];
-	if (realpath(path, rpath) != NULL)
-		return (save(rpath));
+		char rpath[PATH_MAX];
+		if (realpath(path, rpath) != NULL)
+			return (save(rpath));
 #endif
+	}
 	return (save(path));
 }
 
+#if HAVE_POPEN
 /*
  * Return number of %s escapes in a string.
  * Return a large number if there are any other % escapes besides %s.
  */
-	static int
-num_pct_s(lessopen)
-	char *lessopen;
+static int num_pct_s(char *lessopen)
 {
 	int num = 0;
 
@@ -834,16 +818,13 @@ num_pct_s(lessopen)
 	}
 	return (num);
 }
+#endif
 
 /*
  * See if we should open a "replacement file" 
  * instead of the file we're about to open.
  */
-	public char *
-open_altfile(filename, pf, pfd)
-	char *filename;
-	int *pf;
-	void **pfd;
+public char * open_altfile(char *filename, int *pf, void **pfd)
 {
 #if !HAVE_POPEN
 	return (NULL);
@@ -914,7 +895,7 @@ open_altfile(filename, pf, pfd)
 		int f;
 
 		/*
-		 * The first time we open the file, read one char 
+		 * The alt file is a pipe. Read one char 
 		 * to see if the pipe will produce any data.
 		 * If it does, push the char back on the pipe.
 		 */
@@ -931,25 +912,32 @@ open_altfile(filename, pf, pfd)
 			 */
 			int status = pclose(fd);
 			if (returnfd > 1 && status == 0) {
+				/* File is empty. */
 				*pfd = NULL;
 				*pf = -1;
 				return (save(FAKE_EMPTYFILE));
 			}
+			/* No alt file. */
 			return (NULL);
 		}
+		/* Alt pipe contains data, so use it. */
 		ch_ungetchar(c);
 		*pfd = (void *) fd;
 		*pf = f;
 		return (save("-"));
 	}
 #endif
+	/* The alt file is a regular file. Read its name from LESSOPEN. */
 	cmd = readfd(fd);
 	pclose(fd);
 	if (*cmd == '\0')
+	{
 		/*
 		 * Pipe is empty.  This means there is no alt file.
 		 */
+		free(cmd);
 		return (NULL);
+	}
 	return (cmd);
 #endif /* HAVE_POPEN */
 }
@@ -957,13 +945,12 @@ open_altfile(filename, pf, pfd)
 /*
  * Close a replacement file.
  */
-	public void
-close_altfile(altfilename, filename)
-	char *altfilename;
-	char *filename;
+public void close_altfile(char *altfilename, char *filename)
 {
 #if HAVE_POPEN
 	char *lessclose;
+	char *qfilename;
+	char *qaltfilename;
 	FILE *fd;
 	char *cmd;
 	int len;
@@ -972,15 +959,19 @@ close_altfile(altfilename, filename)
 		return;
 	ch_ungetchar(-1);
 	if ((lessclose = lgetenv("LESSCLOSE")) == NULL)
-	     	return;
+		return;
 	if (num_pct_s(lessclose) > 2) 
 	{
 		error("LESSCLOSE ignored; must contain no more than 2 %%s", NULL_PARG);
 		return;
 	}
-	len = (int) (strlen(lessclose) + strlen(filename) + strlen(altfilename) + 2);
+	qfilename = shell_quote(filename);
+	qaltfilename = shell_quote(altfilename);
+	len = (int) (strlen(lessclose) + strlen(qfilename) + strlen(qaltfilename) + 2);
 	cmd = (char *) ecalloc(len, sizeof(char));
-	SNPRINTF2(cmd, len, lessclose, filename, altfilename);
+	SNPRINTF2(cmd, len, lessclose, qfilename, qaltfilename);
+	free(qaltfilename);
+	free(qfilename);
 	fd = shellcmd(cmd);
 	free(cmd);
 	if (fd != NULL)
@@ -991,9 +982,7 @@ close_altfile(altfilename, filename)
 /*
  * Is the specified file a directory?
  */
-	public int
-is_dir(filename)
-	char *filename;
+public int is_dir(char *filename)
 {
 	int isdir = 0;
 
@@ -1025,9 +1014,7 @@ is_dir(filename)
  * is an ordinary file, otherwise an error message
  * (if it cannot be opened or is a directory, etc.)
  */
-	public char *
-bad_file(filename)
-	char *filename;
+public char * bad_file(char *filename)
 {
 	char *m = NULL;
 
@@ -1069,9 +1056,7 @@ bad_file(filename)
  * Return the size of a file, as cheaply as possible.
  * In Unix, we can stat the file.
  */
-	public POSITION
-filesize(f)
-	int f;
+public POSITION filesize(int f)
 {
 #if HAVE_STAT
 	struct stat statbuf;
@@ -1089,11 +1074,29 @@ filesize(f)
 	return (seek_filesize(f));
 }
 
+public int curr_ifile_changed(void)
+{
+#if HAVE_STAT_INO
+	/* 
+	 * If the file's i-number or device has changed,
+	 * or if the file is smaller than it previously was,
+	 * the file must be different.
+	 */
+	struct stat st;
+	POSITION curr_pos = ch_tell();
+	int r = stat(get_filename(curr_ifile), &st);
+	if (r == 0 && (st.st_ino != curr_ino ||
+		st.st_dev != curr_dev ||
+		(curr_pos != NULL_POSITION && st.st_size < curr_pos)))
+		return (TRUE);
+#endif
+	return (FALSE);
+}
+
 /*
  * 
  */
-	public char *
-shell_coption(VOID_PARAM)
+public char * shell_coption(void)
 {
 	return ("-c");
 }
@@ -1101,9 +1104,7 @@ shell_coption(VOID_PARAM)
 /*
  * Return last component of a pathname.
  */
-	public char *
-last_component(name)
-	char *name;
+public char * last_component(char *name)
 {
 	char *slash;
 
@@ -1115,4 +1116,3 @@ last_component(name)
 	}
 	return (name);
 }
-

@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2008-2009 Semihalf, Rafal Jaworowski
  * All rights reserved.
@@ -35,6 +35,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/bus.h>
 #include <sys/pcpu.h>
 #include <sys/proc.h>
+#include <sys/sched.h>
 #include <sys/smp.h>
 
 #include <machine/pcb.h>
@@ -50,7 +51,7 @@ extern void icache_inval(void);
 volatile void *ap_pcpu;
 
 uintptr_t
-cpudep_ap_bootstrap()
+cpudep_ap_bootstrap(void)
 {
 	uint32_t msr, csr;
 	uintptr_t sp;
@@ -85,6 +86,7 @@ cpudep_ap_bootstrap()
 #endif
 	pcpup->pc_curpcb = pcpup->pc_curthread->td_pcb;
 	sp = pcpup->pc_curpcb->pcb_sp;
+	schedinit_ap();
 
 	/* XXX shouldn't the pcb_sp be checked/forced for alignment here?? */
 
@@ -92,6 +94,6 @@ cpudep_ap_bootstrap()
 }
 
 void
-cpudep_ap_setup()
+cpudep_ap_setup(void)
 {
 }

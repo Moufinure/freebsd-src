@@ -91,7 +91,7 @@ do_cmd(int sock, u_long op, void *arg, size_t argsize, int set)
 
 	memset(&ifd, 0, sizeof(ifd));
 
-	strlcpy(ifd.ifd_name, ifr.ifr_name, sizeof(ifd.ifd_name));
+	strlcpy(ifd.ifd_name, name, sizeof(ifd.ifd_name));
 	ifd.ifd_cmd = op;
 	ifd.ifd_len = argsize;
 	ifd.ifd_data = arg;
@@ -156,19 +156,14 @@ bridge_addresses(int s, const char *prefix)
 static void
 bridge_status(int s)
 {
-	ifconfig_handle_t *lifh;
 	struct ifconfig_bridge_status *bridge;
 	struct ifbropreq *params;
 	const char *pad, *prefix;
 	uint8_t lladdr[ETHER_ADDR_LEN];
 	uint16_t bprio;
 
-	lifh = ifconfig_open();
-	if (lifh == NULL)
-		return;
-
 	if (ifconfig_bridge_get_bridge_status(lifh, name, &bridge) == -1)
-		goto close;
+		return;
 
 	params = bridge->params;
 
@@ -227,8 +222,6 @@ bridge_status(int s)
 	}
 
 	ifconfig_bridge_free_bridge_status(bridge);
-close:
-	ifconfig_close(lifh);
 }
 
 static void

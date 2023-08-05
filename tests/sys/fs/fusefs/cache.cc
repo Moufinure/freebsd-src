@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2020 Alan Somers
  *
@@ -75,6 +75,7 @@ virtual void SetUp() {
 		default:
 			FAIL() << "Unknown cache mode";
 	}
+	m_noatime = true;	// To prevent SETATTR for atime on close
 
 	FuseTest::SetUp();
 	if (IsSkipped())

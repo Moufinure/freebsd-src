@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2011 Adrian Chadd, Xenion Pty Ltd.
  * All rights reserved.
@@ -457,7 +457,7 @@ ath_compute_num_delims(struct ath_softc *sc, struct ath_buf *first_bf,
 	ndelim += ATH_AGGR_ENCRYPTDELIM;
 
 	/*
-	 * For AR9380, there's a minimum number of delimeters
+	 * For AR9380, there's a minimum number of delimiters
 	 * required when doing RTS.
 	 *
 	 * XXX TODO: this is only needed if (a) RTS/CTS is enabled for

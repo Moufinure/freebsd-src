@@ -158,6 +158,7 @@ static int options;
 #define	F_SWEEP		0x200000
 #define	F_WAITTIME	0x400000
 #define	F_IP_VLAN_PCP	0x800000
+#define	F_DOT		0x1000000
 
 /*
  * MAX_DUP_CHK is the number of bits in received table, i.e. the maximum
@@ -176,7 +177,9 @@ static int srecv;		/* receive socket file descriptor */
 static u_char outpackhdr[IP_MAXPACKET], *outpack;
 static char BBELL = '\a';	/* characters written for MISSED and AUDIBLE */
 static char BSPACE = '\b';	/* characters written for flood */
-static char DOT = '.';
+static const char *DOT = ".";
+static size_t DOTlen = 1;
+static size_t DOTidx = 0;
 static char *hostname;
 static char *shostname;
 static int ident;		/* process id to identify our packets */
@@ -301,16 +304,15 @@ ping(int argc, char *const *argv)
 	alarmtimeout = df = preload = tos = pcp = 0;
 
 	outpack = outpackhdr + sizeof(struct ip);
-	while ((ch = getopt(argc, argv,
-		"4AaC:c:DdfG:g:Hh:I:i:Ll:M:m:nop:QqRrS:s:T:t:vW:z:"
-#ifdef IPSEC
-#ifdef IPSEC_POLICY_IPSEC
-		"P:"
-#endif /*IPSEC_POLICY_IPSEC*/
-#endif /*IPSEC*/
-		)) != -1)
-	{
+	while ((ch = getopt(argc, argv, PING4OPTS)) != -1) {
 		switch(ch) {
+		case '.':
+			options |= F_DOT;
+			if (optarg != NULL) {
+				DOT = optarg;
+				DOTlen = strlen(optarg);
+			}
+			break;
 		case '4':
 			/* This option is processed in main(). */
 			break;
@@ -348,6 +350,7 @@ ping(int argc, char *const *argv)
 				err(EX_NOPERM, "-f flag");
 			}
 			options |= F_FLOOD;
+			options |= F_DOT;
 			setbuf(stdout, (char *)NULL);
 			break;
 		case 'G': /* Maximum packet size for ping sweep */
@@ -960,6 +963,9 @@ ping(int argc, char *const *argv)
 				warn("recvmsg");
 				continue;
 			}
+			/* If we have a 0 byte read from recvfrom continue */
+			if (cc == 0)
+				continue;
 #ifdef SO_TIMESTAMP
 			if (cmsg != NULL &&
 			    cmsg->cmsg_level == SOL_SOCKET &&
@@ -1122,8 +1128,8 @@ pinger(void)
 	}
 	ntransmitted++;
 	sntransmitted++;
-	if (!(options & F_QUIET) && options & F_FLOOD)
-		(void)write(STDOUT_FILENO, &DOT, 1);
+	if (!(options & F_QUIET) && options & F_DOT)
+		(void)write(STDOUT_FILENO, &DOT[DOTidx++ % DOTlen], 1);
 }
 
 /*
@@ -1141,8 +1147,10 @@ pr_pack(char *buf, ssize_t cc, struct sockaddr_in *from, struct timespec *tv)
 	struct icmp icp;
 	struct ip ip;
 	const u_char *icmp_data_raw;
+	ssize_t icmp_data_raw_len;
 	double triptime;
-	int dupflag, hlen, i, j, recv_len;
+	int dupflag, i, j, recv_len;
+	int8_t hlen;
 	uint16_t seq;
 	static int old_rrlen;
 	static char old_rr[MAX_IPOPTLEN];
@@ -1152,15 +1160,27 @@ pr_pack(char *buf, ssize_t cc, struct sockaddr_in *from, struct timespec *tv)
 	const u_char *oicmp_raw;
 
 	/*
-	 * Get size of IP header of the received packet. The
-	 * information is contained in the lower four bits of the
-	 * first byte.
+	 * Get size of IP header of the received packet.
+	 * The header length is contained in the lower four bits of the first
+	 * byte and represents the number of 4 byte octets the header takes up.
+	 *
+	 * The IHL minimum value is 5 (20 bytes) and its maximum value is 15
+	 * (60 bytes).
 	 */
 	memcpy(&l, buf, sizeof(l));
 	hlen = (l & 0x0f) << 2;
-	memcpy(&ip, buf, hlen);
 
-	/* Check the IP header */
+	/* Reject IP packets with a short header */
+	if (hlen < (int8_t) sizeof(struct ip)) {
+		if (options & F_VERBOSE)
+			warn("IHL too short (%d bytes) from %s", hlen,
+			     inet_ntoa(from->sin_addr));
+		return;
+	}
+
+	memcpy(&ip, buf, sizeof(struct ip));
+
+	/* Check packet has enough data to carry a valid ICMP header */
 	recv_len = cc;
 	if (cc < hlen + ICMP_MINLEN) {
 		if (options & F_VERBOSE)
@@ -1172,6 +1192,7 @@ pr_pack(char *buf, ssize_t cc, struct sockaddr_in *from, struct timespec *tv)
 #ifndef icmp_data
 	icmp_data_raw = buf + hlen + offsetof(struct icmp, icmp_ip);
 #else
+	icmp_data_raw_len = cc - (hlen + offsetof(struct icmp, icmp_data));
 	icmp_data_raw = buf + hlen + offsetof(struct icmp, icmp_data);
 #endif
 
@@ -1228,7 +1249,7 @@ pr_pack(char *buf, ssize_t cc, struct sockaddr_in *from, struct timespec *tv)
 			return;
 		}
 
-		if (options & F_FLOOD)
+		if (options & F_DOT)
 			(void)write(STDOUT_FILENO, &BSPACE, 1);
 		else {
 			(void)printf("%zd bytes from %s: icmp_seq=%u", cc,
@@ -1301,12 +1322,45 @@ pr_pack(char *buf, ssize_t cc, struct sockaddr_in *from, struct timespec *tv)
 		 * as root to avoid leaking information not normally
 		 * available to those not running as root.
 		 */
+
+		/*
+		 * If we don't have enough bytes for a quoted IP header and an
+		 * ICMP header then stop.
+		 */
+		if (icmp_data_raw_len <
+				(ssize_t)(sizeof(struct ip) + sizeof(struct icmp))) {
+			if (options & F_VERBOSE)
+				warnx("quoted data too short (%zd bytes) from %s",
+					icmp_data_raw_len, inet_ntoa(from->sin_addr));
+			return;
+		}
+
 		memcpy(&oip_header_len, icmp_data_raw, sizeof(oip_header_len));
 		oip_header_len = (oip_header_len & 0x0f) << 2;
-		memcpy(&oip, icmp_data_raw, oip_header_len);
+
+		/* Reject IP packets with a short header */
+		if (oip_header_len < sizeof(struct ip)) {
+			if (options & F_VERBOSE)
+				warnx("inner IHL too short (%d bytes) from %s",
+					oip_header_len, inet_ntoa(from->sin_addr));
+			return;
+		}
+
+		/*
+		 * Check against the actual IHL length, to protect against
+		 * quoated packets carrying IP options.
+		 */
+		if (icmp_data_raw_len <
+				(ssize_t)(oip_header_len + sizeof(struct icmp))) {
+			if (options & F_VERBOSE)
+				warnx("inner packet too short (%zd bytes) from %s",
+				     icmp_data_raw_len, inet_ntoa(from->sin_addr));
+			return;
+		}
+
+		memcpy(&oip, icmp_data_raw, sizeof(struct ip));
 		oicmp_raw = icmp_data_raw + oip_header_len;
-		memcpy(&oicmp, oicmp_raw, offsetof(struct icmp, icmp_id) +
-		    sizeof(oicmp.icmp_id));
+		memcpy(&oicmp, oicmp_raw, sizeof(struct icmp));
 
 		if (((options & F_VERBOSE) && uid == 0) ||
 		    (!(options & F_QUIET2) &&
@@ -1369,7 +1423,7 @@ pr_pack(char *buf, ssize_t cc, struct sockaddr_in *from, struct timespec *tv)
 			}
 			if (i == old_rrlen
 			    && !bcmp((char *)cp, old_rr, i)
-			    && !(options & F_FLOOD)) {
+			    && !(options & F_DOT)) {
 				(void)printf("\t(same route)");
 				hlen -= i;
 				cp += i;
@@ -1404,7 +1458,7 @@ pr_pack(char *buf, ssize_t cc, struct sockaddr_in *from, struct timespec *tv)
 			(void)printf("\nunknown option %x", *cp);
 			break;
 		}
-	if (!(options & F_FLOOD)) {
+	if (!(options & F_DOT)) {
 		(void)putchar('\n');
 		(void)fflush(stdout);
 	}
@@ -1480,22 +1534,6 @@ finish(void)
 	else
 		exit(2);
 }
-
-#ifdef notdef
-static char *ttab[] = {
-	"Echo Reply",		/* ip + seq + udata */
-	"Dest Unreachable",	/* net, host, proto, port, frag, sr + IP */
-	"Source Quench",	/* IP */
-	"Redirect",		/* redirect type, gateway, + IP  */
-	"Echo",
-	"Time Exceeded",	/* transit, frag reassem + IP */
-	"Parameter Problem",	/* pointer + IP */
-	"Timestamp",		/* id + seq + three timestamps */
-	"Timestamp Reply",	/* " */
-	"Info Request",		/* id + sq */
-	"Info Reply"		/* " */
-};
-#endif
 
 /*
  * pr_icmph --
@@ -1636,7 +1674,7 @@ pr_iph(struct ip *ip)
 	int hlen;
 
 	hlen = ip->ip_hl << 2;
-	cp = (u_char *)ip + 20;		/* point to options */
+	cp = (u_char *)ip + sizeof(struct ip);		/* point to options */
 
 	(void)printf("Vr HL TOS  Len   ID Flg  off TTL Pro  cks      Src      Dst\n");
 	(void)printf(" %1x  %1x  %02x %04x %04x",
@@ -1652,7 +1690,7 @@ pr_iph(struct ip *ip)
 	memcpy(&ina, &ip->ip_dst.s_addr, sizeof ina);
 	(void)printf(" %s ", inet_ntoa(ina));
 	/* dump any option bytes */
-	while (hlen-- > 20) {
+	while (hlen-- > (int)sizeof(struct ip)) {
 		(void)printf("%02x", *cp++);
 	}
 	(void)putchar('\n');
@@ -1672,7 +1710,7 @@ pr_addr(struct in_addr ina)
 	if (options & F_NUMERIC)
 		return inet_ntoa(ina);
 
-	hp = cap_gethostbyaddr(capdns, (char *)&ina, 4, AF_INET);
+	hp = cap_gethostbyaddr(capdns, (char *)&ina, sizeof(ina), AF_INET);
 
 	if (hp == NULL)
 		return inet_ntoa(ina);

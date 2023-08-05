@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2005 Stanislav Sedov
  * All rights reserved.
@@ -59,10 +59,13 @@ g_label_reiserfs_read_super(struct g_consumer *cp, off_t offset)
 
 	secsize = cp->provider->sectorsize;
 
+	KASSERT(secsize != 0, ("Tasting a disk with 0 sectorsize"));
+	if (secsize < sizeof(*fs))
+		return (NULL);
 	if ((offset % secsize) != 0)
 		return (NULL);
 
-	fs = (reiserfs_sb_t *)g_read_data(cp, offset, secsize, NULL);
+	fs = g_read_data(cp, offset, secsize, NULL);
 	if (fs == NULL)
 		return (NULL);
 

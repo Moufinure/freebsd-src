@@ -3,7 +3,7 @@
  */
 
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2001-2002 Maksim Yevmenkin <m_evmenkin@yahoo.com>
  * All rights reserved.
@@ -539,6 +539,7 @@ ng_btsocket_hci_raw_data_input(struct mbuf *nam)
 
 				NG_FREE_M(m);
 				NG_FREE_M(ctl);
+				soroverflow(pcb->so);
 			}
 		}
 next:

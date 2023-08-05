@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2007-2009 Sean C. Farley <scf@FreeBSD.org>
  * All rights reserved.
@@ -39,7 +39,7 @@ __FBSDID("$FreeBSD$");
 #include <string.h>
 #include <unistd.h>
 #include "un-namespace.h"
-
+#include "libc_private.h"
 
 static const char CorruptEnvFindMsg[] = "environment corrupt; unable to find ";
 static const char CorruptEnvValueMsg[] =
@@ -56,7 +56,6 @@ static const char CorruptEnvValueMsg[] =
  *	intEnviron:	Internally-built environ.  Exposed via environ during
  *			(re)builds of the environment.
  */
-extern char **environ;
 static char **origEnviron;
 static char **intEnviron = NULL;
 static int environSize = 0;
@@ -122,7 +121,7 @@ __env_warnx(const char *msg, const char *name, size_t nameLen)
 
 /*
  * Inline strlen() for performance.  Also, perform check for an equals sign.
- * Cheaper here than peforming a strchr() later.
+ * Cheaper here than performing a strchr() later.
  */
 static inline size_t
 __strleneq(const char *str)
@@ -575,7 +574,7 @@ __merge_environ(void)
 
 
 /*
- * The exposed setenv() that peforms a few tests before calling the function
+ * The exposed setenv() that performs a few tests before calling the function
  * (__setenv()) that does the actual work of inserting a variable into the
  * environment.
  */

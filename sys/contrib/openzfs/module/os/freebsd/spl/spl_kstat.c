@@ -39,6 +39,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/sysctl.h>
 #include <sys/kstat.h>
 #include <sys/sbuf.h>
+#include <sys/zone.h>
 
 static MALLOC_DEFINE(M_KSTAT, "kstat_data", "Kernel statistics");
 
@@ -69,7 +70,7 @@ __kstat_set_seq_raw_ops(kstat_t *ksp,
 static int
 kstat_default_update(kstat_t *ksp, int rw)
 {
-	ASSERT(ksp != NULL);
+	ASSERT3P(ksp, !=, NULL);
 
 	if (rw == KSTAT_WRITE)
 		return (EACCES);
@@ -130,6 +131,55 @@ kstat_sysctl_string(SYSCTL_HANDLER_ARGS)
 	val = KSTAT_NAMED_STR_PTR(ksent);
 	len = KSTAT_NAMED_STR_BUFLEN(ksent);
 	val[len-1] = '\0';
+
+	return (sysctl_handle_string(oidp, val, len, req));
+}
+
+static int
+kstat_sysctl_dataset(SYSCTL_HANDLER_ARGS)
+{
+	kstat_t *ksp = arg1;
+	kstat_named_t *ksent;
+	kstat_named_t *ksent_ds;
+	uint64_t val;
+	char *ds_name;
+	uint32_t ds_len = 0;
+
+	ksent_ds = ksent = ksp->ks_data;
+	ds_name = KSTAT_NAMED_STR_PTR(ksent_ds);
+	ds_len = KSTAT_NAMED_STR_BUFLEN(ksent_ds);
+	ds_name[ds_len-1] = '\0';
+
+	if (!zone_dataset_visible(ds_name, NULL)) {
+		return (EPERM);
+	}
+
+	/* Select the correct element */
+	ksent += arg2;
+	/* Update the aggsums before reading */
+	(void) ksp->ks_update(ksp, KSTAT_READ);
+	val = ksent->value.ui64;
+
+	return (sysctl_handle_64(oidp, &val, 0, req));
+}
+
+static int
+kstat_sysctl_dataset_string(SYSCTL_HANDLER_ARGS)
+{
+	kstat_t *ksp = arg1;
+	kstat_named_t *ksent = ksp->ks_data;
+	char *val;
+	uint32_t len = 0;
+
+	/* Select the correct element */
+	ksent += arg2;
+	val = KSTAT_NAMED_STR_PTR(ksent);
+	len = KSTAT_NAMED_STR_BUFLEN(ksent);
+	val[len-1] = '\0';
+
+	if (!zone_dataset_visible(val, NULL)) {
+		return (EPERM);
+	}
 
 	return (sysctl_handle_string(oidp, val, len, req));
 }
@@ -223,7 +273,7 @@ restart:
 				sbuf_printf(sb, "%s", ksp->ks_raw_buf);
 
 		} else {
-			ASSERT(ksp->ks_ndata == 1);
+			ASSERT3U(ksp->ks_ndata, ==, 1);
 			sbuf_hexdump(sb, ksp->ks_data,
 			    ksp->ks_data_size, NULL, 0);
 		}
@@ -250,7 +300,7 @@ __kstat_create(const char *module, int instance, const char *name,
 
 	KASSERT(instance == 0, ("instance=%d", instance));
 	if ((ks_type == KSTAT_TYPE_INTR) || (ks_type == KSTAT_TYPE_IO))
-		ASSERT(ks_ndata == 1);
+		ASSERT3U(ks_ndata, ==, 1);
 
 	if (class == NULL)
 		class = "misc";
@@ -299,15 +349,10 @@ __kstat_create(const char *module, int instance, const char *name,
 		panic("Undefined kstat type %d\n", ksp->ks_type);
 	}
 
-	if (ksp->ks_flags & KSTAT_FLAG_VIRTUAL) {
+	if (ksp->ks_flags & KSTAT_FLAG_VIRTUAL)
 		ksp->ks_data = NULL;
-	} else {
+	else
 		ksp->ks_data = kmem_zalloc(ksp->ks_data_size, KM_SLEEP);
-		if (ksp->ks_data == NULL) {
-			kmem_free(ksp, sizeof (*ksp));
-			ksp = NULL;
-		}
-	}
 
 	/*
 	 * Some kstats use a module name like "zfs/poolname" to distinguish a
@@ -427,11 +472,20 @@ kstat_install_named(kstat_t *ksp)
 			    ksp, i, kstat_sysctl, "Q", namelast);
 			break;
 		case KSTAT_DATA_UINT64:
-			SYSCTL_ADD_PROC(&ksp->ks_sysctl_ctx,
-			    SYSCTL_CHILDREN(ksp->ks_sysctl_root),
-			    OID_AUTO, namelast,
-			    CTLTYPE_U64 | CTLFLAG_RD | CTLFLAG_MPSAFE,
-			    ksp, i, kstat_sysctl, "QU", namelast);
+			if (strcmp(ksp->ks_class, "dataset") == 0) {
+				SYSCTL_ADD_PROC(&ksp->ks_sysctl_ctx,
+				    SYSCTL_CHILDREN(ksp->ks_sysctl_root),
+				    OID_AUTO, namelast,
+				    CTLTYPE_U64 | CTLFLAG_RD | CTLFLAG_MPSAFE,
+				    ksp, i, kstat_sysctl_dataset, "QU",
+				    namelast);
+			} else {
+				SYSCTL_ADD_PROC(&ksp->ks_sysctl_ctx,
+				    SYSCTL_CHILDREN(ksp->ks_sysctl_root),
+				    OID_AUTO, namelast,
+				    CTLTYPE_U64 | CTLFLAG_RD | CTLFLAG_MPSAFE,
+				    ksp, i, kstat_sysctl, "QU", namelast);
+			}
 			break;
 		case KSTAT_DATA_LONG:
 			SYSCTL_ADD_PROC(&ksp->ks_sysctl_ctx,
@@ -448,11 +502,21 @@ kstat_install_named(kstat_t *ksp)
 			    ksp, i, kstat_sysctl, "LU", namelast);
 			break;
 		case KSTAT_DATA_STRING:
-			SYSCTL_ADD_PROC(&ksp->ks_sysctl_ctx,
-			    SYSCTL_CHILDREN(ksp->ks_sysctl_root),
-			    OID_AUTO, namelast,
-			    CTLTYPE_STRING | CTLFLAG_RD | CTLFLAG_MPSAFE,
-			    ksp, i, kstat_sysctl_string, "A", namelast);
+			if (strcmp(ksp->ks_class, "dataset") == 0) {
+				SYSCTL_ADD_PROC(&ksp->ks_sysctl_ctx,
+				    SYSCTL_CHILDREN(ksp->ks_sysctl_root),
+				    OID_AUTO, namelast, CTLTYPE_STRING |
+				    CTLFLAG_RD | CTLFLAG_MPSAFE,
+				    ksp, i, kstat_sysctl_dataset_string, "A",
+				    namelast);
+			} else {
+				SYSCTL_ADD_PROC(&ksp->ks_sysctl_ctx,
+				    SYSCTL_CHILDREN(ksp->ks_sysctl_root),
+				    OID_AUTO, namelast, CTLTYPE_STRING |
+				    CTLFLAG_RD | CTLFLAG_MPSAFE,
+				    ksp, i, kstat_sysctl_string, "A",
+				    namelast);
+			}
 			break;
 		default:
 			panic("unsupported type: %d", typelast);
@@ -466,7 +530,7 @@ kstat_install(kstat_t *ksp)
 	struct sysctl_oid *root;
 
 	if (ksp->ks_ndata == UINT32_MAX)
-		VERIFY(ksp->ks_type == KSTAT_TYPE_RAW);
+		VERIFY3U(ksp->ks_type, ==, KSTAT_TYPE_RAW);
 
 	switch (ksp->ks_type) {
 	case KSTAT_TYPE_NAMED:
@@ -498,7 +562,7 @@ kstat_install(kstat_t *ksp)
 	default:
 		panic("unsupported kstat type %d\n", ksp->ks_type);
 	}
-	VERIFY(root != NULL);
+	VERIFY3P(root, !=, NULL);
 	ksp->ks_sysctl_root = root;
 }
 
@@ -509,67 +573,7 @@ kstat_delete(kstat_t *ksp)
 	sysctl_ctx_free(&ksp->ks_sysctl_ctx);
 	ksp->ks_lock = NULL;
 	mutex_destroy(&ksp->ks_private_lock);
+	if (!(ksp->ks_flags & KSTAT_FLAG_VIRTUAL))
+		kmem_free(ksp->ks_data, ksp->ks_data_size);
 	free(ksp, M_KSTAT);
-}
-
-void
-kstat_waitq_enter(kstat_io_t *kiop)
-{
-	hrtime_t new, delta;
-	ulong_t wcnt;
-
-	new = gethrtime();
-	delta = new - kiop->wlastupdate;
-	kiop->wlastupdate = new;
-	wcnt = kiop->wcnt++;
-	if (wcnt != 0) {
-		kiop->wlentime += delta * wcnt;
-		kiop->wtime += delta;
-	}
-}
-
-void
-kstat_waitq_exit(kstat_io_t *kiop)
-{
-	hrtime_t new, delta;
-	ulong_t wcnt;
-
-	new = gethrtime();
-	delta = new - kiop->wlastupdate;
-	kiop->wlastupdate = new;
-	wcnt = kiop->wcnt--;
-	ASSERT((int)wcnt > 0);
-	kiop->wlentime += delta * wcnt;
-	kiop->wtime += delta;
-}
-
-void
-kstat_runq_enter(kstat_io_t *kiop)
-{
-	hrtime_t new, delta;
-	ulong_t rcnt;
-
-	new = gethrtime();
-	delta = new - kiop->rlastupdate;
-	kiop->rlastupdate = new;
-	rcnt = kiop->rcnt++;
-	if (rcnt != 0) {
-		kiop->rlentime += delta * rcnt;
-		kiop->rtime += delta;
-	}
-}
-
-void
-kstat_runq_exit(kstat_io_t *kiop)
-{
-	hrtime_t new, delta;
-	ulong_t rcnt;
-
-	new = gethrtime();
-	delta = new - kiop->rlastupdate;
-	kiop->rlastupdate = new;
-	rcnt = kiop->rcnt--;
-	ASSERT((int)rcnt > 0);
-	kiop->rlentime += delta * rcnt;
-	kiop->rtime += delta;
 }

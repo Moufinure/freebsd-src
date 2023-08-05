@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2005 Nuno Antunes <nuno.antunes@gmail.com>
  * Copyright (c) 2007 Alexander Motin <mav@freebsd.org>
@@ -491,14 +491,14 @@ ng_car_rcvmsg(node_p node, item_p item, hook_p lasthook)
 				if (bconf->downstream.opt & NG_CAR_COUNT_PACKETS) {
 				    bconf->downstream.cir *= 1024;
 				    bconf->downstream.pir *= 1024;
-				    bconf->downstream.cbs *= 125;
-				    bconf->downstream.ebs *= 125;
+				    bconf->downstream.cbs *= 128;
+				    bconf->downstream.ebs *= 128;
 				}
 				if (bconf->upstream.opt & NG_CAR_COUNT_PACKETS) {
 				    bconf->upstream.cir *= 1024;
 				    bconf->upstream.pir *= 1024;
-				    bconf->upstream.cbs *= 125;
-				    bconf->upstream.ebs *= 125;
+				    bconf->upstream.cbs *= 128;
+				    bconf->upstream.ebs *= 128;
 				}
 				if ((bconf->downstream.cir > 1000000000) ||
 				    (bconf->downstream.pir > 1000000000) ||

@@ -1,10 +1,10 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 1994-1996 Søren Schmidt
  * Copyright (c) 2006 Roman Divacky
- * Copyright (c) 2013 Dmitry Chagin
  * All rights reserved.
+ * Copyright (c) 2013 Dmitry Chagin <dchagin@FreeBSD.org>
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -32,17 +32,15 @@
 __FBSDID("$FreeBSD$");
 
 #include <sys/param.h>
-#include <sys/systm.h>
 #include <sys/fcntl.h>
 #include <sys/imgact.h>
-#include <sys/kernel.h>
 #include <sys/ktr.h>
 #include <sys/lock.h>
 #include <sys/malloc.h>
 #include <sys/mutex.h>
-#include <sys/sx.h>
 #include <sys/proc.h>
 #include <sys/resourcevar.h>
+#include <sys/sx.h>
 #include <sys/syscallsubr.h>
 #include <sys/sysent.h>
 
@@ -99,7 +97,7 @@ static void
 linux_set_default_openfiles(struct thread *td, struct proc *p)
 {
 	struct rlimit rlim;
-	int error;
+	int error __diagused;
 
 	if (linux_default_openfiles < 0)
 		return;
@@ -122,7 +120,7 @@ static void
 linux_set_default_stacksize(struct thread *td, struct proc *p)
 {
 	struct rlimit rlim;
-	int error;
+	int error __diagused;
 
 	if (linux_default_stacksize < 0)
 		return;
@@ -139,11 +137,10 @@ linux_set_default_stacksize(struct thread *td, struct proc *p)
 }
 
 void
-linux_proc_init(struct thread *td, struct thread *newtd, int flags)
+linux_proc_init(struct thread *td, struct thread *newtd, bool init_thread)
 {
 	struct linux_emuldata *em;
 	struct linux_pemuldata *pem;
-	struct epoll_emuldata *emd;
 	struct proc *p;
 
 	if (newtd != NULL) {
@@ -151,7 +148,7 @@ linux_proc_init(struct thread *td, struct thread *newtd, int flags)
 
 		/* non-exec call */
 		em = malloc(sizeof(*em), M_TEMP, M_WAITOK | M_ZERO);
-		if (flags & LINUX_CLONE_THREAD) {
+		if (init_thread) {
 			LINUX_CTR1(proc_init, "thread newtd(%d)",
 			    newtd->td_tid);
 
@@ -177,7 +174,7 @@ linux_proc_init(struct thread *td, struct thread *newtd, int flags)
 
 		/* lookup the old one */
 		em = em_find(td);
-		KASSERT(em != NULL, ("proc_init: emuldata not found in exec case.\n"));
+		KASSERT(em != NULL, ("proc_init: thread emuldata not found.\n"));
 
 		em->em_tid = p->p_pid;
 		em->flags = 0;
@@ -185,24 +182,17 @@ linux_proc_init(struct thread *td, struct thread *newtd, int flags)
 		em->child_clear_tid = NULL;
 		em->child_set_tid = NULL;
 
-		 /* epoll should be destroyed in a case of exec. */
 		pem = pem_find(p);
-		KASSERT(pem != NULL, ("proc_exit: proc emuldata not found.\n"));
+		KASSERT(pem != NULL, ("proc_init: proc emuldata not found.\n"));
 		pem->persona = 0;
-		if (pem->epoll != NULL) {
-			emd = pem->epoll;
-			pem->epoll = NULL;
-			free(emd, M_EPOLL);
-		}
+		pem->oom_score_adj = 0;
 	}
-
 }
 
 void
 linux_on_exit(struct proc *p)
 {
 	struct linux_pemuldata *pem;
-	struct epoll_emuldata *emd;
 	struct thread *td = curthread;
 
 	MPASS(SV_CURPROC_ABI() == SV_ABI_LINUX);
@@ -216,12 +206,6 @@ linux_on_exit(struct proc *p)
 	(p->p_sysent->sv_thread_detach)(td);
 
 	p->p_emuldata = NULL;
-
-	if (pem->epoll != NULL) {
-		emd = pem->epoll;
-		pem->epoll = NULL;
-		free(emd, M_EPOLL);
-	}
 
 	sx_destroy(&pem->pem_sx);
 	free(pem, M_LINUX);
@@ -252,9 +236,8 @@ linux_exec_imgact_try(struct image_params *imgp)
 		 * alternate path is found, use our stringspace to store it.
 		 */
 		if ((error = exec_shell_imgact(imgp)) == 0) {
-			linux_emul_convpath(FIRST_THREAD_IN_PROC(imgp->proc),
-			    imgp->interpreter_name, UIO_SYSSPACE, &rpath, 0,
-			    AT_FDCWD);
+			linux_emul_convpath(imgp->interpreter_name, UIO_SYSSPACE,
+			    &rpath, 0, AT_FDCWD);
 			if (rpath != NULL)
 				imgp->args->fname_buf =
 				    imgp->interpreter_name = rpath;
@@ -267,7 +250,6 @@ int
 linux_common_execve(struct thread *td, struct image_args *eargs)
 {
 	struct linux_pemuldata *pem;
-	struct epoll_emuldata *emd;
 	struct vmspace *oldvmspace;
 	struct linux_emuldata *em;
 	struct proc *p;
@@ -299,12 +281,6 @@ linux_common_execve(struct thread *td, struct image_args *eargs)
 		p->p_emuldata = NULL;
 		PROC_UNLOCK(p);
 
-		if (pem->epoll != NULL) {
-			emd = pem->epoll;
-			pem->epoll = NULL;
-			free(emd, M_EPOLL);
-		}
-
 		free(em, M_TEMP);
 		free(pem, M_LINUX);
 	}
@@ -333,12 +309,12 @@ linux_on_exec(struct proc *p, struct image_params *imgp)
 		 * before exec.  Update emuldata to reflect
 		 * single-threaded cleaned state after exec.
 		 */
-		linux_proc_init(td, NULL, 0);
+		linux_proc_init(td, NULL, false);
 	} else {
 		/*
 		 * We are switching the process to Linux emulator.
 		 */
-		linux_proc_init(td, td, 0);
+		linux_proc_init(td, td, false);
 
 		/*
 		 * Create a transient td_emuldata for all suspended
@@ -349,7 +325,7 @@ linux_on_exec(struct proc *p, struct image_params *imgp)
 		FOREACH_THREAD_IN_PROC(td->td_proc, othertd) {
 			if (othertd == td)
 				continue;
-			linux_proc_init(td, othertd, LINUX_CLONE_THREAD);
+			linux_proc_init(td, othertd, true);
 		}
 	}
 #if defined(__amd64__)
@@ -384,11 +360,12 @@ void
 linux_schedtail(struct thread *td)
 {
 	struct linux_emuldata *em;
-	struct proc *p;
-	int error = 0;
+#ifdef KTR
+	int error;
+#else
+	int error __unused;
+#endif
 	int *child_set_tid;
-
-	p = td->td_proc;
 
 	em = em_find(td);
 	KASSERT(em != NULL, ("linux_schedtail: thread emuldata not found.\n"));

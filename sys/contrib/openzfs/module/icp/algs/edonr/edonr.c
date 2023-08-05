@@ -337,14 +337,16 @@ Q256(size_t bitlen, const uint32_t *data, uint32_t *restrict p)
  *
  * Checksum functions like this one can go over the stack frame size check
  * Linux imposes on 32-bit platforms (-Wframe-larger-than=1024).  We can
- * safely ignore the compiler error since we know that in ZoL, that
+ * safely ignore the compiler error since we know that in OpenZFS, that
  * the function will be called from a worker thread that won't be using
  * much stack.  The only function that goes over the 1k limit is Q512(),
  * which only goes over it by a hair (1248 bytes on ARM32).
  */
 #include <sys/isa_defs.h>	/* for _ILP32 */
-#ifdef _ILP32   /* We're 32-bit, assume small stack frames */
+#if defined(_ILP32)   /* We're 32-bit, assume small stack frames */
+#if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC diagnostic ignored "-Wframe-larger-than="
+#endif
 #endif
 
 #if defined(__IBMC__) && defined(_AIX) && defined(__64BIT__)
@@ -488,7 +490,7 @@ EdonRInit(EdonRState *state, size_t hashbitlen)
 		state->hashbitlen = 512;
 		state->bits_processed = 0;
 		state->unprocessed_bits = 0;
-		bcopy(i512p2, hashState224(state)->DoublePipe,
+		bcopy(i512p2, hashState512(state)->DoublePipe,
 		    16 * sizeof (uint64_t));
 		break;
 	}

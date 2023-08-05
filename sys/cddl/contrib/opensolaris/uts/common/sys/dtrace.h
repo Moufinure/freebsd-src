@@ -2399,8 +2399,7 @@ extern void dtrace_safe_synchronous_signal(void);
 extern int dtrace_mach_aframes(void);
 
 #if defined(__i386) || defined(__amd64)
-extern int dtrace_instr_size(uchar_t *instr);
-extern int dtrace_instr_size_isa(uchar_t *, model_t, int *);
+extern int dtrace_instr_size_isa(uint8_t *, model_t, int *);
 extern void dtrace_invop_callsite(void);
 #endif
 extern void dtrace_invop_add(int (*)(uintptr_t, struct trapframe *, uintptr_t));
@@ -2428,6 +2427,10 @@ extern void dtrace_helpers_destroy(proc_t *);
 
 #endif /* _KERNEL */
 
+#if defined(__i386) || defined(__amd64) || defined (__riscv)
+extern int dtrace_instr_size(uint8_t *instr);
+#endif
+
 #endif	/* _ASM */
 
 #if defined(__i386) || defined(__amd64)
@@ -2439,6 +2442,10 @@ extern void dtrace_helpers_destroy(proc_t *);
 #define	DTRACE_INVOP_LEAVE		3
 #define	DTRACE_INVOP_NOP		4
 #define	DTRACE_INVOP_RET		5
+
+#if defined(__amd64)
+#define	DTRACE_INVOP_CALL		6
+#endif
 
 #elif defined(__powerpc__)
 
@@ -2465,6 +2472,11 @@ extern void dtrace_helpers_destroy(proc_t *);
 #define	B_MASK		0xff000000
 #define	B_DATA_MASK	0x00ffffff
 #define	B_INSTR		0x14000000
+
+#define	BTI_MASK	0xffffff3f
+#define	BTI_INSTR	0xd503241f
+
+#define	NOP_INSTR	0xd503201f
 
 #define	RET_INSTR	0xd65f03c0
 

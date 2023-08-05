@@ -8,7 +8,6 @@
 #ifndef LLVM_MC_MCSYMBOLXCOFF_H
 #define LLVM_MC_MCSYMBOLXCOFF_H
 
-#include "llvm/ADT/Optional.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/BinaryFormat/XCOFF.h"
 #include "llvm/MC/MCSymbol.h"
@@ -35,20 +34,15 @@ public:
   }
 
   void setStorageClass(XCOFF::StorageClass SC) {
-    assert((!StorageClass.hasValue() || StorageClass.getValue() == SC) &&
-           "Redefining StorageClass of XCOFF MCSymbol.");
     StorageClass = SC;
   };
 
   XCOFF::StorageClass getStorageClass() const {
-    assert(StorageClass.hasValue() &&
-           "StorageClass not set on XCOFF MCSymbol.");
-    return StorageClass.getValue();
+    assert(StorageClass && "StorageClass not set on XCOFF MCSymbol.");
+    return *StorageClass;
   }
 
   StringRef getUnqualifiedName() const { return getUnqualifiedName(getName()); }
-
-  bool hasRepresentedCsectSet() const { return RepresentedCsect != nullptr; }
 
   MCSectionXCOFF *getRepresentedCsect() const;
 
@@ -69,7 +63,7 @@ public:
   }
 
 private:
-  Optional<XCOFF::StorageClass> StorageClass;
+  std::optional<XCOFF::StorageClass> StorageClass;
   MCSectionXCOFF *RepresentedCsect = nullptr;
   XCOFF::VisibilityType VisibilityType = XCOFF::SYM_V_UNSPECIFIED;
   StringRef SymbolTableName;

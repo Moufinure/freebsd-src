@@ -73,8 +73,6 @@ __FBSDID("$FreeBSD$");
 
 int (*dtrace_invop_jump_addr)(struct trapframe *);
 
-extern register_t fsu_intr_fault;
-
 /* Called from exception.S */
 void do_trap_supervisor(struct trapframe *);
 void do_trap_user(struct trapframe *);
@@ -201,6 +199,11 @@ page_fault_handler(struct trapframe *frame, int usermode)
 		goto fatal;
 
 	if (usermode) {
+		if (!VIRT_IS_VALID(stval)) {
+			call_trapsignal(td, SIGSEGV, SEGV_MAPERR, (void *)stval,
+			    frame->tf_scause & SCAUSE_CODE);
+			goto done;
+		}
 		map = &td->td_proc->p_vmspace->vm_map;
 	} else {
 		/*
@@ -209,7 +212,7 @@ page_fault_handler(struct trapframe *frame, int usermode)
 		 */
 		intr_enable();
 
-		if (stval >= VM_MAX_USER_ADDRESS) {
+		if (stval >= VM_MIN_KERNEL_ADDRESS) {
 			map = kernel_map;
 		} else {
 			if (pcb->pcb_onfault == 0)
@@ -228,7 +231,7 @@ page_fault_handler(struct trapframe *frame, int usermode)
 		ftype = VM_PROT_READ;
 	}
 
-	if (pmap_fault_fixup(map->pmap, va, ftype))
+	if (VIRT_IS_VALID(va) && pmap_fault(map->pmap, va, ftype))
 		goto done;
 
 	error = vm_fault_trap(map, va, ftype, VM_FAULT_NORMAL, &sig, &ucode);
@@ -274,6 +277,9 @@ do_trap_supervisor(struct trapframe *frame)
 	KASSERT((csr_read(sstatus) & (SSTATUS_SPP | SSTATUS_SIE)) ==
 	    SSTATUS_SPP, ("Came from S mode with interrupts enabled"));
 
+	KASSERT((csr_read(sstatus) & (SSTATUS_SUM)) == 0,
+	    ("Came from S mode with SUM enabled"));
+
 	exception = frame->tf_scause & SCAUSE_CODE;
 	if ((frame->tf_scause & SCAUSE_INTR) != 0) {
 		/* Interrupt */
@@ -286,8 +292,8 @@ do_trap_supervisor(struct trapframe *frame)
 		return;
 #endif
 
-	CTR3(KTR_TRAP, "do_trap_supervisor: curthread: %p, sepc: %lx, frame: %p",
-	    curthread, frame->tf_sepc, frame);
+	CTR4(KTR_TRAP, "%s: exception=%lu, sepc=%lx, stval=%lx", __func__,
+	    exception, frame->tf_sepc, frame->tf_stval);
 
 	switch (exception) {
 	case SCAUSE_LOAD_ACCESS_FAULT:
@@ -295,6 +301,13 @@ do_trap_supervisor(struct trapframe *frame)
 	case SCAUSE_INST_ACCESS_FAULT:
 		dump_regs(frame);
 		panic("Memory access exception at 0x%016lx\n", frame->tf_sepc);
+		break;
+	case SCAUSE_LOAD_MISALIGNED:
+	case SCAUSE_STORE_MISALIGNED:
+	case SCAUSE_INST_MISALIGNED:
+		dump_regs(frame);
+		panic("Misaligned address exception at %#016lx: %#016lx\n",
+		    frame->tf_sepc, frame->tf_stval);
 		break;
 	case SCAUSE_STORE_PAGE_FAULT:
 	case SCAUSE_LOAD_PAGE_FAULT:
@@ -342,6 +355,9 @@ do_trap_user(struct trapframe *frame)
 	KASSERT((csr_read(sstatus) & (SSTATUS_SPP | SSTATUS_SIE)) == 0,
 	    ("Came from U mode with interrupts enabled"));
 
+	KASSERT((csr_read(sstatus) & (SSTATUS_SUM)) == 0,
+	    ("Came from U mode with SUM enabled"));
+
 	exception = frame->tf_scause & SCAUSE_CODE;
 	if ((frame->tf_scause & SCAUSE_INTR) != 0) {
 		/* Interrupt */
@@ -350,14 +366,21 @@ do_trap_user(struct trapframe *frame)
 	}
 	intr_enable();
 
-	CTR3(KTR_TRAP, "do_trap_user: curthread: %p, sepc: %lx, frame: %p",
-	    curthread, frame->tf_sepc, frame);
+	CTR4(KTR_TRAP, "%s: exception=%lu, sepc=%lx, stval=%lx", __func__,
+	    exception, frame->tf_sepc, frame->tf_stval);
 
 	switch (exception) {
 	case SCAUSE_LOAD_ACCESS_FAULT:
 	case SCAUSE_STORE_ACCESS_FAULT:
 	case SCAUSE_INST_ACCESS_FAULT:
 		call_trapsignal(td, SIGBUS, BUS_ADRERR, (void *)frame->tf_sepc,
+		    exception);
+		userret(td, frame);
+		break;
+	case SCAUSE_LOAD_MISALIGNED:
+	case SCAUSE_STORE_MISALIGNED:
+	case SCAUSE_INST_MISALIGNED:
+		call_trapsignal(td, SIGBUS, BUS_ADRALN, (void *)frame->tf_sepc,
 		    exception);
 		userret(td, frame);
 		break;

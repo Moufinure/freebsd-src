@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2020 Yandex LLC
  * Copyright (c) 2020 Andrey V. Elsukov <ae@FreeBSD.org>
@@ -212,8 +212,8 @@ translator ipfw_rule_info_t < struct ip_fw *r > {
 	flags =		r->flags;
 	set =		r->set;
 	rule_id =	r->id;
-	cached_id =	r->cached_id;
-	cached_pos =	r->cached_pos;
+	cached_id =	r->cache.id;
+	cached_pos =	r->cache.pos;
 	refcnt =	r->refcnt;
 };
 

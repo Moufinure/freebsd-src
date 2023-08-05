@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2013 The FreeBSD Foundation
  * Copyright (c) 2015 Mariusz Zaborski <oshogbo@FreeBSD.org>
@@ -44,6 +44,7 @@ struct service;
 struct service_connection;
 
 bool fd_is_valid(int fd);
+void fd_fix_environment(int *fdp);
 
 /* Private service functions. */
 struct service	*service_alloc(const char *name,

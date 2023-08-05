@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 1996-1998 John D. Polstra.
  * All rights reserved.
@@ -151,6 +151,8 @@ typedef struct {
 
 /* Macro for constructing r_info from field values. */
 #define ELF32_R_INFO(sym, type)	(((sym) << 8) + (unsigned char)(type))
+
+typedef Elf32_Word Elf32_Relr;
 
 /*
  *	Note entry header

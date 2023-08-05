@@ -804,7 +804,7 @@ nm_bdg_ctl_polling_stop(struct netmap_adapter *na)
 	bps->configured = false;
 	nm_os_free(bps);
 	bna->na_polling_state = NULL;
-	/* reenable interrupts */
+	/* re-enable interrupts */
 	nma_intr_enable(bna->hwna, 1);
 	return 0;
 }
@@ -1630,7 +1630,7 @@ netmap_init_bridges(void)
 #ifdef CONFIG_NET_NS
 	return netmap_bns_register();
 #else
-	nm_bridges = netmap_init_bridges2(NM_BRIDGES);
+	nm_bridges = netmap_init_bridges2(vale_max_bridges);
 	if (nm_bridges == NULL)
 		return ENOMEM;
 	return 0;
@@ -1643,6 +1643,6 @@ netmap_uninit_bridges(void)
 #ifdef CONFIG_NET_NS
 	netmap_bns_unregister();
 #else
-	netmap_uninit_bridges2(nm_bridges, NM_BRIDGES);
+	netmap_uninit_bridges2(nm_bridges, vale_max_bridges);
 #endif
 }

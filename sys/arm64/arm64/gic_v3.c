@@ -1,6 +1,5 @@
 /*-
  * Copyright (c) 2015-2016 The FreeBSD Foundation
- * All rights reserved.
  *
  * This software was developed by Andrew Turner under
  * the sponsorship of the FreeBSD Foundation.
@@ -77,6 +76,7 @@ __FBSDID("$FreeBSD$");
 #include "gic_v3_reg.h"
 #include "gic_v3_var.h"
 
+static bus_print_child_t gic_v3_print_child;
 static bus_get_domain_t gic_v3_get_domain;
 static bus_read_ivar_t gic_v3_read_ivar;
 
@@ -112,6 +112,7 @@ static device_method_t gic_v3_methods[] = {
 	DEVMETHOD(device_detach,	gic_v3_detach),
 
 	/* Bus interface */
+	DEVMETHOD(bus_print_child,	gic_v3_print_child),
 	DEVMETHOD(bus_get_domain,	gic_v3_get_domain),
 	DEVMETHOD(bus_read_ivar,	gic_v3_read_ivar),
 
@@ -400,6 +401,21 @@ gic_v3_detach(device_t dev)
 	free(sc->gic_redists.regions, M_GIC_V3);
 
 	return (0);
+}
+
+static int
+gic_v3_print_child(device_t bus, device_t child)
+{
+	struct resource_list *rl;
+	int retval = 0;
+
+	rl = BUS_GET_RESOURCE_LIST(bus, child);
+	KASSERT(rl != NULL, ("%s: No resource list", __func__));
+	retval += bus_print_child_header(bus, child);
+	retval += resource_list_print_type(rl, "mem", SYS_RES_MEMORY, "%#jx");
+	retval += bus_print_child_footer(bus, child);
+
+	return (retval);
 }
 
 static int
@@ -696,15 +712,66 @@ gic_v3_map_intr(device_t dev, struct intr_map_data *data,
 	return (error);
 }
 
+struct gic_v3_setup_periph_args {
+	device_t		 dev;
+	struct intr_irqsrc	*isrc;
+};
+
+static void
+gic_v3_setup_intr_periph(void *argp)
+{
+	struct gic_v3_setup_periph_args *args = argp;
+	struct intr_irqsrc *isrc = args->isrc;
+	struct gic_v3_irqsrc *gi = (struct gic_v3_irqsrc *)isrc;
+	device_t dev = args->dev;
+	u_int irq = gi->gi_irq;
+	struct gic_v3_softc *sc = device_get_softc(dev);
+	uint32_t reg;
+
+	MPASS(irq <= GIC_LAST_SPI);
+
+	/*
+	 * We need the lock for both SGIs and PPIs for an atomic CPU_SET() at a
+	 * minimum, but we also need it below for SPIs.
+	 */
+	mtx_lock_spin(&sc->gic_mtx);
+
+	if (isrc->isrc_flags & INTR_ISRCF_PPI)
+		CPU_SET(PCPU_GET(cpuid), &isrc->isrc_cpu);
+
+	if (irq >= GIC_FIRST_PPI && irq <= GIC_LAST_SPI) {
+		/* Set the trigger and polarity */
+		if (irq <= GIC_LAST_PPI)
+			reg = gic_r_read(sc, 4,
+			    GICR_SGI_BASE_SIZE + GICD_ICFGR(irq));
+		else
+			reg = gic_d_read(sc, 4, GICD_ICFGR(irq));
+		if (gi->gi_trig == INTR_TRIGGER_LEVEL)
+			reg &= ~(2 << ((irq % 16) * 2));
+		else
+			reg |= 2 << ((irq % 16) * 2);
+
+		if (irq <= GIC_LAST_PPI) {
+			gic_r_write(sc, 4,
+			    GICR_SGI_BASE_SIZE + GICD_ICFGR(irq), reg);
+			gic_v3_wait_for_rwp(sc, REDIST);
+		} else {
+			gic_d_write(sc, 4, GICD_ICFGR(irq), reg);
+			gic_v3_wait_for_rwp(sc, DIST);
+		}
+	}
+
+	mtx_unlock_spin(&sc->gic_mtx);
+}
+
 static int
 gic_v3_setup_intr(device_t dev, struct intr_irqsrc *isrc,
     struct resource *res, struct intr_map_data *data)
 {
-	struct gic_v3_softc *sc = device_get_softc(dev);
 	struct gic_v3_irqsrc *gi = (struct gic_v3_irqsrc *)isrc;
+	struct gic_v3_setup_periph_args pargs;
 	enum intr_trigger trig;
 	enum intr_polarity pol;
-	uint32_t reg;
 	u_int irq;
 	int error;
 
@@ -733,41 +800,18 @@ gic_v3_setup_intr(device_t dev, struct intr_irqsrc *isrc,
 		gi->gi_trig = trig;
 	}
 
-	/*
-	 * XXX - In case that per CPU interrupt is going to be enabled in time
-	 *       when SMP is already started, we need some IPI call which
-	 *       enables it on others CPUs. Further, it's more complicated as
-	 *       pic_enable_source() and pic_disable_source() should act on
-	 *       per CPU basis only. Thus, it should be solved here somehow.
-	 */
-	if (isrc->isrc_flags & INTR_ISRCF_PPI)
-		CPU_SET(PCPU_GET(cpuid), &isrc->isrc_cpu);
+	pargs.dev = dev;
+	pargs.isrc = isrc;
 
-	if (irq >= GIC_FIRST_PPI && irq <= GIC_LAST_SPI) {
-		mtx_lock_spin(&sc->gic_mtx);
-
-		/* Set the trigger and polarity */
-		if (irq <= GIC_LAST_PPI)
-			reg = gic_r_read(sc, 4,
-			    GICR_SGI_BASE_SIZE + GICD_ICFGR(irq));
-		else
-			reg = gic_d_read(sc, 4, GICD_ICFGR(irq));
-		if (trig == INTR_TRIGGER_LEVEL)
-			reg &= ~(2 << ((irq % 16) * 2));
-		else
-			reg |= 2 << ((irq % 16) * 2);
-
-		if (irq <= GIC_LAST_PPI) {
-			gic_r_write(sc, 4,
-			    GICR_SGI_BASE_SIZE + GICD_ICFGR(irq), reg);
-			gic_v3_wait_for_rwp(sc, REDIST);
-		} else {
-			gic_d_write(sc, 4, GICD_ICFGR(irq), reg);
-			gic_v3_wait_for_rwp(sc, DIST);
-		}
-
-		mtx_unlock_spin(&sc->gic_mtx);
-
+	if (isrc->isrc_flags & INTR_ISRCF_PPI) {
+		/*
+		 * If APs haven't been fired up yet, smp_rendezvous() will just
+		 * execute it on the single CPU and gic_v3_init_secondary() will
+		 * clean up afterwards.
+		 */
+		smp_rendezvous(NULL, gic_v3_setup_intr_periph, NULL, &pargs);
+	} else if (irq >= GIC_FIRST_SPI && irq <= GIC_LAST_SPI) {
+		gic_v3_setup_intr_periph(&pargs);
 		gic_v3_bind_intr(dev, isrc);
 	}
 
@@ -813,22 +857,49 @@ gic_v3_disable_intr(device_t dev, struct intr_irqsrc *isrc)
 }
 
 static void
+gic_v3_enable_intr_periph(void *argp)
+{
+	struct gic_v3_setup_periph_args *args = argp;
+	struct gic_v3_irqsrc *gi = (struct gic_v3_irqsrc *)args->isrc;
+	device_t dev = args->dev;
+	struct gic_v3_softc *sc = device_get_softc(dev);
+	u_int irq = gi->gi_irq;
+
+	/* SGIs and PPIs in corresponding Re-Distributor */
+	gic_r_write(sc, 4, GICR_SGI_BASE_SIZE + GICD_ISENABLER(irq),
+	    GICD_I_MASK(irq));
+	gic_v3_wait_for_rwp(sc, REDIST);
+}
+
+static void
 gic_v3_enable_intr(device_t dev, struct intr_irqsrc *isrc)
 {
+	struct gic_v3_setup_periph_args pargs;
 	struct gic_v3_softc *sc;
 	struct gic_v3_irqsrc *gi;
 	u_int irq;
 
-	sc = device_get_softc(dev);
 	gi = (struct gic_v3_irqsrc *)isrc;
 	irq = gi->gi_irq;
+	pargs.isrc = isrc;
+	pargs.dev = dev;
 
 	if (irq <= GIC_LAST_PPI) {
-		/* SGIs and PPIs in corresponding Re-Distributor */
-		gic_r_write(sc, 4, GICR_SGI_BASE_SIZE + GICD_ISENABLER(irq),
-		    GICD_I_MASK(irq));
-		gic_v3_wait_for_rwp(sc, REDIST);
-	} else if (irq >= GIC_FIRST_SPI && irq <= GIC_LAST_SPI) {
+		/*
+		 * SGIs only need configured on the current AP.  We'll setup and
+		 * enable IPIs as APs come online.
+		 */
+		if (irq <= GIC_LAST_SGI)
+			gic_v3_enable_intr_periph(&pargs);
+		else
+			smp_rendezvous(NULL, gic_v3_enable_intr_periph, NULL,
+			    &pargs);
+		return;
+	}
+
+	sc = device_get_softc(dev);
+
+	if (irq >= GIC_FIRST_SPI && irq <= GIC_LAST_SPI) {
 		/* SPIs in distributor */
 		gic_d_write(sc, 4, GICD_ISENABLER(irq), GICD_I_MASK(irq));
 		gic_v3_wait_for_rwp(sc, DIST);
@@ -871,8 +942,6 @@ gic_v3_bind_intr(device_t dev, struct intr_irqsrc *isrc)
 	int cpu;
 
 	gi = (struct gic_v3_irqsrc *)isrc;
-	if (gi->gi_irq <= GIC_LAST_PPI)
-		return (EINVAL);
 
 	KASSERT(gi->gi_irq >= GIC_FIRST_SPI && gi->gi_irq <= GIC_LAST_SPI,
 	    ("%s: Attempting to bind an invalid IRQ", __func__));
@@ -900,6 +969,7 @@ gic_v3_bind_intr(device_t dev, struct intr_irqsrc *isrc)
 static void
 gic_v3_init_secondary(device_t dev)
 {
+	struct gic_v3_setup_periph_args pargs;
 	device_t child;
 	struct gic_v3_softc *sc;
 	gic_v3_initseq_t *init_func;
@@ -921,18 +991,25 @@ gic_v3_init_secondary(device_t dev)
 		}
 	}
 
+	pargs.dev = dev;
+
 	/* Unmask attached SGI interrupts. */
 	for (irq = GIC_FIRST_SGI; irq <= GIC_LAST_SGI; irq++) {
 		isrc = GIC_INTR_ISRC(sc, irq);
-		if (intr_isrc_init_on_cpu(isrc, cpu))
-			gic_v3_enable_intr(dev, isrc);
+		if (intr_isrc_init_on_cpu(isrc, cpu)) {
+			pargs.isrc = isrc;
+			gic_v3_enable_intr_periph(&pargs);
+		}
 	}
 
 	/* Unmask attached PPI interrupts. */
 	for (irq = GIC_FIRST_PPI; irq <= GIC_LAST_PPI; irq++) {
 		isrc = GIC_INTR_ISRC(sc, irq);
-		if (intr_isrc_init_on_cpu(isrc, cpu))
-			gic_v3_enable_intr(dev, isrc);
+		if (intr_isrc_init_on_cpu(isrc, cpu)) {
+			pargs.isrc = isrc;
+			gic_v3_setup_intr_periph(&pargs);
+			gic_v3_enable_intr_periph(&pargs);
+		}
 	}
 
 	for (i = 0; i < sc->gic_nchildren; i++) {
@@ -1462,7 +1539,6 @@ gic_v3_map_msi(device_t dev, device_t child, struct intr_irqsrc *isrc,
 	struct gic_v3_softc *sc = device_get_softc(dev);
 	struct gic_v3_irqsrc *gi = (struct gic_v3_irqsrc *)isrc;
 
-#define GICD_SETSPI_NSR 0x40
 	*addr = vtophys(rman_get_virtual(sc->gic_dist)) + GICD_SETSPI_NSR;
 	*data = gi->gi_irq;
 

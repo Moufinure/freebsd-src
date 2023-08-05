@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2009-2012 Alexander Motin <mav@FreeBSD.org>
  * All rights reserved.
@@ -375,7 +375,10 @@ ahci_attach(device_t dev)
 		device_set_ivars(child, (void *)(intptr_t)(unit | AHCI_REMAPPED_UNIT));
 	}
 
-	if (ctlr->caps & AHCI_CAP_EMS) {
+	int em = (ctlr->caps & AHCI_CAP_EMS) != 0;
+	resource_int_value(device_get_name(dev), device_get_unit(dev),
+	    "em", &em);
+	if (em) {
 		child = device_add_child(dev, "ahciem", -1);
 		if (child == NULL)
 			device_printf(dev, "failed to add enclosure device\n");
@@ -601,6 +604,8 @@ ahci_alloc_resource(device_t dev, device_t child, int type, int *rid,
 		} else if (!is_em) {
 			offset = AHCI_OFFSET + (unit << 7);
 			size = 128;
+		} else if ((ctlr->caps & AHCI_CAP_EMS) == 0) {
+			break;
 		} else if (*rid == 0) {
 			offset = AHCI_EM_CTL;
 			size = 4;
@@ -922,7 +927,7 @@ ahci_ch_attach(device_t dev)
 	ctx = device_get_sysctl_ctx(dev);
 	tree = device_get_sysctl_tree(dev);
 	SYSCTL_ADD_PROC(ctx, SYSCTL_CHILDREN(tree), OID_AUTO, "disable_phy",
-	    CTLFLAG_RW | CTLTYPE_UINT | CTLFLAG_NEEDGIANT, ch,
+	    CTLFLAG_RW | CTLTYPE_UINT | CTLFLAG_MPSAFE, ch,
 	    0, ahci_ch_disablephy_proc, "IU", "Disable PHY");
 	return (0);
 
@@ -1480,7 +1485,7 @@ ahci_ch_intr_main(struct ahci_channel *ch, uint32_t istatus)
 			ahci_done(ch, fccb);
 		}
 		for (i = 0; i < ch->numslots; i++) {
-			/* XXX: reqests in loading state. */
+			/* XXX: requests in loading state. */
 			if (((err >> i) & 1) == 0)
 				continue;
 			if (port >= 0 &&
@@ -2600,10 +2605,14 @@ static int
 ahci_sata_connect(struct ahci_channel *ch)
 {
 	u_int32_t status;
-	int timeout, found = 0;
+	int timeout, timeoutslot, found = 0;
 
-	/* Wait up to 100ms for "connect well" */
-	for (timeout = 0; timeout < 1000 ; timeout++) {
+	/*
+	 * Wait for "connect well", up to 100ms by default and
+	 * up to 500ms for devices with the SLOWDEV quirk.
+	 */
+	timeoutslot = ((ch->quirks & AHCI_Q_SLOWDEV) ? 5000 : 1000);
+	for (timeout = 0; timeout < timeoutslot; timeout++) {
 		status = ATA_INL(ch->r_mem, AHCI_P_SSTS);
 		if ((status & ATA_SS_DET_MASK) != ATA_SS_DET_NO_DEVICE)
 			found = 1;
@@ -2622,7 +2631,7 @@ ahci_sata_connect(struct ahci_channel *ch)
 			break;
 		DELAY(100);
 	}
-	if (timeout >= 1000 || !found) {
+	if (timeout >= timeoutslot || !found) {
 		if (bootverbose) {
 			device_printf(ch->dev,
 			    "SATA connect timeout time=%dus status=%08x\n",

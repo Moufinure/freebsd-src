@@ -43,9 +43,11 @@ __DEFAULT_YES_OPTIONS = \
     NETGRAPH \
     OFED \
     PF \
+    REPRODUCIBLE_BUILD \
     SCTP_SUPPORT \
     SOURCELESS_HOST \
     SOURCELESS_UCODE \
+    SPLIT_KERNEL_DEBUG \
     TESTS \
     USB_GADGET_EXAMPLES \
     ZFS
@@ -56,8 +58,7 @@ __DEFAULT_NO_OPTIONS = \
     INIT_ALL_PATTERN \
     INIT_ALL_ZERO \
     KERNEL_RETPOLINE \
-    RATELIMIT \
-    REPRODUCIBLE_BUILD
+    RATELIMIT
 
 # Some options are totally broken on some architectures. We disable
 # them. If you need to enable them on an experimental basis, you
@@ -172,6 +173,10 @@ MK_${var}_SUPPORT:= yes
 .endif
 .endif
 .endfor
+
+.if ${MK_SPLIT_KERNEL_DEBUG} == "no"
+MK_KERNEL_SYMBOLS:=	no
+.endif
 
 # Some modules only compile successfully if option FDT is set, due to #ifdef FDT
 # wrapped around declarations.  Module makefiles can optionally compile such

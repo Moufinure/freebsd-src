@@ -23,9 +23,9 @@
  */
 
 #include <sys/list.h>
-#include <sys/mutex.h>
 #include <sys/procfs_list.h>
 #include <linux/proc_fs.h>
+#include <sys/mutex.h>
 
 /*
  * A procfs_list is a wrapper around a linked list which implements the seq_file
@@ -175,7 +175,7 @@ procfs_list_open(struct inode *inode, struct file *filp)
 
 	struct seq_file *f = filp->private_data;
 	procfs_list_cursor_t *cursor = f->private;
-	cursor->procfs_list = PDE_DATA(inode);
+	cursor->procfs_list = SPL_PDE_DATA(inode);
 	cursor->cached_node = NULL;
 	cursor->cached_pos = 0;
 

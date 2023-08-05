@@ -70,6 +70,7 @@ struct comm_point;
 struct comm_reply;
 struct tcl_list;
 struct ub_event_base;
+struct unbound_socket;
 
 struct mesh_state;
 struct mesh_area;
@@ -101,6 +102,8 @@ typedef int comm_point_callback_type(struct comm_point*, void*, int,
 
 /** timeout to slow accept calls when not possible, in msec. */
 #define NETEVENT_SLOW_ACCEPT_TIME 2000
+/** timeout to slow down log print, so it does not spam the logs, in sec */
+#define SLOW_LOG_TIME 10
 
 /**
  * A communication point dispatcher. Thread specific.
@@ -125,10 +128,11 @@ struct comm_reply {
 	/** the comm_point with fd to send reply on to. */
 	struct comm_point* c;
 	/** the address (for UDP based communication) */
-	struct sockaddr_storage addr;
+	struct sockaddr_storage remote_addr;
 	/** length of address */
-	socklen_t addrlen;
-	/** return type 0 (none), 4(IP4), 6(IP6) */
+	socklen_t remote_addrlen;
+	/** return type 0 (none), 4(IP4), 6(IP6)
+	 *  used only with listen_type_udp_ancil* */
 	int srctype;
 	/* DnsCrypt context */
 #ifdef USE_DNSCRYPT
@@ -152,6 +156,13 @@ struct comm_reply {
 		pktinfo;
 	/** max udp size for udp packets */
 	size_t max_udp_size;
+	/* if set, the request came through a proxy */
+	int is_proxied;
+	/** the client address
+	 *  the same as remote_addr if not proxied */
+	struct sockaddr_storage client_addr;
+	/** the original address length */
+	socklen_t client_addrlen;
 };
 
 /** 
@@ -166,6 +177,10 @@ struct comm_reply {
 struct comm_point {
 	/** behind the scenes structure, with say libevent info. alloced. */
 	struct internal_event* ev;
+	/** if the event is added or not */
+	int event_added;
+
+	struct unbound_socket* socket;
 
 	/** file descriptor for communication point */
 	int fd;
@@ -270,6 +285,19 @@ struct comm_point {
 	} 
 		/** variable with type of socket, UDP,TCP-accept,TCP,pipe */
 		type;
+
+	/* -------- PROXYv2 ------- */
+	/** if set, PROXYv2 is expected on this connection */
+	int pp2_enabled;
+	/** header state for the PROXYv2 header (for TCP) */
+	enum {
+		/** no header encounter yet */
+		pp2_header_none = 0,
+		/** read the static part of the header */
+		pp2_header_init,
+		/** read the full header */
+		pp2_header_done
+	} pp2_header_state;
 
 	/* ---------- Behaviour ----------- */
 	/** if set the connection is NOT closed on delete. */
@@ -489,32 +517,36 @@ struct ub_event_base* comm_base_internal(struct comm_base* b);
  * Create an UDP comm point. Calls malloc.
  * setups the structure with the parameters you provide.
  * @param base: in which base to alloc the commpoint.
- * @param fd : file descriptor of open UDP socket.
+ * @param fd: file descriptor of open UDP socket.
  * @param buffer: shared buffer by UDP sockets from this thread.
+ * @param pp2_enabled: if the comm point will support PROXYv2.
  * @param callback: callback function pointer.
  * @param callback_arg: will be passed to your callback function.
+ * @param socket: and opened socket properties will be passed to your callback function.
  * @return: returns the allocated communication point. NULL on error.
  * Sets timeout to NULL. Turns off TCP options.
  */
 struct comm_point* comm_point_create_udp(struct comm_base* base,
-	int fd, struct sldns_buffer* buffer, 
-	comm_point_callback_type* callback, void* callback_arg);
+	int fd, struct sldns_buffer* buffer, int pp2_enabled,
+	comm_point_callback_type* callback, void* callback_arg, struct unbound_socket* socket);
 
 /**
  * Create an UDP with ancillary data comm point. Calls malloc.
  * Uses recvmsg instead of recv to get udp message.
  * setups the structure with the parameters you provide.
  * @param base: in which base to alloc the commpoint.
- * @param fd : file descriptor of open UDP socket.
+ * @param fd: file descriptor of open UDP socket.
  * @param buffer: shared buffer by UDP sockets from this thread.
+ * @param pp2_enabled: if the comm point will support PROXYv2.
  * @param callback: callback function pointer.
  * @param callback_arg: will be passed to your callback function.
+ * @param socket: and opened socket properties will be passed to your callback function.
  * @return: returns the allocated communication point. NULL on error.
  * Sets timeout to NULL. Turns off TCP options.
  */
 struct comm_point* comm_point_create_udp_ancil(struct comm_base* base,
-	int fd, struct sldns_buffer* buffer, 
-	comm_point_callback_type* callback, void* callback_arg);
+	int fd, struct sldns_buffer* buffer, int pp2_enabled,
+	comm_point_callback_type* callback, void* callback_arg, struct unbound_socket* socket);
 
 /**
  * Create a TCP listener comm point. Calls malloc.
@@ -535,8 +567,10 @@ struct comm_point* comm_point_create_udp_ancil(struct comm_base* base,
  * 	or NULL to not create those structures in the tcp handlers.
  * @param port_type: the type of port we are creating a TCP listener for. Used
  * 	to select handler type to use.
+ * @param pp2_enabled: if the comm point will support PROXYv2.
  * @param callback: callback function pointer for TCP handlers.
  * @param callback_arg: will be passed to your callback function.
+ * @param socket: and opened socket properties will be passed to your callback function.
  * @return: returns the TCP listener commpoint. You can find the
  *  	TCP handlers in the array inside the listener commpoint.
  *	returns NULL on error.
@@ -547,8 +581,8 @@ struct comm_point* comm_point_create_tcp(struct comm_base* base,
 	uint32_t http_max_streams, char* http_endpoint,
 	struct tcl_list* tcp_conn_limit,
 	size_t bufsize, struct sldns_buffer* spoolbuf,
-	enum listen_type port_type,
-	comm_point_callback_type* callback, void* callback_arg);
+	enum listen_type port_type, int pp2_enabled,
+	comm_point_callback_type* callback, void* callback_arg, struct unbound_socket* socket);
 
 /**
  * Create an outgoing TCP commpoint. No file descriptor is opened, left at -1.
@@ -663,6 +697,16 @@ void comm_point_start_listening(struct comm_point* c, int newfd, int msec);
 void comm_point_listen_for_rw(struct comm_point* c, int rd, int wr);
 
 /**
+ * For TCP handlers that use c->tcp_timeout_msec, this routine adjusts
+ * it with the minimum.  Otherwise, a 0 value advertised without the
+ * minimum applied moves to a 0 in comm_point_start_listening and that
+ * routine treats it as no timeout, listen forever, which is not wanted.
+ * @param c: comm point to use the tcp_timeout_msec of.
+ * @return adjusted tcp_timeout_msec value with the minimum if smaller.
+ */
+int adjusted_tcp_timeout(struct comm_point* c);
+
+/**
  * Get size of memory used by comm point.
  * For TCP handlers this includes subhandlers.
  * For UDP handlers, this does not include the (shared) UDP buffer.
@@ -725,7 +769,7 @@ struct comm_signal* comm_signal_create(struct comm_base* base,
 	void (*callback)(int, void*), void* cb_arg);
 
 /**
- * Bind signal struct to catch a signal. A signle comm_signal can be bound
+ * Bind signal struct to catch a signal. A single comm_signal can be bound
  * to multiple signals, calling comm_signal_bind multiple times.
  * @param comsig: the communication point, with callback information.
  * @param sig: signal number.

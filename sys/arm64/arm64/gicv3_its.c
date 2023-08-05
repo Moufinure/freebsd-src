@@ -1,6 +1,5 @@
 /*-
  * Copyright (c) 2015-2016 The FreeBSD Foundation
- * All rights reserved.
  *
  * This software was developed by Andrew Turner under
  * the sponsorship of the FreeBSD Foundation.
@@ -499,7 +498,7 @@ gicv3_its_table_init(device_t dev, struct gicv3_its_softc *sc)
 			nitspages = howmany(its_tbl_size, page_size);
 
 			/* Clear the fields we will be setting */
-			reg &= ~(GITS_BASER_VALID |
+			reg &= ~(GITS_BASER_VALID | GITS_BASER_INDIRECT |
 			    GITS_BASER_CACHE_MASK | GITS_BASER_TYPE_MASK |
 			    GITS_BASER_ESIZE_MASK | GITS_BASER_PA_MASK |
 			    GITS_BASER_SHARE_MASK | GITS_BASER_PSZ_MASK |
@@ -708,7 +707,7 @@ its_init_cpu(device_t dev, struct gicv3_its_softc *sc)
 		return (0);
 
 	/* Check if the ITS is enabled on this CPU */
-	if ((gic_r_read_4(gicv3, GICR_TYPER) & GICR_TYPER_PLPIS) == 0)
+	if ((gic_r_read_8(gicv3, GICR_TYPER) & GICR_TYPER_PLPIS) == 0)
 		return (ENXIO);
 
 	rpcpu = gicv3_get_redist(dev);
@@ -823,7 +822,7 @@ gicv3_its_attach(device_t dev)
 	struct gicv3_its_softc *sc;
 	int domain, err, i, rid;
 	uint64_t phys;
-	uint32_t iidr;
+	uint32_t ctlr, iidr;
 
 	sc = device_get_softc(dev);
 
@@ -854,6 +853,18 @@ gicv3_its_attach(device_t dev)
 			its_quirks[i].func(dev);
 			break;
 		}
+	}
+
+	/*
+	 * GIT_CTLR_EN is mandated to reset to 0 on a Warm reset, but we may be
+	 * coming in via, for instance, a kexec/kboot style setup where a
+	 * previous kernel has configured then relinquished control.  Clear it
+	 * so that we can reconfigure GITS_BASER*.
+	 */
+	ctlr = gic_its_read_4(sc, GITS_CTLR);
+	if ((ctlr & GITS_CTLR_EN) != 0) {
+		ctlr &= ~GITS_CTLR_EN;
+		gic_its_write_4(sc, GITS_CTLR, ctlr);
 	}
 
 	/* Allocate the private tables */
@@ -888,8 +899,7 @@ gicv3_its_attach(device_t dev)
 			sc->sc_its_cols[cpu] = NULL;
 
 	/* Enable the ITS */
-	gic_its_write_4(sc, GITS_CTLR,
-	    gic_its_read_4(sc, GITS_CTLR) | GITS_CTLR_EN);
+	gic_its_write_4(sc, GITS_CTLR, ctlr | GITS_CTLR_EN);
 
 	/* Create the LPI configuration table */
 	gicv3_its_conftable_init(sc);
@@ -1110,7 +1120,8 @@ its_get_devid(device_t pci_dev)
 	uintptr_t id;
 
 	if (pci_get_id(pci_dev, PCI_ID_MSI, &id) != 0)
-		panic("its_get_devid: Unable to get the MSI DeviceID");
+		panic("%s: %s: Unable to get the MSI DeviceID", __func__,
+		    device_get_nameunit(pci_dev));
 
 	return (id);
 }
@@ -1455,7 +1466,10 @@ gicv3_iommu_init(device_t dev, device_t child, struct iommu_domain **domain)
 
 	sc = device_get_softc(dev);
 	ctx = iommu_get_dev_ctx(child);
-	error = iommu_map_msi(ctx, PAGE_SIZE, GITS_TRANSLATER,
+	if (ctx == NULL)
+		return (ENXIO);
+	/* Map the page containing the GITS_TRANSLATER register. */
+	error = iommu_map_msi(ctx, PAGE_SIZE, 0,
 	    IOMMU_MAP_ENTRY_WRITE, IOMMU_MF_CANWAIT, &sc->ma);
 	*domain = iommu_get_ctx_domain(ctx);
 
@@ -1468,6 +1482,9 @@ gicv3_iommu_deinit(device_t dev, device_t child)
 	struct iommu_ctx *ctx;
 
 	ctx = iommu_get_dev_ctx(child);
+	if (ctx == NULL)
+		return;
+
 	iommu_unmap_msi(ctx);
 }
 #endif
@@ -1941,11 +1958,19 @@ gicv3_its_fdt_attach(device_t dev)
 	/* Register this device as a interrupt controller */
 	xref = OF_xref_from_node(ofw_bus_get_node(dev));
 	sc->sc_pic = intr_pic_register(dev, xref);
-	intr_pic_add_handler(device_get_parent(dev), sc->sc_pic,
+	err = intr_pic_add_handler(device_get_parent(dev), sc->sc_pic,
 	    gicv3_its_intr, sc, sc->sc_irq_base, sc->sc_irq_length);
+	if (err != 0) {
+		device_printf(dev, "Failed to add PIC handler: %d\n", err);
+		return (err);
+	}
 
 	/* Register this device to handle MSI interrupts */
-	intr_msi_register(dev, xref);
+	err = intr_msi_register(dev, xref);
+	if (err != 0) {
+		device_printf(dev, "Failed to register for MSIs: %d\n", err);
+		return (err);
+	}
 
 	return (0);
 }
@@ -2002,11 +2027,19 @@ gicv3_its_acpi_attach(device_t dev)
 
 	di = device_get_ivars(dev);
 	sc->sc_pic = intr_pic_register(dev, di->msi_xref);
-	intr_pic_add_handler(device_get_parent(dev), sc->sc_pic,
+	err = intr_pic_add_handler(device_get_parent(dev), sc->sc_pic,
 	    gicv3_its_intr, sc, sc->sc_irq_base, sc->sc_irq_length);
+	if (err != 0) {
+		device_printf(dev, "Failed to add PIC handler: %d\n", err);
+		return (err);
+	}
 
 	/* Register this device to handle MSI interrupts */
-	intr_msi_register(dev, di->msi_xref);
+	err = intr_msi_register(dev, di->msi_xref);
+	if (err != 0) {
+		device_printf(dev, "Failed to register for MSIs: %d\n", err);
+		return (err);
+	}
 
 	return (0);
 }

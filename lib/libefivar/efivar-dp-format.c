@@ -255,7 +255,7 @@ DevPathToTextVendor (
         UefiDevicePathLibCatPrint (Str, "VenVt100Plus()");
         return ;
       } else if (CompareGuid (&Vendor->Guid, &gEfiVTUTF8Guid)) {
-        UefiDevicePathLibCatPrint (Str, "VenUft8()");
+        UefiDevicePathLibCatPrint (Str, "VenUtf8()");
         return ;
       } else if (CompareGuid (&Vendor->Guid, &gEfiUartDevicePathGuid)) {
         FlowControlMap = (((UART_FLOW_CONTROL_DEVICE_PATH *) Vendor)->FlowControlMap);
@@ -1008,9 +1008,10 @@ DevPathToTextUsbWWID (
     //
     // In case no NULL terminator in SerialNumber, create a new one with NULL terminator
     //
-    NewStr = AllocateCopyPool ((Length + 1) * sizeof (CHAR16), SerialNumberStr);
+    NewStr = AllocatePool ((Length + 1) * sizeof (CHAR16));
     ASSERT (NewStr != NULL);
-    NewStr [Length] = 0;
+    CopyMem (NewStr, SerialNumberStr, Length * sizeof (CHAR16));
+    NewStr[Length]  = 0;
     SerialNumberStr = NewStr;
   }
 

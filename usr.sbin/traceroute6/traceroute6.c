@@ -578,8 +578,6 @@ main(int argc, char *argv[])
 	 */
 	switch (useproto) {
 	case IPPROTO_ICMPV6:
-		sndsock = rcvsock;
-		break;
 	case IPPROTO_NONE:
 	case IPPROTO_SCTP:
 	case IPPROTO_TCP:
@@ -928,7 +926,6 @@ main(int argc, char *argv[])
 	 * namespaces (e.g filesystem) is restricted (see capsicum(4)).
 	 * We must connect(2) our socket before this point.
 	 */
-
 	if (caph_enter_casper() < 0) {
 		fprintf(stderr, "caph_enter_casper: %s\n", strerror(errno));
 		exit(1);
@@ -937,6 +934,12 @@ main(int argc, char *argv[])
 	cap_rights_init(&rights, CAP_SEND, CAP_SETSOCKOPT);
 	if (caph_rights_limit(sndsock, &rights) < 0) {
 		fprintf(stderr, "caph_rights_limit sndsock: %s\n",
+		    strerror(errno));
+		exit(1);
+	}
+	cap_rights_init(&rights, CAP_RECV, CAP_EVENT);
+	if (caph_rights_limit(rcvsock, &rights) < 0) {
+		fprintf(stderr, "caph_rights_limit rcvsock: %s\n",
 		    strerror(errno));
 		exit(1);
 	}
@@ -1036,7 +1039,8 @@ wait_for_reply(int sock, struct msghdr *mhdr)
 	pfd[0].events = POLLIN;
 	pfd[0].revents = 0;
 
-	if (poll(pfd, 1, waittime * 1000) > 0)
+	if (poll(pfd, 1, waittime * 1000) > 0 &&
+	    pfd[0].revents & POLLIN)
 		cc = recvmsg(rcvsock, mhdr, 0);
 
 	return (cc);
@@ -1115,6 +1119,7 @@ send_probe(int seq, u_long hops)
 		outudp->uh_sport = htons(ident);
 		outudp->uh_dport = htons(port+seq);
 		outudp->uh_ulen = htons(datalen);
+		outudp->uh_sum = 0;
 		outudp->uh_sum = udp_cksum(&Src, &Dst, outpacket, datalen);
 		break;
 	case IPPROTO_NONE:

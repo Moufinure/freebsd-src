@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2017 Kyle J. Kneitinger <kyle@kneit.in>
  *
@@ -29,6 +29,7 @@
 __FBSDID("$FreeBSD$");
 
 #include <sys/param.h>
+#include <sys/module.h>
 #include <sys/mount.h>
 #include <sys/stat.h>
 #include <sys/ucred.h>
@@ -118,6 +119,16 @@ libbe_init(const char *root)
 
 	lbh = NULL;
 	poolname = pos = NULL;
+
+	/*
+	 * If the zfs kmod's not loaded then the later libzfs_init() will load
+	 * the module for us, but that's not desirable for a couple reasons.  If
+	 * the module's not loaded, there's no pool imported and we're going to
+	 * fail anyways.  We also don't really want libbe consumers to have that
+	 * kind of side-effect (module loading) in the general case.
+	 */
+	if (modfind("zfs") < 0)
+		goto err;
 
 	if ((lbh = calloc(1, sizeof(libbe_handle_t))) == NULL)
 		goto err;
@@ -959,6 +970,17 @@ be_validate_name(libbe_handle_t *lbh, const char *name)
 		return (BE_ERR_PATHLEN);
 
 	if (!zfs_name_valid(name, ZFS_TYPE_DATASET))
+		return (BE_ERR_INVALIDNAME);
+
+	/*
+	 * ZFS allows spaces in boot environment names, but the kernel can't
+	 * handle booting from such a dataset right now.  vfs.root.mountfrom
+	 * is defined to be a space-separated list, and there's no protocol for
+	 * escaping whitespace in the path component of a dev:path spec.  So
+	 * while loader can handle this situation alright, it can't safely pass
+	 * it on to mountroot.
+	 */
+	if (strchr(name, ' ') != NULL)
 		return (BE_ERR_INVALIDNAME);
 
 	return (BE_ERR_SUCCESS);

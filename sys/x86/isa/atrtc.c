@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2008 Poul-Henning Kamp
  * Copyright (c) 2010 Alexander Motin <mav@FreeBSD.org>
@@ -62,6 +62,11 @@ __FBSDID("$FreeBSD$");
 #include <machine/md_var.h>
 #endif
 
+/* tunable to detect a power loss of the rtc */
+static bool atrtc_power_lost = false;
+SYSCTL_BOOL(_machdep, OID_AUTO, atrtc_power_lost, CTLFLAG_RD, &atrtc_power_lost,
+    false, "RTC lost power on last power cycle (probably caused by an emtpy cmos battery)");
+
 /*
  * atrtc_lock protects low-level access to individual hardware registers.
  * atrtc_time_lock protects the entire sequence of accessing multiple registers
@@ -79,6 +84,7 @@ MTX_SYSINIT(atrtc_time_lock_init, &atrtc_time_lock, "atrtc_time", MTX_DEF);
 
 int	atrtcclock_disable = 0;
 
+static	int	rtc_century = 0;
 static	int	rtc_reg = -1;
 static	u_char	rtc_statusa = RTCSA_DIVIDER | RTCSA_NOPROF;
 static	u_char	rtc_statusb = RTCSB_24HR;
@@ -421,6 +427,31 @@ atrtc_acpi_disabled(void)
 }
 
 static int
+rtc_acpi_century_get(void)
+{
+#ifdef DEV_ACPI
+	ACPI_TABLE_FADT *fadt;
+	vm_paddr_t physaddr;
+	int century;
+
+	physaddr = acpi_find_table(ACPI_SIG_FADT);
+	if (physaddr == 0)
+		return (0);
+
+	fadt = acpi_map_table(physaddr, ACPI_SIG_FADT);
+	if (fadt == NULL)
+		return (0);
+
+	century = fadt->Century;
+	acpi_unmap_table(fadt);
+
+	return (century);
+#else
+	return (0);
+#endif
+}
+
+static int
 atrtc_probe(device_t dev)
 {
 	int result;
@@ -435,6 +466,7 @@ atrtc_probe(device_t dev)
 		device_set_desc(dev, "AT realtime clock");
 		return (BUS_PROBE_LOW_PRIORITY);
 	}
+	rtc_century = rtc_acpi_century_get();
 	return (result);
 }
 
@@ -548,9 +580,8 @@ atrtc_settime(device_t dev __unused, struct timespec *ts)
 	rtcout_locked(RTC_DAY,   bct.day);
 	rtcout_locked(RTC_MONTH, bct.mon);
 	rtcout_locked(RTC_YEAR,  bct.year & 0xff);
-#ifdef USE_RTC_CENTURY
-	rtcout_locked(RTC_CENTURY, bct.year >> 8);
-#endif
+	if (rtc_century)
+		rtcout_locked(rtc_century, bct.year >> 8);
 
 	/*
 	 * Re-enable RTC updates and interrupts.
@@ -571,6 +602,7 @@ atrtc_gettime(device_t dev, struct timespec *ts)
 
 	/* Look if we have a RTC present and the time is valid */
 	if (!(rtcin(RTC_STATUSD) & RTCSD_PWR)) {
+		atrtc_power_lost = true;
 		device_printf(dev, "WARNING: Battery failure indication\n");
 		return (EINVAL);
 	}
@@ -592,9 +624,8 @@ atrtc_gettime(device_t dev, struct timespec *ts)
 	bct.day  = rtcin_locked(RTC_DAY);
 	bct.mon  = rtcin_locked(RTC_MONTH);
 	bct.year = rtcin_locked(RTC_YEAR);
-#ifdef USE_RTC_CENTURY
-	bct.year |= rtcin_locked(RTC_CENTURY) << 8;
-#endif
+	if (rtc_century)
+		bct.year |= rtcin_locked(rtc_century) << 8;
 	mtx_unlock_spin(&atrtc_lock);
 	mtx_unlock(&atrtc_time_lock);
 	/* dow is unused in timespec conversion and we have no nsec info. */

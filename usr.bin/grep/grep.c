@@ -3,7 +3,7 @@
 /*	$OpenBSD: grep.c,v 1.42 2010/07/02 22:18:03 tedu Exp $	*/
 
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 1999 James Howard and Dag-Erling Coïdan Smørgrav
  * Copyright (C) 2008-2009 Gabor Kovesdan <gabor@FreeBSD.org>
@@ -57,9 +57,9 @@ const char	*errstr[] = {
 	"",
 /* 1*/	"(standard input)",
 /* 2*/	"unknown %s option",
-/* 3*/	"usage: %s [-abcDEFGHhIiLlmnOoPqRSsUVvwxz] [-A num] [-B num] [-C[num]]\n",
+/* 3*/	"usage: %s [-abcDEFGHhIiLlmnOoPqRSsUVvwxz] [-A num] [-B num] [-C num]\n",
 /* 4*/	"\t[-e pattern] [-f file] [--binary-files=value] [--color=when]\n",
-/* 5*/	"\t[--context[=num]] [--directories=action] [--label] [--line-buffered]\n",
+/* 5*/	"\t[--context=num] [--directories=action] [--label] [--line-buffered]\n",
 /* 6*/	"\t[--null] [pattern] [file ...]\n",
 /* 7*/	"Binary file %s matches\n",
 /* 8*/	"%s (BSD grep, GNU compatible) %s\n",
@@ -562,6 +562,7 @@ main(int argc, char *argv[])
 			break;
 		case 'z':
 			fileeol = '\0';
+			cflags &= ~REG_NEWLINE;
 			break;
 		case BIN_OPT:
 			if (strcasecmp("binary", optarg) == 0)

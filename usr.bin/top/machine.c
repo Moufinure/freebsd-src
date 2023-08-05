@@ -16,9 +16,10 @@
  * $FreeBSD$
  */
 
+#include <sys/param.h>
+#include <sys/cpuset.h>
 #include <sys/errno.h>
 #include <sys/fcntl.h>
-#include <sys/param.h>
 #include <sys/priority.h>
 #include <sys/proc.h>
 #include <sys/resource.h>
@@ -204,7 +205,7 @@ static const char *ordernames[] = {
 static int maxcpu;
 static int maxid;
 static int ncpus;
-static unsigned long cpumask;
+static cpuset_t cpumask;
 static long *times;
 static long *pcpu_cp_time;
 static long *pcpu_cp_old;
@@ -224,6 +225,7 @@ static void getsysctl(const char *name, void *ptr, size_t len);
 static int swapmode(int *retavail, int *retfree);
 static void update_layout(void);
 static int find_uid(uid_t needle, int *haystack);
+static int cmd_matches(struct kinfo_proc *, const char *);
 
 static int
 find_uid(uid_t needle, int *haystack)
@@ -346,8 +348,6 @@ machine_init(struct statics *statics)
 	statics->order_names = ordernames;
 
 	/* Allocate state for per-CPU stats. */
-	cpumask = 0;
-	ncpus = 0;
 	GETSYSCTL("kern.smp.maxcpus", maxcpu);
 	times = calloc(maxcpu * CPUSTATES, sizeof(long));
 	if (times == NULL)
@@ -356,18 +356,18 @@ machine_init(struct statics *statics)
 	if (sysctlbyname("kern.cp_times", times, &size, NULL, 0) == -1)
 		err(1, "sysctlbyname kern.cp_times");
 	pcpu_cp_time = calloc(1, size);
-	maxid = (size / CPUSTATES / sizeof(long)) - 1;
+	maxid = MIN(size / CPUSTATES / sizeof(long) - 1, CPU_SETSIZE - 1);
+	CPU_ZERO(&cpumask);
 	for (i = 0; i <= maxid; i++) {
 		empty = 1;
 		for (j = 0; empty && j < CPUSTATES; j++) {
 			if (times[i * CPUSTATES + j] != 0)
 				empty = 0;
 		}
-		if (!empty) {
-			cpumask |= (1ul << i);
-			ncpus++;
-		}
+		if (!empty)
+			CPU_SET(i, &cpumask);
 	}
+	ncpus = CPU_COUNT(&cpumask);
 	assert(ncpus > 0);
 	pcpu_cp_old = calloc(ncpus * CPUSTATES, sizeof(long));
 	pcpu_cp_diff = calloc(ncpus * CPUSTATES, sizeof(long));
@@ -465,7 +465,7 @@ get_system_info(struct system_info *si)
 
 	/* convert cp_time counts to percentages */
 	for (i = j = 0; i <= maxid; i++) {
-		if ((cpumask & (1ul << i)) == 0)
+		if (!CPU_ISSET(i, &cpumask))
 			continue;
 		percentages(CPUSTATES, &pcpu_cpu_states[j * CPUSTATES],
 		    &pcpu_cp_time[j * CPUSTATES],
@@ -869,6 +869,10 @@ get_process_info(struct system_info *si, struct process_select *sel,
 		if (sel->pid != -1 && pp->ki_pid != sel->pid)
 			continue;
 
+		if (!cmd_matches(pp, sel->command))
+			/* skip proc. that doesn't match grep string */
+			continue;
+
 		*prefp++ = pp;
 		active_procs++;
 	}
@@ -885,6 +889,35 @@ get_process_info(struct system_info *si, struct process_select *sel,
 	handle.next_proc = pref;
 	handle.remaining = active_procs;
 	return (&handle);
+}
+
+static int
+cmd_matches(struct kinfo_proc *proc, const char *term)
+{
+	char **args = NULL;
+
+	if (!term) {
+		/* No command filter set */
+		return 1;
+	} else {
+		/* Filter set, does process name contain term? */
+		if (strstr(proc->ki_comm, term))
+			return 1;
+		/* Search arguments only if arguments are displayed */
+		if (show_args) {
+			args = kvm_getargv(kd, proc, 1024);
+			if (args == NULL) {
+				/* Failed to get arguments so can't search them */
+				return 0;
+			}
+			while (*args != NULL) {
+				if (strstr(*args, term))
+					return 1;
+				args++;
+			}
+		}
+	}
+	return 0;
 }
 
 char *
@@ -1223,19 +1256,19 @@ compare_tid(const void *p1, const void *p2)
  *	distinct keys.  The keys (in descending order of importance) are:
  *	percent cpu, cpu ticks, state, resident set size, total virtual
  *	memory usage.  The process states are ordered as follows (from least
- *	to most important):  WAIT, zombie, sleep, stop, start, run.  The
- *	array declaration below maps a process state index into a number
- *	that reflects this ordering.
+ *	to most important):  run, zombie, idle, interrupt wait, stop, sleep.
+ *	The array declaration below maps a process state index into a
+ *	number that reflects this ordering.
  */
 
-static int sorted_state[] = {
-	0,	/* not used		*/
-	3,	/* sleep		*/
-	1,	/* ABANDONED (WAIT)	*/
-	6,	/* run			*/
-	5,	/* start		*/
-	2,	/* zombie		*/
-	4	/* stop			*/
+static const int sorted_state[] = {
+	[SIDL] =	3,	/* being created	*/
+	[SRUN] =	1,	/* running/runnable	*/
+	[SSLEEP] =	6,	/* sleeping		*/
+	[SSTOP] =	5,	/* stopped/suspended	*/
+	[SZOMB] =	2,	/* zombie		*/
+	[SWAIT] =	4,	/* intr			*/
+	[SLOCK] =	7,	/* blocked on lock	*/
 };
 
 
@@ -1533,6 +1566,7 @@ int (*compares[])(const void *arg1, const void *arg2) = {
 	compare_ivcsw,
 	compare_jid,
 	compare_swap,
+	compare_pid,
 	NULL
 };
 

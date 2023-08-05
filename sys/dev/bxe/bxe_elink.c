@@ -4418,7 +4418,7 @@ static uint8_t elink_ext_phy_resolve_fc(struct elink_phy *phy,
 	uint8_t ret = 0;
 	vars->flow_ctrl = ELINK_FLOW_CTRL_NONE;
 	if (phy->req_flow_ctrl != ELINK_FLOW_CTRL_AUTO) {
-		/* Update the advertised flow-controled of LD/LP in AN */
+		/* Update the advertised flow-controlled of LD/LP in AN */
 		if (phy->req_line_speed == ELINK_SPEED_AUTO_NEG)
 			elink_ext_phy_update_adv_fc(phy, params, vars);
 		/* But set the flow-control result as the requested one */
@@ -4578,7 +4578,7 @@ static void elink_warpcore_enable_AN_KR(struct elink_phy *phy,
 		{MDIO_WC_DEVAD, MDIO_WC_REG_CL72_USERB0_CL72_TX_FIR_TAP, 0},
 	};
 	ELINK_DEBUG_P0(sc, "Enable Auto Negotiation for KR\n");
-	/* Set to default registers that may be overriden by 10G force */
+	/* Set to default registers that may be overridden by 10G force */
 	for (i = 0; i < ARRAY_SIZE(reg_set); i++)
 		elink_cl45_write(sc, phy, reg_set[i].devad, reg_set[i].reg,
 				 reg_set[i].val);
@@ -6262,7 +6262,7 @@ static void elink_flow_ctrl_resolve(struct elink_phy *phy,
 
 	/* Resolve from gp_status in case of AN complete and not sgmii */
 	if (phy->req_flow_ctrl != ELINK_FLOW_CTRL_AUTO) {
-		/* Update the advertised flow-controled of LD/LP in AN */
+		/* Update the advertised flow-controlled of LD/LP in AN */
 		if (phy->req_line_speed == ELINK_SPEED_AUTO_NEG)
 			elink_update_adv_fc(phy, params, vars, gp_status);
 		/* But set the flow-control result as the requested one */
@@ -7773,7 +7773,7 @@ elink_status_t elink_link_update(struct elink_params *params, struct elink_vars 
 			 * hence its link is expected to be down
 			 * - SECOND_PHY means that first phy should not be able
 			 * to link up by itself (using configuration)
-			 * - DEFAULT should be overriden during initialiazation
+			 * - DEFAULT should be overridden during initialiazation
 			 */
 				ELINK_DEBUG_P1(sc, "Invalid link indication"
 					   "mpc=0x%x. DISABLING LINK !!!\n",

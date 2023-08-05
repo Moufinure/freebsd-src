@@ -165,6 +165,7 @@ struct send_range {
 			kmutex_t		lock;
 			kcondvar_t		cv;
 			boolean_t		io_outstanding;
+			boolean_t		io_compressed;
 			int			io_err;
 		} data;
 		struct srh {
@@ -450,7 +451,8 @@ dump_redact(dmu_send_cookie_t *dscp, uint64_t object, uint64_t offset,
 
 static int
 dmu_dump_write(dmu_send_cookie_t *dscp, dmu_object_type_t type, uint64_t object,
-    uint64_t offset, int lsize, int psize, const blkptr_t *bp, void *data)
+    uint64_t offset, int lsize, int psize, const blkptr_t *bp,
+    boolean_t io_compressed, void *data)
 {
 	uint64_t payload_size;
 	boolean_t raw = (dscp->dsc_featureflags & DMU_BACKUP_FEATURE_RAW);
@@ -487,7 +489,11 @@ dmu_dump_write(dmu_send_cookie_t *dscp, dmu_object_type_t type, uint64_t object,
 	drrw->drr_logical_size = lsize;
 
 	/* only set the compression fields if the buf is compressed or raw */
-	if (raw || lsize != psize) {
+	boolean_t compressed =
+	    (bp != NULL ? BP_GET_COMPRESS(bp) != ZIO_COMPRESS_OFF &&
+	    io_compressed : lsize != psize);
+	if (raw || compressed) {
+		ASSERT(bp != NULL);
 		ASSERT(raw || dscp->dsc_featureflags &
 		    DMU_BACKUP_FEATURE_COMPRESSED);
 		ASSERT(!BP_IS_EMBEDDED(bp));
@@ -579,7 +585,13 @@ dump_write_embedded(dmu_send_cookie_t *dscp, uint64_t object, uint64_t offset,
 
 	decode_embedded_bp_compressed(bp, buf);
 
-	if (dump_record(dscp, buf, P2ROUNDUP(drrw->drr_psize, 8)) != 0)
+	uint32_t psize = drrw->drr_psize;
+	uint32_t rsize = P2ROUNDUP(psize, 8);
+
+	if (psize != rsize)
+		memset(buf + psize, 0, rsize - psize);
+
+	if (dump_record(dscp, buf, rsize) != 0)
 		return (SET_ERROR(EINTR));
 	return (0);
 }
@@ -758,6 +770,8 @@ dump_dnode(dmu_send_cookie_t *dscp, const blkptr_t *bp, uint64_t object,
 		 * to send it.
 		 */
 		if (bonuslen != 0) {
+			if (drro->drr_bonuslen > DN_MAX_BONUS_LEN(dnp))
+				return (SET_ERROR(EINVAL));
 			drro->drr_raw_bonuslen = DN_MAX_BONUS_LEN(dnp);
 			bonuslen = drro->drr_raw_bonuslen;
 		}
@@ -1014,7 +1028,8 @@ do_dump(dmu_send_cookie_t *dscp, struct send_range *range)
 				int n = MIN(srdp->datablksz,
 				    SPA_OLD_MAXBLOCKSIZE);
 				err = dmu_dump_write(dscp, srdp->obj_type,
-				    range->object, offset, n, n, NULL, data);
+				    range->object, offset, n, n, NULL, B_FALSE,
+				    data);
 				offset += n;
 				/*
 				 * When doing dry run, data==NULL is used as a
@@ -1028,7 +1043,8 @@ do_dump(dmu_send_cookie_t *dscp, struct send_range *range)
 		} else {
 			err = dmu_dump_write(dscp, srdp->obj_type,
 			    range->object, offset,
-			    srdp->datablksz, srdp->datasz, bp, data);
+			    srdp->datablksz, srdp->datasz, bp,
+			    srdp->io_compressed, data);
 		}
 		return (err);
 	}
@@ -1081,6 +1097,7 @@ range_alloc(enum type type, uint64_t object, uint64_t start_blkid,
 		cv_init(&range->sru.data.cv, NULL, CV_DEFAULT, NULL);
 		range->sru.data.io_outstanding = 0;
 		range->sru.data.io_err = 0;
+		range->sru.data.io_compressed = B_FALSE;
 	}
 	return (range);
 }
@@ -1089,11 +1106,11 @@ range_alloc(enum type type, uint64_t object, uint64_t start_blkid,
  * This is the callback function to traverse_dataset that acts as a worker
  * thread for dmu_send_impl.
  */
-/*ARGSUSED*/
 static int
 send_cb(spa_t *spa, zilog_t *zilog, const blkptr_t *bp,
     const zbookmark_phys_t *zb, const struct dnode_phys *dnp, void *arg)
 {
+	(void) zilog;
 	struct send_thread_arg *sta = arg;
 	struct send_range *record;
 
@@ -1646,10 +1663,13 @@ issue_data_read(struct send_reader_thread_arg *srta, struct send_range *range)
 
 	enum zio_flag zioflags = ZIO_FLAG_CANFAIL;
 
-	if (srta->featureflags & DMU_BACKUP_FEATURE_RAW)
+	if (srta->featureflags & DMU_BACKUP_FEATURE_RAW) {
 		zioflags |= ZIO_FLAG_RAW;
-	else if (request_compressed)
+		srdp->io_compressed = B_TRUE;
+	} else if (request_compressed) {
 		zioflags |= ZIO_FLAG_RAW_COMPRESS;
+		srdp->io_compressed = B_TRUE;
+	}
 
 	srdp->datasz = (zioflags & ZIO_FLAG_RAW_COMPRESS) ?
 	    BP_GET_PSIZE(bp) : BP_GET_LSIZE(bp);
@@ -1701,8 +1721,10 @@ enqueue_range(struct send_reader_thread_arg *srta, bqueue_t *q, dnode_t *dn,
 	struct send_range *range = range_alloc(range_type, dn->dn_object,
 	    blkid, blkid + count, B_FALSE);
 
-	if (blkid == DMU_SPILL_BLKID)
+	if (blkid == DMU_SPILL_BLKID) {
+		ASSERT3P(bp, !=, NULL);
 		ASSERT3U(BP_GET_TYPE(bp), ==, DMU_OT_SA);
+	}
 
 	switch (range_type) {
 	case HOLE:
@@ -2054,6 +2076,8 @@ setup_to_thread(struct send_thread_arg *to_arg, objset_t *to_os,
 	to_arg->flags = TRAVERSE_PRE | TRAVERSE_PREFETCH_METADATA;
 	if (rawok)
 		to_arg->flags |= TRAVERSE_NO_DECRYPT;
+	if (zfs_send_corrupt_data)
+		to_arg->flags |= TRAVERSE_HARD;
 	to_arg->num_blocks_visited = &dssp->dss_blocks;
 	(void) thread_create(NULL, 0, send_traverse_thread, to_arg, 0,
 	    curproc, TS_RUN, minclsyspri);
@@ -2142,6 +2166,7 @@ setup_resume_points(struct dmu_send_params *dspp,
     struct send_merge_thread_arg *smt_arg, boolean_t resuming, objset_t *os,
     redaction_list_t *redact_rl, nvlist_t *nvl)
 {
+	(void) smt_arg;
 	dsl_dataset_t *to_ds = dspp->to_ds;
 	int err = 0;
 
@@ -2700,6 +2725,10 @@ dmu_send_obj(const char *pool, uint64_t tosnap, uint64_t fromsnap,
 		dspp.numfromredactsnaps = NUM_SNAPS_NOT_REDACTED;
 		err = dmu_send_impl(&dspp);
 	}
+	if (dspp.fromredactsnaps)
+		kmem_free(dspp.fromredactsnaps,
+		    dspp.numfromredactsnaps * sizeof (uint64_t));
+
 	dsl_dataset_rele(dspp.to_ds, FTAG);
 	return (err);
 }
@@ -2768,6 +2797,7 @@ dmu_send(const char *tosnap, const char *fromsnap, boolean_t embedok,
 			}
 
 			if (err == 0) {
+				owned = B_TRUE;
 				err = zap_lookup(dspp.dp->dp_meta_objset,
 				    dspp.to_ds->ds_object,
 				    DS_FIELD_RESUME_TOGUID, 8, 1,
@@ -2781,21 +2811,24 @@ dmu_send(const char *tosnap, const char *fromsnap, boolean_t embedok,
 				    sizeof (dspp.saved_toname),
 				    dspp.saved_toname);
 			}
-			if (err != 0)
+			/* Only disown if there was an error in the lookups */
+			if (owned && (err != 0))
 				dsl_dataset_disown(dspp.to_ds, dsflags, FTAG);
 
 			kmem_strfree(name);
 		} else {
 			err = dsl_dataset_own(dspp.dp, tosnap, dsflags,
 			    FTAG, &dspp.to_ds);
+			if (err == 0)
+				owned = B_TRUE;
 		}
-		owned = B_TRUE;
 	} else {
 		err = dsl_dataset_hold_flags(dspp.dp, tosnap, dsflags, FTAG,
 		    &dspp.to_ds);
 	}
 
 	if (err != 0) {
+		/* Note: dsl dataset is not owned at this point */
 		dsl_pool_rele(dspp.dp, FTAG);
 		return (err);
 	}
@@ -2908,6 +2941,10 @@ dmu_send(const char *tosnap, const char *fromsnap, boolean_t embedok,
 			/* dmu_send_impl will call dsl_pool_rele for us. */
 			err = dmu_send_impl(&dspp);
 		} else {
+			if (dspp.fromredactsnaps)
+				kmem_free(dspp.fromredactsnaps,
+				    dspp.numfromredactsnaps *
+				    sizeof (uint64_t));
 			dsl_pool_rele(dspp.dp, FTAG);
 		}
 	} else {

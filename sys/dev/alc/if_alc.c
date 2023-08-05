@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2009, Pyun YongHyeon <yongari@FreeBSD.org>
  * All rights reserved.
@@ -1438,6 +1438,8 @@ alc_attach(device_t dev)
 	case DEVICEID_ATHEROS_AR8151:
 	case DEVICEID_ATHEROS_AR8151_V2:
 		sc->alc_flags |= ALC_FLAG_APS;
+		if (CSR_READ_4(sc, ALC_MT_MAGIC) == MT_MAGIC)
+			sc->alc_flags |= ALC_FLAG_MT;
 		/* FALLTHROUGH */
 	default:
 		break;
@@ -1493,10 +1495,11 @@ alc_attach(device_t dev)
 			sc->alc_dma_wr_burst = 3;
 		/*
 		 * Force maximum payload size to 128 bytes for
-		 * E2200/E2400/E2500.
+		 * E2200/E2400/E2500/AR8162/AR8171/AR8172.
 		 * Otherwise it triggers DMA write error.
 		 */
-		if ((sc->alc_flags & ALC_FLAG_E2X00) != 0)
+		if ((sc->alc_flags &
+		    (ALC_FLAG_E2X00 | ALC_FLAG_AR816X_FAMILY)) != 0)
 			sc->alc_dma_wr_burst = 0;
 		alc_init_pcie(sc);
 	}
@@ -1977,6 +1980,8 @@ alc_dma_alloc(struct alc_softc *sc)
 	int error, i;
 
 	lowaddr = BUS_SPACE_MAXADDR;
+	if (sc->alc_flags & ALC_FLAG_MT)
+		lowaddr = BUS_SPACE_MAXSIZE_32BIT;
 again:
 	/* Create parent DMA tag. */
 	error = bus_dma_tag_create(
@@ -2219,7 +2224,7 @@ again:
 	error = bus_dma_tag_create(
 	    bus_get_dma_tag(sc->alc_dev), /* parent */
 	    1, 0,			/* alignment, boundary */
-	    BUS_SPACE_MAXADDR,		/* lowaddr */
+	    lowaddr,			/* lowaddr */
 	    BUS_SPACE_MAXADDR,		/* highaddr */
 	    NULL, NULL,			/* filter, filterarg */
 	    BUS_SPACE_MAXSIZE_32BIT,	/* maxsize */
@@ -3339,6 +3344,11 @@ alc_intr(void *arg)
 
 	sc = (struct alc_softc *)arg;
 
+	if (sc->alc_flags & ALC_FLAG_MT) {
+		taskqueue_enqueue(sc->alc_tq, &sc->alc_int_task);
+		return (FILTER_HANDLED);
+	}
+
 	status = CSR_READ_4(sc, ALC_INTR_STATUS);
 	if ((status & ALC_INTRS) == 0)
 		return (FILTER_STRAY);
@@ -3416,7 +3426,10 @@ alc_int_task(void *arg, int pending)
 done:
 	if ((ifp->if_drv_flags & IFF_DRV_RUNNING) != 0) {
 		/* Re-enable interrupts if we're running. */
-		CSR_WRITE_4(sc, ALC_INTR_STATUS, 0x7FFFFFFF);
+		if (sc->alc_flags & ALC_FLAG_MT)
+			CSR_WRITE_4(sc, ALC_INTR_STATUS, 0);
+		else
+			CSR_WRITE_4(sc, ALC_INTR_STATUS, 0x7FFFFFFF);
 	}
 	ALC_UNLOCK(sc);
 }
@@ -3427,7 +3440,6 @@ alc_txeof(struct alc_softc *sc)
 	struct ifnet *ifp;
 	struct alc_txdesc *txd;
 	uint32_t cons, prod;
-	int prog;
 
 	ALC_LOCK_ASSERT(sc);
 
@@ -3456,11 +3468,9 @@ alc_txeof(struct alc_softc *sc)
 	 * Go through our Tx list and free mbufs for those
 	 * frames which have been transmitted.
 	 */
-	for (prog = 0; cons != prod; prog++,
-	    ALC_DESC_INC(cons, ALC_TX_RING_CNT)) {
+	for (; cons != prod; ALC_DESC_INC(cons, ALC_TX_RING_CNT)) {
 		if (sc->alc_cdata.alc_tx_cnt <= 0)
 			break;
-		prog++;
 		ifp->if_drv_flags &= ~IFF_DRV_OACTIVE;
 		sc->alc_cdata.alc_tx_cnt--;
 		txd = &sc->alc_cdata.alc_txdesc[cons];

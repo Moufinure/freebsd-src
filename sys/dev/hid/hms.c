@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2020 Vladimir Kondratyev <wulf@FreeBSD.org>
  *
@@ -61,8 +61,6 @@ enum {
 	HMS_ABS_Z,
 	HMS_HWHEEL,
 	HMS_BTN,
-	HMS_BTN_MS1,
-	HMS_BTN_MS2,
 	HMS_FINAL_CB,
 };
 
@@ -95,8 +93,6 @@ static const struct hidmap_item hms_map[] = {
 	[HMS_ABS_Z]	= HMS_MAP_ABS(HUG_Z,		ABS_Z),
 	[HMS_HWHEEL]	= HMS_MAP_REL_CN(HUC_AC_PAN,	REL_HWHEEL),
 	[HMS_BTN]	= HMS_MAP_BUT_RG(1, 16,		BTN_MOUSE),
-	[HMS_BTN_MS1]	= HMS_MAP_BUT_MS(1,		BTN_RIGHT),
-	[HMS_BTN_MS2]	= HMS_MAP_BUT_MS(2,		BTN_MIDDLE),
 	[HMS_FINAL_CB]	= HMS_FINAL_CB(hms_final_cb),
 };
 
@@ -107,8 +103,14 @@ static const struct hidmap_item hms_map_wheel_rev[] = {
 	HMS_MAP_REL_REV(HUG_WHEEL,	REL_WHEEL),
 };
 
+static const struct hidmap_item hms_map_kensington_slimblade[] = {
+	HMS_MAP_BUT_MS(1,	BTN_RIGHT),
+	HMS_MAP_BUT_MS(2,	BTN_MIDDLE),
+};
+
 /* A match on these entries will load hms */
 static const struct hid_device_id hms_devs[] = {
+	{ HID_TLC(HUP_GENERIC_DESKTOP, HUG_POINTER) },
 	{ HID_TLC(HUP_GENERIC_DESKTOP, HUG_MOUSE) },
 };
 
@@ -228,7 +230,7 @@ hms_probe(device_t dev)
 	else
 		hidbus_set_desc(dev, "Mouse");
 
-	return (BUS_PROBE_DEFAULT);
+	return (BUS_PROBE_GENERIC);
 }
 
 static int
@@ -260,6 +262,9 @@ hms_attach(device_t dev)
 	else
 		HIDMAP_ADD_MAP(&sc->hm, hms_map_wheel, cap_wheel);
 
+	if (hid_test_quirk(hw, HQ_MS_VENDOR_BTN))
+		HIDMAP_ADD_MAP(&sc->hm, hms_map_kensington_slimblade, NULL);
+
 #ifdef IICHID_SAMPLING
 	if (hid_test_quirk(hw, HQ_IICHID_SAMPLING) &&
 	    hidmap_test_cap(sc->caps, HMS_REL_X) &&
@@ -271,7 +276,7 @@ hms_attach(device_t dev)
 		SYSCTL_ADD_U32(device_get_sysctl_ctx(dev),
 		    SYSCTL_CHILDREN(device_get_sysctl_tree(dev)), OID_AUTO,
 		    "drift_thresh", CTLFLAG_RW, &sc->drift_thresh, 0,
-		    "drift detection threshhold");
+		    "drift detection threshold");
 	}
 #endif
 

@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2007 Scott Long
  * All rights reserved.
@@ -59,8 +59,6 @@ __FBSDID("$FreeBSD$");
 #include <cam/scsi/scsi_all.h>
 #include <cam/scsi/scsi_message.h>
 #include <cam/scsi/scsi_sg.h>
-
-#include <compat/linux/linux_ioctl.h>
 
 typedef enum {
 	SG_FLAG_LOCKED		= 0x01,

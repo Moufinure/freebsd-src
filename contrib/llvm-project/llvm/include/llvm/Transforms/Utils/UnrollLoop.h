@@ -17,6 +17,7 @@
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/Analysis/TargetTransformInfo.h"
+#include "llvm/Support/InstructionCost.h"
 
 namespace llvm {
 
@@ -66,14 +67,9 @@ enum class LoopUnrollResult {
 
 struct UnrollLoopOptions {
   unsigned Count;
-  unsigned TripCount;
   bool Force;
-  bool AllowRuntime;
+  bool Runtime;
   bool AllowExpensiveTripCount;
-  bool PreserveCondBr;
-  bool PreserveOnlyFirst;
-  unsigned TripMultiple;
-  unsigned PeelCount;
   bool UnrollRemainder;
   bool ForgetAllSCEV;
 };
@@ -92,16 +88,6 @@ bool UnrollRuntimeLoopRemainder(
     const TargetTransformInfo *TTI, bool PreserveLCSSA,
     Loop **ResultLoop = nullptr);
 
-void computePeelCount(Loop *L, unsigned LoopSize,
-                      TargetTransformInfo::UnrollingPreferences &UP,
-                      TargetTransformInfo::PeelingPreferences &PP,
-                      unsigned &TripCount, ScalarEvolution &SE);
-
-bool canPeel(Loop *L);
-
-bool peelLoop(Loop *L, unsigned PeelCount, LoopInfo *LI, ScalarEvolution *SE,
-              DominatorTree *DT, AssumptionCache *AC, bool PreserveLCSSA);
-
 LoopUnrollResult UnrollAndJamLoop(Loop *L, unsigned Count, unsigned TripCount,
                                   unsigned TripMultiple, bool UnrollRemainder,
                                   LoopInfo *LI, ScalarEvolution *SE,
@@ -114,14 +100,14 @@ bool isSafeToUnrollAndJam(Loop *L, ScalarEvolution &SE, DominatorTree &DT,
                           DependenceInfo &DI, LoopInfo &LI);
 
 bool computeUnrollCount(Loop *L, const TargetTransformInfo &TTI,
-                        DominatorTree &DT, LoopInfo *LI, ScalarEvolution &SE,
+                        DominatorTree &DT, LoopInfo *LI, AssumptionCache *AC,
+                        ScalarEvolution &SE,
                         const SmallPtrSetImpl<const Value *> &EphValues,
-                        OptimizationRemarkEmitter *ORE, unsigned &TripCount,
+                        OptimizationRemarkEmitter *ORE, unsigned TripCount,
                         unsigned MaxTripCount, bool MaxOrZero,
-                        unsigned &TripMultiple, unsigned LoopSize,
+                        unsigned TripMultiple, unsigned LoopSize,
                         TargetTransformInfo::UnrollingPreferences &UP,
                         TargetTransformInfo::PeelingPreferences &PP,
-
                         bool &UseUpperBound);
 
 void simplifyLoopAfterUnroll(Loop *L, bool SimplifyIVs, LoopInfo *LI,
@@ -133,22 +119,16 @@ MDNode *GetUnrollMetadata(MDNode *LoopID, StringRef Name);
 
 TargetTransformInfo::UnrollingPreferences gatherUnrollingPreferences(
     Loop *L, ScalarEvolution &SE, const TargetTransformInfo &TTI,
-    BlockFrequencyInfo *BFI, ProfileSummaryInfo *PSI, int OptLevel,
-    Optional<unsigned> UserThreshold, Optional<unsigned> UserCount,
-    Optional<bool> UserAllowPartial, Optional<bool> UserRuntime,
-    Optional<bool> UserUpperBound, Optional<unsigned> UserFullUnrollMaxCount);
+    BlockFrequencyInfo *BFI, ProfileSummaryInfo *PSI,
+    llvm::OptimizationRemarkEmitter &ORE, int OptLevel,
+    std::optional<unsigned> UserThreshold, std::optional<unsigned> UserCount,
+    std::optional<bool> UserAllowPartial, std::optional<bool> UserRuntime,
+    std::optional<bool> UserUpperBound,
+    std::optional<unsigned> UserFullUnrollMaxCount);
 
-TargetTransformInfo::PeelingPreferences
-gatherPeelingPreferences(Loop *L, ScalarEvolution &SE,
-                         const TargetTransformInfo &TTI,
-                         Optional<bool> UserAllowPeeling,
-                         Optional<bool> UserAllowProfileBasedPeeling);
-
-unsigned ApproximateLoopSize(const Loop *L, unsigned &NumCalls,
-                             bool &NotDuplicatable, bool &Convergent,
-                             const TargetTransformInfo &TTI,
-                             const SmallPtrSetImpl<const Value *> &EphValues,
-                             unsigned BEInsns);
+InstructionCost ApproximateLoopSize(const Loop *L, unsigned &NumCalls,
+    bool &NotDuplicatable, bool &Convergent, const TargetTransformInfo &TTI,
+    const SmallPtrSetImpl<const Value *> &EphValues, unsigned BEInsns);
 
 } // end namespace llvm
 

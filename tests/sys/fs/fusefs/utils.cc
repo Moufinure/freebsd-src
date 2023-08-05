@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2019 The FreeBSD Foundation
  *
@@ -161,7 +161,7 @@ void FuseTest::SetUp() {
 			m_default_permissions, m_push_symlinks_in, m_ro,
 			m_pm, m_init_flags, m_kernel_minor_version,
 			m_maxwrite, m_async, m_noclusterr, m_time_gran,
-			m_nointr);
+			m_nointr, m_noatime, m_fsname, m_subtype);
 		/* 
 		 * FUSE_ACCESS is called almost universally.  Expecting it in
 		 * each test case would be super-annoying.  Instead, set a
@@ -217,12 +217,29 @@ FuseTest::expect_destroy(int error)
 			return (in.header.opcode == FUSE_DESTROY);
 		}, Eq(true)),
 		_)
-	).WillOnce(Invoke( ReturnImmediate([&](auto in, auto& out) {
+	).WillOnce(Invoke(ReturnImmediate([=](auto in, auto& out) {
 		m_mock->m_quit = true;
 		out.header.len = sizeof(out.header);
 		out.header.unique = in.header.unique;
 		out.header.error = -error;
 	})));
+}
+
+void
+FuseTest::expect_fallocate(uint64_t ino, uint64_t offset, uint64_t length,
+	uint32_t mode, int error, int times)
+{
+	EXPECT_CALL(*m_mock, process(
+		ResultOf([=](auto in) {
+			return (in.header.opcode == FUSE_FALLOCATE &&
+				in.header.nodeid == ino &&
+				in.body.fallocate.offset == offset &&
+				in.body.fallocate.length == length &&
+				in.body.fallocate.mode == mode);
+		}, Eq(true)),
+		_)
+	).Times(times)
+	.WillRepeatedly(Invoke(ReturnErrno(error)));
 }
 
 void
@@ -367,13 +384,13 @@ void FuseTest::expect_opendir(uint64_t ino)
 }
 
 void FuseTest::expect_read(uint64_t ino, uint64_t offset, uint64_t isize,
-	uint64_t osize, const void *contents, int flags)
+	uint64_t osize, const void *contents, int flags, uint64_t fh)
 {
 	EXPECT_CALL(*m_mock, process(
 		ResultOf([=](auto in) {
 			return (in.header.opcode == FUSE_READ &&
 				in.header.nodeid == ino &&
-				in.body.read.fh == FH &&
+				in.body.read.fh == fh &&
 				in.body.read.offset == offset &&
 				in.body.read.size == isize &&
 				(flags == -1 ?
@@ -383,6 +400,7 @@ void FuseTest::expect_read(uint64_t ino, uint64_t offset, uint64_t isize,
 		}, Eq(true)),
 		_)
 	).WillOnce(Invoke(ReturnImmediate([=](auto in __unused, auto& out) {
+		assert(osize <= sizeof(out.body.bytes));
 		out.header.len = sizeof(struct fuse_out_header) + osize;
 		memmove(out.body.bytes, contents, osize);
 	}))).RetiresOnSaturation();
@@ -485,6 +503,8 @@ void FuseTest::expect_write(uint64_t ino, uint64_t offset, uint64_t isize,
 			bool pid_ok;
 			uint32_t wf = in.body.write.write_flags;
 
+			assert(isize <= sizeof(in.body.bytes) -
+				sizeof(struct fuse_write_in));
 			if (wf & FUSE_WRITE_CACHE)
 				pid_ok = true;
 			else
@@ -517,6 +537,9 @@ void FuseTest::expect_write_7_8(uint64_t ino, uint64_t offset, uint64_t isize,
 			const char *buf = (const char*)in.body.bytes +
 				FUSE_COMPAT_WRITE_IN_SIZE;
 			bool pid_ok = (pid_t)in.header.pid == getpid();
+
+			assert(isize <= sizeof(in.body.bytes) -
+				FUSE_COMPAT_WRITE_IN_SIZE);
 			return (in.header.opcode == FUSE_WRITE &&
 				in.header.nodeid == ino &&
 				in.body.write.fh == FH &&
@@ -621,6 +644,15 @@ out:
 	}
 	munmap(sem, sizeof(*sem));
 	return;
+}
+
+void
+FuseTest::reclaim_vnode(const char *path)
+{
+	int err;
+
+	err = sysctlbyname(reclaim_mib, NULL, 0, path, strlen(path) + 1);
+	ASSERT_EQ(0, err) << strerror(errno);
 }
 
 static void usage(char* progname) {

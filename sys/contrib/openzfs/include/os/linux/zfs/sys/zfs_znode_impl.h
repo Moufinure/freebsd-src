@@ -36,20 +36,27 @@
 #include <sys/list.h>
 #include <sys/dmu.h>
 #include <sys/sa.h>
+#include <sys/time.h>
 #include <sys/zfs_vfsops.h>
 #include <sys/rrwlock.h>
 #include <sys/zfs_sa.h>
 #include <sys/zfs_stat.h>
 #include <sys/zfs_rlock.h>
 
-
 #ifdef	__cplusplus
 extern "C" {
 #endif
 
+#if defined(HAVE_FILEMAP_RANGE_HAS_PAGE)
 #define	ZNODE_OS_FIELDS			\
+	inode_timespec_t z_btime; /* creation/birth time (cached) */ \
 	struct inode	z_inode;
-
+#else
+#define	ZNODE_OS_FIELDS			\
+	inode_timespec_t z_btime; /* creation/birth time (cached) */ \
+	struct inode	z_inode;                                     \
+	boolean_t	z_is_mapped;    /* we are mmap'ed */
+#endif
 
 /*
  * Convert between znode pointers and inode pointers
@@ -70,10 +77,24 @@ extern "C" {
 #define	Z_ISDEV(type)	(S_ISCHR(type) || S_ISBLK(type) || S_ISFIFO(type))
 #define	Z_ISDIR(type)	S_ISDIR(type)
 
-#define	zn_has_cached_data(zp)		((zp)->z_is_mapped)
+#if defined(HAVE_FILEMAP_RANGE_HAS_PAGE)
+#define	zn_has_cached_data(zp, start, end) \
+	filemap_range_has_page(ZTOI(zp)->i_mapping, start, end)
+#else
+#define	zn_has_cached_data(zp, start, end) \
+	((zp)->z_is_mapped)
+#endif
+
+#define	zn_flush_cached_data(zp, sync)	write_inode_now(ZTOI(zp), sync)
 #define	zn_rlimit_fsize(zp, uio)	(0)
 
-#define	zhold(zp)	igrab(ZTOI((zp)))
+/*
+ * zhold() wraps igrab() on Linux, and igrab() may fail when the
+ * inode is in the process of being deleted.  As zhold() must only be
+ * called when a ref already exists - so the inode cannot be
+ * mid-deletion - we VERIFY() this.
+ */
+#define	zhold(zp)	VERIFY3P(igrab(ZTOI((zp))), !=, NULL)
 #define	zrele(zp)	iput(ZTOI((zp)))
 
 /* Called on entry to each ZFS inode and vfs operation. */
@@ -81,7 +102,7 @@ extern "C" {
 do {								\
 	ZFS_TEARDOWN_ENTER_READ(zfsvfs, FTAG);			\
 	if (unlikely((zfsvfs)->z_unmounted)) {			\
-		ZFS_EXIT_READ(zfsvfs, FTAG);			\
+		ZFS_TEARDOWN_EXIT_READ(zfsvfs, FTAG);		\
 		return (error);					\
 	}							\
 } while (0)
@@ -92,7 +113,7 @@ do {								\
 #define	ZFS_EXIT(zfsvfs)					\
 do {								\
 	zfs_exit_fs(zfsvfs);					\
-	ZFS_EXIT_READ(zfsvfs, FTAG);				\
+	ZFS_TEARDOWN_EXIT_READ(zfsvfs, FTAG);			\
 } while (0)
 
 #define	ZPL_EXIT(zfsvfs)					\

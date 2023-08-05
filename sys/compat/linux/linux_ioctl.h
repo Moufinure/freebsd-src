@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 1999 Marcel Moolenaar
  * All rights reserved.
@@ -385,6 +385,8 @@
 
 #define LINUX_TIOCGPTN		0x5430
 #define LINUX_TIOCSPTLCK	0x5431
+
+#define	LINUX_TIOCGPTPEER	0x5441
 
 #define	LINUX_FIONCLEX		0x5450
 #define	LINUX_FIOCLEX		0x5451

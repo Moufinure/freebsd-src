@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 1998 Doug Rabson
  * All rights reserved.
@@ -168,7 +168,6 @@ ISA_ACCESSOR(pnpbios_handle, PNPBIOS_HANDLE, int)
 /* Device class for ISA bridges. */
 extern devclass_t isab_devclass;
 
-extern intrmask_t isa_irq_pending(void);
 extern void	isa_probe_children(device_t dev);
 
 void	isa_dmacascade(int chan);

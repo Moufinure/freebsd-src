@@ -28,10 +28,21 @@
  *
  * $FreeBSD$
  */
-#ifndef	_LINUX_SOCKET_H_
-#define	_LINUX_SOCKET_H_
+#ifndef	_LINUXKPI_LINUX_SOCKET_H_
+#define	_LINUXKPI_LINUX_SOCKET_H_
 
 #include <sys/socket.h>
+
+#define	AF_QIPCRTR			42
+
+static inline int
+kernel_connect(int sd, struct sockaddr *sa, size_t salen, int flags)
+{
+
+	/* kern_connectat()? It is used for sockaddr_qrtr by ath1xk/qmi. */
+	pr_debug("%s: TODO\n", __func__);
+	return (-EINVAL);
+}
 
 #ifdef notyet
 static inline int
@@ -66,4 +77,4 @@ memcpy_fromiovec(unsigned char *kdata, struct iovec *iov, int len)
 }
 #endif
 
-#endif	/* _LINUX_SOCKET_H_ */
+#endif	/* _LINUXKPI_LINUX_SOCKET_H_ */

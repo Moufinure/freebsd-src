@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2011 NetApp, Inc.
  * All rights reserved.
@@ -87,9 +87,11 @@ log2(u_int x)
 }
 
 int
-x86_emulate_cpuid(struct vm *vm, int vcpu_id, uint64_t *rax, uint64_t *rbx,
+x86_emulate_cpuid(struct vcpu *vcpu, uint64_t *rax, uint64_t *rbx,
     uint64_t *rcx, uint64_t *rdx)
 {
+	struct vm *vm = vcpu_vm(vcpu);
+	int vcpu_id = vcpu_vcpuid(vcpu);
 	const struct xsave_limits *limits;
 	uint64_t cr4;
 	int error, enable_invpcid, enable_rdpid, enable_rdtscp, level,
@@ -202,7 +204,7 @@ x86_emulate_cpuid(struct vm *vm, int vcpu_id, uint64_t *rax, uint64_t *rbx,
 			regs[2] &= ~AMDID2_MWAITX;
 
 			/* Advertise RDTSCP if it is enabled. */
-			error = vm_get_capability(vm, vcpu_id,
+			error = vm_get_capability(vcpu,
 			    VM_CAP_RDTSCP, &enable_rdtscp);
 			if (error == 0 && enable_rdtscp)
 				regs[3] |= AMDID_RDTSCP;
@@ -309,7 +311,7 @@ x86_emulate_cpuid(struct vm *vm, int vcpu_id, uint64_t *rax, uint64_t *rbx,
 		case CPUID_0000_0001:
 			do_cpuid(1, regs);
 
-			error = vm_get_x2apic_state(vm, vcpu_id, &x2apic_state);
+			error = vm_get_x2apic_state(vcpu, &x2apic_state);
 			if (error) {
 				panic("x86_emulate_cpuid: error %d "
 				      "fetching x2apic state", error);
@@ -349,7 +351,7 @@ x86_emulate_cpuid(struct vm *vm, int vcpu_id, uint64_t *rax, uint64_t *rbx,
 			 */
 			regs[2] &= ~CPUID2_OSXSAVE;
 			if (regs[2] & CPUID2_XSAVE) {
-				error = vm_get_register(vm, vcpu_id,
+				error = vm_get_register(vcpu,
 				    VM_REG_GUEST_CR4, &cr4);
 				if (error)
 					panic("x86_emulate_cpuid: error %d "
@@ -439,26 +441,32 @@ x86_emulate_cpuid(struct vm *vm, int vcpu_id, uint64_t *rax, uint64_t *rbx,
 				/*
 				 * Expose known-safe features.
 				 */
-				regs[1] &= (CPUID_STDEXT_FSGSBASE |
+				regs[1] &= CPUID_STDEXT_FSGSBASE |
 				    CPUID_STDEXT_BMI1 | CPUID_STDEXT_HLE |
-				    CPUID_STDEXT_AVX2 | CPUID_STDEXT_BMI2 |
+				    CPUID_STDEXT_AVX2 | CPUID_STDEXT_SMEP |
+				    CPUID_STDEXT_BMI2 |
 				    CPUID_STDEXT_ERMS | CPUID_STDEXT_RTM |
 				    CPUID_STDEXT_AVX512F |
+				    CPUID_STDEXT_AVX512DQ |
 				    CPUID_STDEXT_RDSEED |
+				    CPUID_STDEXT_SMAP |
 				    CPUID_STDEXT_AVX512PF |
 				    CPUID_STDEXT_AVX512ER |
-				    CPUID_STDEXT_AVX512CD | CPUID_STDEXT_SHA);
-				regs[2] = 0;
+				    CPUID_STDEXT_AVX512CD | CPUID_STDEXT_SHA |
+				    CPUID_STDEXT_AVX512BW |
+				    CPUID_STDEXT_AVX512VL;
+				regs[2] &= CPUID_STDEXT2_VAES |
+				    CPUID_STDEXT2_VPCLMULQDQ;
 				regs[3] &= CPUID_STDEXT3_MD_CLEAR;
 
 				/* Advertise RDPID if it is enabled. */
-				error = vm_get_capability(vm, vcpu_id,
-				    VM_CAP_RDPID, &enable_rdpid);
+				error = vm_get_capability(vcpu, VM_CAP_RDPID,
+				    &enable_rdpid);
 				if (error == 0 && enable_rdpid)
 					regs[2] |= CPUID_STDEXT2_RDPID;
 
 				/* Advertise INVPCID if it is enabled. */
-				error = vm_get_capability(vm, vcpu_id,
+				error = vm_get_capability(vcpu,
 				    VM_CAP_ENABLE_INVPCID, &enable_invpcid);
 				if (error == 0 && enable_invpcid)
 					regs[1] |= CPUID_STDEXT_INVPCID;
@@ -574,6 +582,24 @@ x86_emulate_cpuid(struct vm *vm, int vcpu_id, uint64_t *rax, uint64_t *rbx,
 			}
 			break;
 
+		case CPUID_0000_000F:
+		case CPUID_0000_0010:
+			/*
+			 * Do not report any Resource Director Technology
+			 * capabilities.  Exposing control of cache or memory
+			 * controller resource partitioning to the guest is not
+			 * at all sensible.
+			 *
+			 * This is already hidden at a high level by masking of
+			 * leaf 0x7.  Even still, a guest may look here for
+			 * detailed capability information.
+			 */
+			regs[0] = 0;
+			regs[1] = 0;
+			regs[2] = 0;
+			regs[3] = 0;
+			break;
+
 		case CPUID_0000_0015:
 			/*
 			 * Don't report CPU TSC/Crystal ratio and clock
@@ -617,7 +643,7 @@ default_leaf:
 }
 
 bool
-vm_cpuid_capability(struct vm *vm, int vcpuid, enum vm_cpuid_capability cap)
+vm_cpuid_capability(struct vcpu *vcpu, enum vm_cpuid_capability cap)
 {
 	bool rv;
 
@@ -645,4 +671,86 @@ vm_cpuid_capability(struct vm *vm, int vcpuid, enum vm_cpuid_capability cap)
 		panic("%s: unknown vm_cpu_capability %d", __func__, cap);
 	}
 	return (rv);
+}
+
+int
+vm_rdmtrr(struct vm_mtrr *mtrr, u_int num, uint64_t *val)
+{
+	switch (num) {
+	case MSR_MTRRcap:
+		*val = MTRR_CAP_WC | MTRR_CAP_FIXED | VMM_MTRR_VAR_MAX;
+		break;
+	case MSR_MTRRdefType:
+		*val = mtrr->def_type;
+		break;
+	case MSR_MTRR4kBase ... MSR_MTRR4kBase + 7:
+		*val = mtrr->fixed4k[num - MSR_MTRR4kBase];
+		break;
+	case MSR_MTRR16kBase ... MSR_MTRR16kBase + 1:
+		*val = mtrr->fixed16k[num - MSR_MTRR16kBase];
+		break;
+	case MSR_MTRR64kBase:
+		*val = mtrr->fixed64k;
+		break;
+	case MSR_MTRRVarBase ... MSR_MTRRVarBase + (VMM_MTRR_VAR_MAX * 2) - 1: {
+		u_int offset = num - MSR_MTRRVarBase;
+		if (offset % 2 == 0) {
+			*val = mtrr->var[offset / 2].base;
+		} else {
+			*val = mtrr->var[offset / 2].mask;
+		}
+		break;
+	}
+	default:
+		return (-1);
+	}
+
+	return (0);
+}
+
+int
+vm_wrmtrr(struct vm_mtrr *mtrr, u_int num, uint64_t val)
+{
+	switch (num) {
+	case MSR_MTRRcap:
+		/* MTRRCAP is read only */
+		return (-1);
+	case MSR_MTRRdefType:
+		if (val & ~VMM_MTRR_DEF_MASK) {
+			/* generate #GP on writes to reserved fields */
+			return (-1);
+		}
+		mtrr->def_type = val;
+		break;
+	case MSR_MTRR4kBase ... MSR_MTRR4kBase + 7:
+		mtrr->fixed4k[num - MSR_MTRR4kBase] = val;
+		break;
+	case MSR_MTRR16kBase ... MSR_MTRR16kBase + 1:
+		mtrr->fixed16k[num - MSR_MTRR16kBase] = val;
+		break;
+	case MSR_MTRR64kBase:
+		mtrr->fixed64k = val;
+		break;
+	case MSR_MTRRVarBase ... MSR_MTRRVarBase + (VMM_MTRR_VAR_MAX * 2) - 1: {
+		u_int offset = num - MSR_MTRRVarBase;
+		if (offset % 2 == 0) {
+			if (val & ~VMM_MTRR_PHYSBASE_MASK) {
+				/* generate #GP on writes to reserved fields */
+				return (-1);
+			}
+			mtrr->var[offset / 2].base = val;
+		} else {
+			if (val & ~VMM_MTRR_PHYSMASK_MASK) {
+				/* generate #GP on writes to reserved fields */
+				return (-1);
+			}
+			mtrr->var[offset / 2].mask = val;
+		}
+		break;
+	}
+	default:
+		return (-1);
+	}
+
+	return (0);
 }

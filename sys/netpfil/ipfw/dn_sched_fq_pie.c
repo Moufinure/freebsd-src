@@ -82,6 +82,9 @@
 
 #define DN_SCHED_FQ_PIE 7
 
+VNET_DECLARE(unsigned long, io_pkt_drop);
+#define V_io_pkt_drop VNET(io_pkt_drop)
+
 /* list of queues */
 STAILQ_HEAD(fq_pie_list, fq_pie_flow) ;
 
@@ -299,7 +302,7 @@ fq_update_stats(struct fq_pie_flow *q, struct fq_pie_si *si, int len,
 		si->main_q.ni.drops ++;
 		q->stats.drops ++;
 		si->_si.ni.drops ++;
-		io_pkt_drop ++;
+		V_dn_cfg.io_pkt_drop ++;
 	} 
 
 	if (!drop || (drop && len < 0)) {
@@ -347,7 +350,7 @@ fq_pie_extract_head(struct fq_pie_flow *q, aqm_time_t *pkt_ts,
 	fq_update_stats(q, si, -m->m_pkthdr.len, 0);
 
 	if (si->main_q.ni.length == 0) /* queue is now idle */
-			si->main_q.q_time = dn_cfg.curr_time;
+			si->main_q.q_time = V_dn_cfg.curr_time;
 
 	if (getts) {
 		/* extract packet timestamp*/
@@ -645,10 +648,10 @@ pie_dequeue(struct fq_pie_flow *q, struct fq_pie_si *si)
 				if(pst->avg_dq_time == 0)
 					pst->avg_dq_time = dq_time;
 				else {
-					/* 
-					 * weight = PIE_DQ_THRESHOLD/2^6, but we scaled 
-					 * weight by 2^8. Thus, scaled 
-					 * weight = PIE_DQ_THRESHOLD /2^8 
+					/*
+					 * weight = PIE_DQ_THRESHOLD/2^6, but we scaled
+					 * weight by 2^8. Thus, scaled
+					 * weight = PIE_DQ_THRESHOLD /2^8
 					 * */
 					w = PIE_DQ_THRESHOLD >> 8;
 					pst->avg_dq_time = (dq_time* w
@@ -658,11 +661,11 @@ pie_dequeue(struct fq_pie_flow *q, struct fq_pie_si *si)
 			}
 		}
 
-		/* 
-		 * Start new measurment cycle when the queue has
-		 *  PIE_DQ_THRESHOLD worth of bytes.
+		/*
+		 * Start new measurement cycle when the queue has
+		 * PIE_DQ_THRESHOLD worth of bytes.
 		 */
-		if(!(pst->sflags & PIE_INMEASUREMENT) && 
+		if(!(pst->sflags & PIE_INMEASUREMENT) &&
 			q->stats.len_bytes >= PIE_DQ_THRESHOLD) {
 			pst->sflags |= PIE_INMEASUREMENT;
 			pst->measurement_start = now;
@@ -673,7 +676,7 @@ pie_dequeue(struct fq_pie_flow *q, struct fq_pie_si *si)
 	else
 		pst->current_qdelay = now - pkt_ts;
 
-	return m;	
+	return m;
 }
 
  /*
@@ -734,11 +737,11 @@ pie_enqueue(struct fq_pie_flow *q, struct mbuf* m, struct fq_pie_si *si)
 			mtag = m_tag_alloc(MTAG_ABI_COMPAT, DN_AQM_MTAG_TS,
 				sizeof(aqm_time_t), M_NOWAIT);
 		if (mtag == NULL) {
-			m_freem(m); 
 			t = DROP;
+		} else {
+			*(aqm_time_t *)(mtag + 1) = AQM_UNOW;
+			m_tag_prepend(m, mtag);
 		}
-		*(aqm_time_t *)(mtag + 1) = AQM_UNOW;
-		m_tag_prepend(m, mtag);
 	}
 
 	if (t != DROP) {
@@ -768,7 +771,7 @@ pie_drop_head(struct fq_pie_flow *q, struct fq_pie_si *si)
 	fq_update_stats(q, si, -m->m_pkthdr.len, 1);
 
 	if (si->main_q.ni.length == 0) /* queue is now idle */
-			si->main_q.q_time = dn_cfg.curr_time;
+			si->main_q.q_time = V_dn_cfg.curr_time;
 	/* reset accu_prob after packet drop */
 	q->pst.accu_prob = 0;
 

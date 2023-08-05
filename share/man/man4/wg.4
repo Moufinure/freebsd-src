@@ -1,3 +1,5 @@
+.\" SPDX-License-Identifier: BSD-2-Clause
+.\"
 .\" Copyright (c) 2020 Gordon Bergling <gbe@FreeBSD.org>
 .\"
 .\" Redistribution and use in source and binary forms, with or without
@@ -23,12 +25,12 @@
 .\"
 .\" $FreeBSD$
 .\"
-.Dd March 7, 2021
+.Dd November 11, 2022
 .Dt WG 4
 .Os
 .Sh NAME
 .Nm wg
-.Nd "WireGuard - pseudo-device"
+.Nd "WireGuard protocol driver"
 .Sh SYNOPSIS
 To load the driver as a module at boot time, place the following line in
 .Xr loader.conf 5 :
@@ -44,7 +46,7 @@ protocol.
 .Pp
 A
 .Nm
-interface recognises one or more peers, establishes a secure tunnel with
+interface recognizes one or more peers, establishes a secure tunnel with
 each on demand, and tracks each peer's UDP endpoint for exchanging encrypted
 traffic with.
 .Pp
@@ -52,44 +54,7 @@ The interfaces can be created at runtime using the
 .Ic ifconfig Cm wg Ns Ar N Cm create
 command.
 The interface itself can be configured with
-.Xr ifconfig 8 .
-.Pp
-The following parameters are available:
-.Bl -tag -width indent
-.It Cm listen-port
-The listing port of the
-.Nm
-interface.
-.It Cm public-key
-The public key of the
-.Nm
-interface.
-.It Cm private-key
-The private key of the
-.Nm
-interface.
-.It Cm pre-shared-key
-Defines a pre-shared key for the
-.Nm
-interface.
-.It Cm allowed-ips
-A list of allowed IP addresses.
-.It Cm endpoint
-The IP address of the WiredGuard to connect to.
-.It Cm peer-list
-A list of peering IP addresses to connect to.
-.El
-.Pp
-The
-.Nm
-interfaces support the following
-.Xr ioctl 2 Ns s :
-.Bl -tag -width Ds -offset indent
-.It Dv SIOCSWG Fa "struct  wg_device_io *"
-Set the device configuration.
-.It Dv SIOCGWG Fa "struct wg_device_io *"
-Get the device configuration.
-.El
+.Xr wg 8 .
 .Pp
 The following glossary provides a brief overview of WireGuard
 terminology:
@@ -109,17 +74,17 @@ interface with its own private key and with the public keys of its peers.
 In addition to the public keys, each peer pair may be configured with a
 unique pre-shared symmetric key.
 This is used in their handshake to guard against future compromise of the
-peers' encrypted tunnel if a quantum-computational attack on their
+peers' encrypted tunnel if an attack on their
 Diffie-Hellman exchange becomes feasible.
 It is optional, but recommended.
-.It Allowed IPs
+.It Allowed IP addresses
 A single
 .Nm
 interface may maintain concurrent tunnels connecting diverse networks.
 The interface therefore implements rudimentary routing and reverse-path
 filtering functions for its tunneled traffic.
-These functions reference a set of allowed IP ranges configured against
-each peer.
+These functions reference a set of allowed IP address ranges configured
+against each peer.
 .Pp
 The interface will route outbound tunneled traffic to the peer configured
 with the most specific matching allowed IP address range, or drop it
@@ -132,11 +97,11 @@ That is, tunneled traffic routed to a given peer cannot return through
 another peer of the same
 .Nm
 interface.
-This ensures that peers cannot spoof another's traffic.
+This ensures that peers cannot spoof one another's traffic.
 .It Handshake
 Two peers handshake to mutually authenticate each other and to
 establish a shared series of secret ephemeral encryption keys.
-Any peer may initiate a handshake.
+Either peer may initiate a handshake.
 Handshakes occur only when there is traffic to send, and recur every
 two minutes during transfers.
 .It Connectionless
@@ -150,41 +115,38 @@ The Curve25519 keys and the pre-shared keys are both 32 bytes
 long and are commonly encoded in base64 for ease of use.
 .Pp
 Keys can be generated with
-.Xr openssl 1
+.Xr wg 8
 as follows:
 .Pp
-.Dl $ openssl rand -base64 32
+.Dl $ wg genkey
 .Pp
 Although a valid Curve25519 key must have 5 bits set to
 specific values, this is done by the interface and so it
 will accept any random 32-byte base64 string.
-.Pp
-When an interface has a private key set with
-.Nm public-key ,
-the corresponding
-public key is shown in the status output of the interface:
-.Bd -literal -offset indent
-# ifconfig wg0 | grep public-key
-       public-key:  7lWtsDdqaGB3EY9WNxRN3hVaHMtu1zXw71+bOjNOVUw=
-.Ed
 .Sh EXAMPLES
 Create a
 .Nm
 interface and set random private key.
 .Bd -literal -offset indent
-# ifconfig wg0 create listen-port 54321 private-key `openssl rand -base64 32`
+# ifconfig wg0 create
+# wg genkey | wg set wg0 listen-port 54321 private-key /dev/stdin
 .Ed
 .Pp
 Retrieve the associated public key from a
 .Nm
 interface.
 .Bd -literal -offset indent
-$ ifconfig wg0 | awk '/public-key/ { print $2 }'`
+$ wg show wg0 public-key
 .Ed
 .Pp
 Connect to a specific endpoint using its public-key and set the allowed IP address
 .Bd -literal -offset indent
-# ifconfig wg0 peer public-key '7lWtsDdqaGB3EY9WNxRN3hVaHMtu1zXw71+bOjNOVUw=' endpoint 10.0.1.100:54321 allowed-ips 192.168.2.100/32
+# wg set wg0 peer '7lWtsDdqaGB3EY9WNxRN3hVaHMtu1zXw71+bOjNOVUw=' endpoint 10.0.1.100:54321 allowed-ips 192.168.2.100/32
+.Ed
+.Pp
+Remove a peer
+.Bd -literal -offset indent
+# wg set wg0 peer '7lWtsDdqaGB3EY9WNxRN3hVaHMtu1zXw71+bOjNOVUw=' remove
 .Ed
 .Sh DIAGNOSTICS
 The
@@ -221,11 +183,14 @@ is not assigned to the allowed IPs of Peer X.
 .Sh SEE ALSO
 .Xr inet 4 ,
 .Xr ip 4 ,
+.Xr ipsec 4 ,
 .Xr netintro 4 ,
+.Xr ovpn 4 ,
 .Xr ipf 5 ,
 .Xr pf.conf 5 ,
 .Xr ifconfig 8 ,
-.Xr ipfw 8
+.Xr ipfw 8 ,
+.Xr wg 8
 .Rs
 .%T WireGuard whitepaper
 .%U https://www.wireguard.com/papers/wireguard.pdf
@@ -234,18 +199,16 @@ is not assigned to the allowed IPs of Peer X.
 The
 .Nm
 device driver first appeared in
-.Fx 13.0 .
+.Fx 13.2 .
 .Sh AUTHORS
+.An -nosplit
 The
 .Nm
-device driver was originally written for
-.Ox
-by
-.An Matt Dunwoodie Aq Mt ncon@nconroy.net
-and ported to
-.Fx
-by
-.An Matt Macy Aq Mt mmacy@FreeBSD.org .
+device driver was written by
+.An Jason A. Donenfeld Aq Mt Jason@zx2c4.com ,
+.An Matt Dunwoodie Aq Mt ncon@nconroy.net ,
+and
+.An Kyle Evans Aq Mt kevans@FreeBSD.org .
 .Pp
 This manual page was written by
 .An Gordon Bergling Aq Mt gbe@FreeBSD.org

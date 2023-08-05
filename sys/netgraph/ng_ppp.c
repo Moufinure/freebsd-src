@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause AND BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 1996-2000 Whistle Communications, Inc.
  * All rights reserved.
@@ -1514,7 +1514,7 @@ done:
  *	is increased.
  *
  *    o If we receive a fragment with seq# < MSEQ, we throw it away
- *	because we've already delcared it lost.
+ *	because we've already declared it lost.
  *
  * This assumes linkNum != NG_PPP_BUNDLE_LINKNUM.
  */

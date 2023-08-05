@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2007, 2008 	Jeffrey Roberson <jeff@freebsd.org>
  * All rights reserved.
@@ -31,6 +31,8 @@
 
 #include <sys/cdefs.h>
 __FBSDID("$FreeBSD$");
+
+#define _WANT_FREEBSD_BITSET
 
 #include <sys/param.h>
 #include <sys/types.h>

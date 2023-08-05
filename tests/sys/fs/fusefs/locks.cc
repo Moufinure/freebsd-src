@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2019 The FreeBSD Foundation
  *
@@ -47,9 +47,9 @@ using namespace testing;
 class Fallback: public FuseTest {
 public:
 
-void expect_lookup(const char *relpath, uint64_t ino)
+void expect_lookup(const char *relpath, uint64_t ino, uint64_t size = 0)
 {
-	FuseTest::expect_lookup(relpath, ino, S_IFREG | 0644, 0, 1);
+	FuseTest::expect_lookup(relpath, ino, S_IFREG | 0644, size, 1);
 }
 
 };
@@ -72,6 +72,23 @@ void expect_setlk(uint64_t ino, pid_t pid, uint64_t start, uint64_t end,
 			return (in.header.opcode == FUSE_SETLK &&
 				in.header.nodeid == ino &&
 				in.body.setlk.fh == FH &&
+				in.body.setlk.owner == (uint32_t)pid &&
+				in.body.setlk.lk.start == start &&
+				in.body.setlk.lk.end == end &&
+				in.body.setlk.lk.type == type &&
+				in.body.setlk.lk.pid == (uint64_t)pid);
+		}, Eq(true)),
+		_)
+	).WillOnce(Invoke(ReturnErrno(err)));
+}
+void expect_setlkw(uint64_t ino, pid_t pid, uint64_t start, uint64_t end,
+	uint32_t type, int err)
+{
+	EXPECT_CALL(*m_mock, process(
+		ResultOf([=](auto in) {
+			return (in.header.opcode == FUSE_SETLKW &&
+				in.header.nodeid == ino &&
+				in.body.setlkw.fh == FH &&
 				in.body.setlkw.owner == (uint32_t)pid &&
 				in.body.setlkw.lk.start == start &&
 				in.body.setlkw.lk.end == end &&
@@ -211,7 +228,7 @@ TEST_F(GetlkFallback, local)
 	ASSERT_LE(0, fd) << strerror(errno);
 	fl.l_start = 10;
 	fl.l_len = 1000;
-	fl.l_pid = getpid();
+	fl.l_pid = 0;
 	fl.l_type = F_RDLCK;
 	fl.l_whence = SEEK_SET;
 	fl.l_sysid = 0;
@@ -230,7 +247,7 @@ TEST_F(Getlk, no_locks)
 	uint64_t ino = 42;
 	struct flock fl;
 	int fd;
-	pid_t pid = 1234;
+	pid_t pid = getpid();
 
 	expect_lookup(RELPATH, ino);
 	expect_open(ino, 0, 1);
@@ -239,11 +256,16 @@ TEST_F(Getlk, no_locks)
 			return (in.header.opcode == FUSE_GETLK &&
 				in.header.nodeid == ino &&
 				in.body.getlk.fh == FH &&
+				/*
+				 * Though it seems useless, libfuse expects the
+				 * owner and pid fields to be set during
+				 * FUSE_GETLK.
+				 */
 				in.body.getlk.owner == (uint32_t)pid &&
+				in.body.getlk.lk.pid == (uint64_t)pid &&
 				in.body.getlk.lk.start == 10 &&
 				in.body.getlk.lk.end == 1009 &&
-				in.body.getlk.lk.type == F_RDLCK &&
-				in.body.getlk.lk.pid == (uint64_t)pid);
+				in.body.getlk.lk.type == F_RDLCK);
 		}, Eq(true)),
 		_)
 	).WillOnce(Invoke(ReturnImmediate([=](auto in, auto& out) {
@@ -256,12 +278,24 @@ TEST_F(Getlk, no_locks)
 	ASSERT_LE(0, fd) << strerror(errno);
 	fl.l_start = 10;
 	fl.l_len = 1000;
-	fl.l_pid = pid;
+	fl.l_pid = 42;
 	fl.l_type = F_RDLCK;
 	fl.l_whence = SEEK_SET;
-	fl.l_sysid = 0;
+	fl.l_sysid = 42;
 	ASSERT_NE(-1, fcntl(fd, F_GETLK, &fl)) << strerror(errno);
+
+	/*
+	 * If no lock is found that would prevent this lock from being created,
+	 * the structure is left unchanged by this system call except for the
+	 * lock type which is set to F_UNLCK.
+	 */
 	ASSERT_EQ(F_UNLCK, fl.l_type);
+	ASSERT_EQ(fl.l_pid, 42);
+	ASSERT_EQ(fl.l_start, 10);
+	ASSERT_EQ(fl.l_len, 1000);
+	ASSERT_EQ(fl.l_whence, SEEK_SET);
+	ASSERT_EQ(fl.l_sysid, 42);
+
 	leak(fd);
 }
 
@@ -273,7 +307,7 @@ TEST_F(Getlk, lock_exists)
 	uint64_t ino = 42;
 	struct flock fl;
 	int fd;
-	pid_t pid = 1234;
+	pid_t pid = getpid();
 	pid_t pid2 = 1235;
 
 	expect_lookup(RELPATH, ino);
@@ -283,11 +317,16 @@ TEST_F(Getlk, lock_exists)
 			return (in.header.opcode == FUSE_GETLK &&
 				in.header.nodeid == ino &&
 				in.body.getlk.fh == FH &&
+				/*
+				 * Though it seems useless, libfuse expects the
+				 * owner and pid fields to be set during
+				 * FUSE_GETLK.
+				 */
 				in.body.getlk.owner == (uint32_t)pid &&
+				in.body.getlk.lk.pid == (uint64_t)pid &&
 				in.body.getlk.lk.start == 10 &&
 				in.body.getlk.lk.end == 1009 &&
-				in.body.getlk.lk.type == F_RDLCK &&
-				in.body.getlk.lk.pid == (uint64_t)pid);
+				in.body.getlk.lk.type == F_RDLCK);
 		}, Eq(true)),
 		_)
 	).WillOnce(Invoke(ReturnImmediate([=](auto in __unused, auto& out) {
@@ -302,7 +341,7 @@ TEST_F(Getlk, lock_exists)
 	ASSERT_LE(0, fd) << strerror(errno);
 	fl.l_start = 10;
 	fl.l_len = 1000;
-	fl.l_pid = pid;
+	fl.l_pid = 0;
 	fl.l_type = F_RDLCK;
 	fl.l_whence = SEEK_SET;
 	fl.l_sysid = 0;
@@ -313,6 +352,136 @@ TEST_F(Getlk, lock_exists)
 	EXPECT_EQ(F_WRLCK, fl.l_type);
 	EXPECT_EQ(SEEK_SET, fl.l_whence);
 	EXPECT_EQ(0, fl.l_sysid);
+	leak(fd);
+}
+
+/*
+ * F_GETLK with SEEK_CUR
+ */
+TEST_F(Getlk, seek_cur)
+{
+	const char FULLPATH[] = "mountpoint/some_file.txt";
+	const char RELPATH[] = "some_file.txt";
+	uint64_t ino = 42;
+	struct flock fl;
+	int fd;
+	pid_t pid = getpid();
+
+	expect_lookup(RELPATH, ino, 1024);
+	expect_open(ino, 0, 1);
+	EXPECT_CALL(*m_mock, process(
+		ResultOf([=](auto in) {
+			return (in.header.opcode == FUSE_GETLK &&
+				in.header.nodeid == ino &&
+				in.body.getlk.fh == FH &&
+				/*
+				 * Though it seems useless, libfuse expects the
+				 * owner and pid fields to be set during
+				 * FUSE_GETLK.
+				 */
+				in.body.getlk.owner == (uint32_t)pid &&
+				in.body.getlk.lk.pid == (uint64_t)pid &&
+				in.body.getlk.lk.start == 500 &&
+				in.body.getlk.lk.end == 509 &&
+				in.body.getlk.lk.type == F_RDLCK);
+		}, Eq(true)),
+		_)
+	).WillOnce(Invoke(ReturnImmediate([=](auto in __unused, auto& out) {
+		SET_OUT_HEADER_LEN(out, getlk);
+		out.body.getlk.lk.start = 400;
+		out.body.getlk.lk.end = 499;
+		out.body.getlk.lk.type = F_WRLCK;
+		out.body.getlk.lk.pid = (uint32_t)pid + 1;
+	})));
+
+	fd = open(FULLPATH, O_RDWR);
+	ASSERT_LE(0, fd) << strerror(errno);
+	ASSERT_NE(-1, lseek(fd, 500, SEEK_SET));
+
+	fl.l_start = 0;
+	fl.l_len = 10;
+	fl.l_pid = 42;
+	fl.l_type = F_RDLCK;
+	fl.l_whence = SEEK_CUR;
+	fl.l_sysid = 0;
+	ASSERT_NE(-1, fcntl(fd, F_GETLK, &fl)) << strerror(errno);
+
+	/*
+	 * After a successful F_GETLK request, the value of l_whence is
+	 * SEEK_SET.
+	 */
+	EXPECT_EQ(F_WRLCK, fl.l_type);
+	EXPECT_EQ(fl.l_pid, pid + 1);
+	EXPECT_EQ(fl.l_start, 400);
+	EXPECT_EQ(fl.l_len, 100);
+	EXPECT_EQ(fl.l_whence, SEEK_SET);
+	ASSERT_EQ(fl.l_sysid, 0);
+
+	leak(fd);
+}
+
+/*
+ * F_GETLK with SEEK_END
+ */
+TEST_F(Getlk, seek_end)
+{
+	const char FULLPATH[] = "mountpoint/some_file.txt";
+	const char RELPATH[] = "some_file.txt";
+	uint64_t ino = 42;
+	struct flock fl;
+	int fd;
+	pid_t pid = getpid();
+
+	expect_lookup(RELPATH, ino, 1024);
+	expect_open(ino, 0, 1);
+	EXPECT_CALL(*m_mock, process(
+		ResultOf([=](auto in) {
+			return (in.header.opcode == FUSE_GETLK &&
+				in.header.nodeid == ino &&
+				in.body.getlk.fh == FH &&
+				/*
+				 * Though it seems useless, libfuse expects the
+				 * owner and pid fields to be set during
+				 * FUSE_GETLK.
+				 */
+				in.body.getlk.owner == (uint32_t)pid &&
+				in.body.getlk.lk.pid == (uint64_t)pid &&
+				in.body.getlk.lk.start == 512 &&
+				in.body.getlk.lk.end == 1023 &&
+				in.body.getlk.lk.type == F_RDLCK);
+		}, Eq(true)),
+		_)
+	).WillOnce(Invoke(ReturnImmediate([=](auto in __unused, auto& out) {
+		SET_OUT_HEADER_LEN(out, getlk);
+		out.body.getlk.lk.start = 400;
+		out.body.getlk.lk.end = 499;
+		out.body.getlk.lk.type = F_WRLCK;
+		out.body.getlk.lk.pid = (uint32_t)pid + 1;
+	})));
+
+	fd = open(FULLPATH, O_RDWR);
+	ASSERT_LE(0, fd) << strerror(errno);
+	ASSERT_NE(-1, lseek(fd, 500, SEEK_SET));
+
+	fl.l_start = -512;
+	fl.l_len = 512;
+	fl.l_pid = 42;
+	fl.l_type = F_RDLCK;
+	fl.l_whence = SEEK_END;
+	fl.l_sysid = 0;
+	ASSERT_NE(-1, fcntl(fd, F_GETLK, &fl)) << strerror(errno);
+
+	/*
+	 * After a successful F_GETLK request, the value of l_whence is
+	 * SEEK_SET.
+	 */
+	EXPECT_EQ(F_WRLCK, fl.l_type);
+	EXPECT_EQ(fl.l_pid, pid + 1);
+	EXPECT_EQ(fl.l_start, 400);
+	EXPECT_EQ(fl.l_len, 100);
+	EXPECT_EQ(fl.l_whence, SEEK_SET);
+	ASSERT_EQ(fl.l_sysid, 0);
+
 	leak(fd);
 }
 
@@ -343,6 +512,32 @@ TEST_F(SetlkFallback, local)
 	leak(fd);
 }
 
+/* Clear a lock with FUSE_SETLK */
+TEST_F(Setlk, clear)
+{
+	const char FULLPATH[] = "mountpoint/some_file.txt";
+	const char RELPATH[] = "some_file.txt";
+	uint64_t ino = 42;
+	struct flock fl;
+	int fd;
+	pid_t pid = getpid();
+
+	expect_lookup(RELPATH, ino);
+	expect_open(ino, 0, 1);
+	expect_setlk(ino, pid, 10, 1009, F_UNLCK, 0);
+
+	fd = open(FULLPATH, O_RDWR);
+	ASSERT_LE(0, fd) << strerror(errno);
+	fl.l_start = 10;
+	fl.l_len = 1000;
+	fl.l_pid = 0;
+	fl.l_type = F_UNLCK;
+	fl.l_whence = SEEK_SET;
+	fl.l_sysid = 0;
+	ASSERT_NE(-1, fcntl(fd, F_SETLK, &fl)) << strerror(errno);
+	leak(fd);
+}
+
 /* Set a new lock with FUSE_SETLK */
 TEST_F(Setlk, set)
 {
@@ -351,7 +546,7 @@ TEST_F(Setlk, set)
 	uint64_t ino = 42;
 	struct flock fl;
 	int fd;
-	pid_t pid = 1234;
+	pid_t pid = getpid();
 
 	expect_lookup(RELPATH, ino);
 	expect_open(ino, 0, 1);
@@ -361,7 +556,7 @@ TEST_F(Setlk, set)
 	ASSERT_LE(0, fd) << strerror(errno);
 	fl.l_start = 10;
 	fl.l_len = 1000;
-	fl.l_pid = pid;
+	fl.l_pid = 0;
 	fl.l_type = F_RDLCK;
 	fl.l_whence = SEEK_SET;
 	fl.l_sysid = 0;
@@ -377,7 +572,7 @@ TEST_F(Setlk, set_eof)
 	uint64_t ino = 42;
 	struct flock fl;
 	int fd;
-	pid_t pid = 1234;
+	pid_t pid = getpid();
 
 	expect_lookup(RELPATH, ino);
 	expect_open(ino, 0, 1);
@@ -387,11 +582,68 @@ TEST_F(Setlk, set_eof)
 	ASSERT_LE(0, fd) << strerror(errno);
 	fl.l_start = 10;
 	fl.l_len = 0;
-	fl.l_pid = pid;
+	fl.l_pid = 0;
 	fl.l_type = F_RDLCK;
 	fl.l_whence = SEEK_SET;
 	fl.l_sysid = 0;
 	ASSERT_NE(-1, fcntl(fd, F_SETLK, &fl)) << strerror(errno);
+	leak(fd);
+}
+
+/* Set a new lock with FUSE_SETLK, using SEEK_CUR for l_whence */
+TEST_F(Setlk, set_seek_cur)
+{
+	const char FULLPATH[] = "mountpoint/some_file.txt";
+	const char RELPATH[] = "some_file.txt";
+	uint64_t ino = 42;
+	struct flock fl;
+	int fd;
+	pid_t pid = getpid();
+
+	expect_lookup(RELPATH, ino, 1024);
+	expect_open(ino, 0, 1);
+	expect_setlk(ino, pid, 500, 509, F_RDLCK, 0);
+
+	fd = open(FULLPATH, O_RDWR);
+	ASSERT_LE(0, fd) << strerror(errno);
+	ASSERT_NE(-1, lseek(fd, 500, SEEK_SET));
+
+	fl.l_start = 0;
+	fl.l_len = 10;
+	fl.l_pid = 0;
+	fl.l_type = F_RDLCK;
+	fl.l_whence = SEEK_CUR;
+	fl.l_sysid = 0;
+	ASSERT_NE(-1, fcntl(fd, F_SETLK, &fl)) << strerror(errno);
+
+	leak(fd);
+}
+
+/* Set a new lock with FUSE_SETLK, using SEEK_END for l_whence */
+TEST_F(Setlk, set_seek_end)
+{
+	const char FULLPATH[] = "mountpoint/some_file.txt";
+	const char RELPATH[] = "some_file.txt";
+	uint64_t ino = 42;
+	struct flock fl;
+	int fd;
+	pid_t pid = getpid();
+
+	expect_lookup(RELPATH, ino, 1024);
+	expect_open(ino, 0, 1);
+	expect_setlk(ino, pid, 1000, 1009, F_RDLCK, 0);
+
+	fd = open(FULLPATH, O_RDWR);
+	ASSERT_LE(0, fd) << strerror(errno);
+
+	fl.l_start = -24;
+	fl.l_len = 10;
+	fl.l_pid = 0;
+	fl.l_type = F_RDLCK;
+	fl.l_whence = SEEK_END;
+	fl.l_sysid = 0;
+	ASSERT_NE(-1, fcntl(fd, F_SETLK, &fl)) << strerror(errno);
+
 	leak(fd);
 }
 
@@ -403,7 +655,7 @@ TEST_F(Setlk, eagain)
 	uint64_t ino = 42;
 	struct flock fl;
 	int fd;
-	pid_t pid = 1234;
+	pid_t pid = getpid();
 
 	expect_lookup(RELPATH, ino);
 	expect_open(ino, 0, 1);
@@ -413,7 +665,7 @@ TEST_F(Setlk, eagain)
 	ASSERT_LE(0, fd) << strerror(errno);
 	fl.l_start = 10;
 	fl.l_len = 1000;
-	fl.l_pid = pid;
+	fl.l_pid = 0;
 	fl.l_type = F_RDLCK;
 	fl.l_whence = SEEK_SET;
 	fl.l_sysid = 0;
@@ -441,7 +693,7 @@ TEST_F(SetlkwFallback, local)
 	ASSERT_LE(0, fd) << strerror(errno);
 	fl.l_start = 10;
 	fl.l_len = 1000;
-	fl.l_pid = getpid();
+	fl.l_pid = 0;
 	fl.l_type = F_RDLCK;
 	fl.l_whence = SEEK_SET;
 	fl.l_sysid = 0;
@@ -461,17 +713,17 @@ TEST_F(Setlkw, set)
 	uint64_t ino = 42;
 	struct flock fl;
 	int fd;
-	pid_t pid = 1234;
+	pid_t pid = getpid();
 
 	expect_lookup(RELPATH, ino);
 	expect_open(ino, 0, 1);
-	expect_setlk(ino, pid, 10, 1009, F_RDLCK, 0);
+	expect_setlkw(ino, pid, 10, 1009, F_RDLCK, 0);
 
 	fd = open(FULLPATH, O_RDWR);
 	ASSERT_LE(0, fd) << strerror(errno);
 	fl.l_start = 10;
 	fl.l_len = 1000;
-	fl.l_pid = pid;
+	fl.l_pid = 0;
 	fl.l_type = F_RDLCK;
 	fl.l_whence = SEEK_SET;
 	fl.l_sysid = 0;

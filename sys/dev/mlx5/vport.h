@@ -56,6 +56,7 @@ enum mlx5_local_lb_selection {
 int mlx5_nic_vport_query_local_lb(struct mlx5_core_dev *mdev,
 				  enum mlx5_local_lb_selection selection,
 				  u8 *value);
+int mlx5_nic_vport_update_local_lb(struct mlx5_core_dev *mdev, bool enable);
 int mlx5_nic_vport_modify_local_lb(struct mlx5_core_dev *mdev,
 				   enum mlx5_local_lb_selection selection,
 				   u8 value);
@@ -83,7 +84,7 @@ int mlx5_modify_nic_vport_promisc(struct mlx5_core_dev *mdev,
 int mlx5_query_nic_vport_mac_address(struct mlx5_core_dev *mdev,
 				     u16 vport, u8 *addr);
 int mlx5_modify_nic_vport_mac_address(struct mlx5_core_dev *dev,
-				      u16 vport, u8 mac[ETH_ALEN]);
+				      u16 vport, u8 *addr);
 int mlx5_set_nic_vport_current_mac(struct mlx5_core_dev *mdev, int vport,
 				   bool other_vport, u8 *addr);
 int mlx5_query_nic_vport_min_inline(struct mlx5_core_dev *mdev,

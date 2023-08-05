@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2005 Bruce D. Evans and Steven G. Kargl
  * All rights reserved.
@@ -43,7 +43,7 @@ static const float huge = 0x1p127;
 float complex
 ccoshf(float complex z)
 {
-	volatile float x, y, h;
+	float x, y, h;
 	int32_t hx, hy, ix, iy;
 
 	x = crealf(z);

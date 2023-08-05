@@ -4,8 +4,9 @@
 .PATH: ${SRCTOP}/sys/contrib/openzfs/lib/libnvpair
 
 LIB=	nvpair
+LIBADD=	spl
 
-PACKAGE=	runtime
+PACKAGE=	zfs
 # user
 SRCS=	libnvpair.c \
 	libnvpair_json.c \

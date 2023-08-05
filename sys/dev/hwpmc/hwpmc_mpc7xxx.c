@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2011 Justin Hibbits
  * Copyright (c) 2005, Joseph Koshy
@@ -471,6 +471,7 @@ pmc_mpc7xxx_initialize(struct pmc_mdep *pmc_mdep)
 	ppc_event_first = PMC_EV_PPC7450_FIRST;
 	ppc_event_last = PMC_EV_PPC7450_LAST;
 	ppc_max_pmcs = MPC7XXX_MAX_PMCS;
+	ppc_class = pcd->pcd_class;
 
 	powerpc_set_pmc = mpc7xxx_set_pmc;
 	powerpc_pmcn_read = mpc7xxx_pmcn_read;

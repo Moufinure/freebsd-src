@@ -9,6 +9,7 @@ mlx5_en_main.c \
 mlx5_en_tx.c \
 mlx5_en_flow_table.c \
 mlx5_en_hw_tls.c \
+mlx5_en_iq.c \
 mlx5_en_rx.c \
 mlx5_en_rl.c \
 mlx5_en_txrx.c \
@@ -29,7 +30,7 @@ CFLAGS+= -DCONFIG_MLX5_FPGA
 .endif
 
 CFLAGS+= -I${SRCTOP}/sys/ofed/include
-CFLAGS+= -I${SRCTOP}/sys/compat/linuxkpi/common/include
+CFLAGS+= ${LINUXKPI_INCLUDES}
 
 .include <bsd.kmod.mk>
 

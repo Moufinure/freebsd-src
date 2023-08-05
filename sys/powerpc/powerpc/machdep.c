@@ -83,6 +83,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/mutex.h>
 #include <sys/ptrace.h>
 #include <sys/reboot.h>
+#include <sys/reg.h>
 #include <sys/rwlock.h>
 #include <sys/signalvar.h>
 #include <sys/syscallsubr.h>
@@ -119,7 +120,6 @@ __FBSDID("$FreeBSD$");
 #include <machine/metadata.h>
 #include <machine/mmuvar.h>
 #include <machine/pcb.h>
-#include <machine/reg.h>
 #include <machine/sigframe.h>
 #include <machine/spr.h>
 #include <machine/trap.h>
@@ -414,6 +414,15 @@ powerpc_init(vm_offset_t fdt, vm_offset_t toc, vm_offset_t ofentry, void *mdp,
 
 	if (ofw_bootargs)
 		ofw_parse_bootargs();
+
+#ifdef AIM
+	/*
+	 * Early I/O map needs to be initialized before console, in order to
+	 * map frame buffers properly, and after boot args have been parsed,
+	 * to handle tunables properly.
+	 */
+	pmap_early_io_map_init();
+#endif
 
 	/*
 	 * Initialize the console before printing anything.

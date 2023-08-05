@@ -1,7 +1,7 @@
 /*-
  * Data structures and definitions for CAM peripheral ("type") drivers.
  *
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 1997, 1998 Justin T. Gibbs.
  * All rights reserved.
@@ -147,6 +147,7 @@ struct cam_periph {
 	ac_callback_t		*deferred_callback; 
 	ac_code			 deferred_ac;
 	struct task		 periph_run_task;
+	struct root_hold_token	 periph_rootmount;
 };
 
 #define CAM_PERIPH_MAXMAPS	2
@@ -172,6 +173,8 @@ void		cam_periph_release_locked(struct cam_periph *periph);
 void		cam_periph_release_locked_buses(struct cam_periph *periph);
 int		cam_periph_hold(struct cam_periph *periph, int priority);
 void		cam_periph_unhold(struct cam_periph *periph);
+void		cam_periph_hold_boot(struct cam_periph *periph);
+void		cam_periph_release_boot(struct cam_periph *periph);
 void		cam_periph_invalidate(struct cam_periph *periph);
 int		cam_periph_mapmem(union ccb *ccb,
 				  struct cam_periph_map_info *mapinfo,

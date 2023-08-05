@@ -123,9 +123,6 @@ static void
 cpufreq_dt_opp_to_setting(device_t dev, const struct cpufreq_dt_opp *opp,
     struct cf_setting *set)
 {
-	struct cpufreq_dt_softc *sc;
-
-	sc = device_get_softc(dev);
 
 	memset(set, 0, sizeof(*set));
 	set->freq = opp->freq / 1000000;
@@ -309,7 +306,8 @@ cpufreq_dt_identify(driver_t *driver, device_t parent)
 	if (device_find_child(parent, "cpufreq_dt", -1) != NULL)
 		return;
 
-	if (BUS_ADD_CHILD(parent, 0, "cpufreq_dt", -1) == NULL)
+	if (BUS_ADD_CHILD(parent, 0, "cpufreq_dt", device_get_unit(parent))
+	    == NULL)
 		device_printf(parent, "add cpufreq_dt child failed\n");
 }
 

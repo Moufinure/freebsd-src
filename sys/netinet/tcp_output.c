@@ -101,6 +101,8 @@ __FBSDID("$FreeBSD$");
 
 #include <netipsec/ipsec_support.h>
 
+#include <netinet/udp.h>
+#include <netinet/udp_var.h>
 #include <machine/in_cksum.h>
 
 #include <security/mac/mac_framework.h>
@@ -207,7 +209,7 @@ tcp_output(struct tcpcb *tp)
 #endif
 	struct tcphdr *th;
 	u_char opt[TCP_MAXOLEN];
-	unsigned ipoptlen, optlen, hdrlen;
+	unsigned ipoptlen, optlen, hdrlen, ulen;
 #if defined(IPSEC) || defined(IPSEC_SUPPORT)
 	unsigned ipsec_optlen = 0;
 #endif
@@ -216,6 +218,8 @@ tcp_output(struct tcpcb *tp)
 	struct sackhole *p;
 	int tso, mtu;
 	struct tcpopt to;
+	struct udphdr *udp = NULL;
+	struct tcp_log_buffer *lgb;
 	unsigned int wanted_cookie = 0;
 	unsigned int dont_sendalot = 0;
 #if 0
@@ -322,16 +326,19 @@ again:
 				 */
 				p = NULL;
 				goto after_sack_rexmit;
-			} else
+			} else {
 				/* Can rexmit part of the current hole */
 				len = ((int32_t)ulmin(cwin,
-						   tp->snd_recover - p->rxmit));
-		} else
-			len = ((int32_t)ulmin(cwin, p->end - p->rxmit));
-		off = p->rxmit - tp->snd_una;
-		KASSERT(off >= 0,("%s: sack block to the left of una : %d",
-		    __func__, off));
+				    SEQ_SUB(tp->snd_recover, p->rxmit)));
+			}
+		} else {
+			len = ((int32_t)ulmin(cwin,
+			    SEQ_SUB(p->end, p->rxmit)));
+		}
 		if (len > 0) {
+			off = SEQ_SUB(p->rxmit, tp->snd_una);
+			KASSERT(off >= 0,("%s: sack block to the left of una : %d",
+			    __func__, off));
 			sack_rxmit = 1;
 			sendalot = 1;
 			TCPSTAT_INC(tcps_sack_rexmits);
@@ -405,7 +412,7 @@ after_sack_rexmit:
 		else {
 			int32_t cwin;
 
-                        /*
+			/*
 			 * We are inside of a SACK recovery episode and are
 			 * sending new data, having retransmitted all the
 			 * data possible in the scoreboard.
@@ -421,8 +428,8 @@ after_sack_rexmit:
 			 * of len is bungled by the optimizer.
 			 */
 			if (len > 0) {
-				cwin = tp->snd_cwnd -
-					(tp->snd_nxt - tp->snd_recover) -
+				cwin = tp->snd_cwnd - imax(0, (int32_t)
+					(tp->snd_nxt - tp->snd_recover)) -
 					sack_bytes_rxmt;
 				if (cwin < 0)
 					cwin = 0;
@@ -558,6 +565,7 @@ after_sack_rexmit:
 #endif
 
 	if ((tp->t_flags & TF_TSO) && V_tcp_do_tso && len > tp->t_maxseg &&
+	    (tp->t_port == 0) &&
 	    ((tp->t_flags & TF_SIGNATURE) == 0) &&
 	    tp->rcv_numsacks == 0 && sack_rxmit == 0 &&
 	    ipoptlen == 0 && !(flags & TH_SYN))
@@ -800,6 +808,8 @@ send:
 		/* Maximum segment size. */
 		if (flags & TH_SYN) {
 			to.to_mss = tcp_mssopt(&tp->t_inpcb->inp_inc);
+			if (tp->t_port)
+				to.to_mss -= V_tcp_udp_tunneling_overhead;
 			to.to_flags |= TOF_MSS;
 
 			/*
@@ -887,7 +897,14 @@ send:
 		    !(to.to_flags & TOF_FASTOPEN))
 			len = 0;
 	}
-
+	if (tp->t_port) {
+		if (V_tcp_udp_tunneling_port == 0) {
+			/* The port was removed?? */
+			SOCKBUF_UNLOCK(&so->so_snd);
+			return (EHOSTUNREACH);
+		}
+		hdrlen += sizeof(struct udphdr);
+	}
 	/*
 	 * Adjust data length if insertion of options will
 	 * bump the packet length beyond the t_maxseg length.
@@ -1140,8 +1157,17 @@ send:
 #ifdef INET6
 	if (isipv6) {
 		ip6 = mtod(m, struct ip6_hdr *);
-		th = (struct tcphdr *)(ip6 + 1);
-		tcpip_fillheaders(tp->t_inpcb, ip6, th);
+		if (tp->t_port) {
+			udp = (struct udphdr *)((caddr_t)ip6 + sizeof(struct ip6_hdr));
+			udp->uh_sport = htons(V_tcp_udp_tunneling_port);
+			udp->uh_dport = tp->t_port;
+			ulen = hdrlen + len - sizeof(struct ip6_hdr);
+			udp->uh_ulen = htons(ulen);
+			th = (struct tcphdr *)(udp + 1);
+		} else {
+			th = (struct tcphdr *)(ip6 + 1);
+		}
+		tcpip_fillheaders(tp->t_inpcb, tp->t_port, ip6, th);
 	} else
 #endif /* INET6 */
 	{
@@ -1149,8 +1175,16 @@ send:
 #ifdef TCPDEBUG
 		ipov = (struct ipovly *)ip;
 #endif
-		th = (struct tcphdr *)(ip + 1);
-		tcpip_fillheaders(tp->t_inpcb, ip, th);
+		if (tp->t_port) {
+			udp = (struct udphdr *)((caddr_t)ip + sizeof(struct ip));
+			udp->uh_sport = htons(V_tcp_udp_tunneling_port);
+			udp->uh_dport = tp->t_port;
+			ulen = hdrlen + len - sizeof(struct ip);
+			udp->uh_ulen = htons(ulen);
+			th = (struct tcphdr *)(udp + 1);
+		} else
+			th = (struct tcphdr *)(ip + 1);
+		tcpip_fillheaders(tp->t_inpcb, tp->t_port, ip, th);
 	}
 
 	/*
@@ -1181,7 +1215,7 @@ send:
 			tp->t_flags2 &= ~TF2_ECN_SND_ECE;
 	}
 
-	if (tp->t_state == TCPS_ESTABLISHED &&
+	if (TCPS_HAVEESTABLISHED(tp->t_state) &&
 	    (tp->t_flags2 & TF2_ECN_PERMIT)) {
 		/*
 		 * If the peer has ECN, mark data packets with
@@ -1309,7 +1343,6 @@ send:
 	 * checksum extended header and data.
 	 */
 	m->m_pkthdr.len = hdrlen + len; /* in6_cksum() need this */
-	m->m_pkthdr.csum_data = offsetof(struct tcphdr, th_sum);
 
 #if defined(IPSEC_SUPPORT) || defined(TCP_SIGNATURE)
 	if (to.to_flags & TOF_SIGNATURE) {
@@ -1336,9 +1369,19 @@ send:
 		 * There is no need to fill in ip6_plen right now.
 		 * It will be filled later by ip6_output.
 		 */
-		m->m_pkthdr.csum_flags = CSUM_TCP_IPV6;
-		th->th_sum = in6_cksum_pseudo(ip6, sizeof(struct tcphdr) +
-		    optlen + len, IPPROTO_TCP, 0);
+		if (tp->t_port) {
+			m->m_pkthdr.csum_flags = CSUM_UDP_IPV6;
+			m->m_pkthdr.csum_data = offsetof(struct udphdr, uh_sum);
+			udp->uh_sum = in6_cksum_pseudo(ip6, ulen, IPPROTO_UDP, 0);
+			th->th_sum = htons(0);
+			UDPSTAT_INC(udps_opackets);
+		} else {
+			m->m_pkthdr.csum_flags = CSUM_TCP_IPV6;
+			m->m_pkthdr.csum_data = offsetof(struct tcphdr, th_sum);
+			th->th_sum = in6_cksum_pseudo(ip6,
+			    sizeof(struct tcphdr) + optlen + len, IPPROTO_TCP,
+			    0);
+		}
 	}
 #endif
 #if defined(INET6) && defined(INET)
@@ -1346,9 +1389,20 @@ send:
 #endif
 #ifdef INET
 	{
-		m->m_pkthdr.csum_flags = CSUM_TCP;
-		th->th_sum = in_pseudo(ip->ip_src.s_addr, ip->ip_dst.s_addr,
-		    htons(sizeof(struct tcphdr) + IPPROTO_TCP + len + optlen));
+		if (tp->t_port) {
+			m->m_pkthdr.csum_flags = CSUM_UDP;
+			m->m_pkthdr.csum_data = offsetof(struct udphdr, uh_sum);
+			udp->uh_sum = in_pseudo(ip->ip_src.s_addr,
+			   ip->ip_dst.s_addr, htons(ulen + IPPROTO_UDP));
+			th->th_sum = htons(0);
+			UDPSTAT_INC(udps_opackets);
+		} else {
+			m->m_pkthdr.csum_flags = CSUM_TCP;
+			m->m_pkthdr.csum_data = offsetof(struct tcphdr, th_sum);
+			th->th_sum = in_pseudo(ip->ip_src.s_addr,
+			    ip->ip_dst.s_addr, htons(sizeof(struct tcphdr) +
+			    IPPROTO_TCP + len + optlen));
+		}
 
 		/* IP version must be set here for ipv4/ipv6 checking later */
 		KASSERT(ip->ip_v == IPVERSION,
@@ -1376,31 +1430,16 @@ send:
 	hhook_run_tcp_est_out(tp, th, &to, len, tso);
 #endif
 
-#ifdef TCPDEBUG
-	/*
-	 * Trace.
-	 */
-	if (so->so_options & SO_DEBUG) {
-		u_short save = 0;
-#ifdef INET6
-		if (!isipv6)
-#endif
-		{
-			save = ipov->ih_len;
-			ipov->ih_len = htons(m->m_pkthdr.len /* - hdrlen + (th->th_off << 2) */);
-		}
-		tcp_trace(TA_OUTPUT, tp->t_state, tp, mtod(m, void *), th, 0);
-#ifdef INET6
-		if (!isipv6)
-#endif
-		ipov->ih_len = save;
-	}
-#endif /* TCPDEBUG */
 	TCP_PROBE3(debug__output, tp, th, m);
 
 	/* We're getting ready to send; log now. */
-	TCP_LOG_EVENT(tp, th, &so->so_rcv, &so->so_snd, TCP_LOG_OUT, ERRNO_UNK,
-	    len, NULL, false);
+	/* XXXMT: We are not honoring verbose logging. */
+	if (tp->t_logstate != TCP_LOG_STATE_OFF)
+		lgb = tcp_log_event_(tp, th, &so->so_rcv, &so->so_snd,
+		    TCP_LOG_OUT, ERRNO_UNK, len, NULL, false, NULL, NULL, 0,
+		    NULL);
+	else
+		lgb = NULL;
 
 	/*
 	 * Fill in IP length and desired time to live and
@@ -1443,6 +1482,10 @@ send:
 		/* Save packet, if requested. */
 		tcp_pcap_add(th, m, &(tp->t_outpkts));
 #endif
+#ifdef TCPDEBUG
+		if (so->so_options & SO_DEBUG)
+			tcp_trace(TA_OUTPUT, tp->t_state, tp, (void *)ip6, th, 0);
+#endif /* TCPDEBUG */
 
 		/* TODO: IPv6 IP6TOS_ECT bit on */
 		error = ip6_output(m, tp->t_inpcb->in6p_outputopts,
@@ -1473,8 +1516,10 @@ send:
 	 * NB: Don't set DF on small MTU/MSS to have a safe fallback.
 	 */
 	if (V_path_mtu_discovery && tp->t_maxseg > V_tcp_minmss) {
-		ip->ip_off |= htons(IP_DF);
 		tp->t_flags2 |= TF2_PLPMTU_PMTUD;
+		if (tp->t_port == 0 || len < V_tcp_minmss) {
+			ip->ip_off |= htons(IP_DF);
+		}
 	} else {
 		tp->t_flags2 &= ~TF2_PLPMTU_PMTUD;
 	}
@@ -1488,6 +1533,10 @@ send:
 	/* Save packet, if requested. */
 	tcp_pcap_add(th, m, &(tp->t_outpkts));
 #endif
+#ifdef TCPDEBUG
+	if (so->so_options & SO_DEBUG)
+		tcp_trace(TA_OUTPUT, tp->t_state, tp, (void *)ip, th, 0);
+#endif /* TCPDEBUG */
 
 	error = ip_output(m, tp->t_inpcb->inp_options, &tp->t_inpcb->inp_route,
 	    ((so->so_options & SO_DONTROUTE) ? IP_ROUTETOIF : 0), 0,
@@ -1498,7 +1547,13 @@ send:
     }
 #endif /* INET */
 
+	if (lgb != NULL) {
+		lgb->tlb_errno = error;
+		lgb = NULL;
+	}
 out:
+	if (error == 0)
+		tcp_account_for_send(tp, len, (tp->snd_nxt != tp->snd_max), 0, hw_tls);
 	/*
 	 * In transmit state, time the transmission and arrange for
 	 * the retransmit.  In persist state, just set snd_max.
@@ -1609,10 +1664,6 @@ timer:
 		    tcp_clean_dsack_blocks(tp);
 	}
 	if (error) {
-		/* Record the error. */
-		TCP_LOG_EVENT(tp, NULL, &so->so_rcv, &so->so_snd, TCP_LOG_OUT,
-		    error, 0, NULL, false);
-
 		/*
 		 * We know that the packet was lost, so back out the
 		 * sequence number advance, if any.

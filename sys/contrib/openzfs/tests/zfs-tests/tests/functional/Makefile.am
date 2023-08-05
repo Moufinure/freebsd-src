@@ -16,6 +16,7 @@ SUBDIRS = \
 	cli_user \
 	compression \
 	cp_files \
+	crtime \
 	ctime \
 	deadman \
 	delegate \
@@ -87,5 +88,6 @@ SUBDIRS = \
 
 if BUILD_LINUX
 SUBDIRS += \
+	simd \
 	tmpfile
 endif

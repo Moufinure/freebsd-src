@@ -1,7 +1,7 @@
 /*	$NetBSD: uftdi.c,v 1.13 2002/09/23 05:51:23 simonb Exp $	*/
 
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-NetBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2000 The NetBSD Foundation, Inc.
  * All rights reserved.
@@ -910,6 +910,7 @@ static const STRUCT_USB_HOST_ID uftdi_devs[] = {
 	UFTDI_DEV(TESTO, USB_INTERFACE, 0),
 	UFTDI_DEV(TML, USB_SERIAL, 0),
 	UFTDI_DEV(TTI, QL355P, 0),
+	UFTDI_DEV(UBLOX, XPLR_M9, 0),
 	UFTDI_DEV(UNKNOWN4, NF_RIC, 0),
 #undef UFTDI_DEV
 };
@@ -1212,14 +1213,9 @@ uftdi_write_callback(struct usb_xfer *xfer, usb_error_t error)
 	DPRINTFN(3, "\n");
 
 	switch (USB_GET_STATE(xfer)) {
-	default:			/* Error */
-		if (error != USB_ERR_CANCELLED) {
-			/* try to clear stall first */
-			usbd_xfer_set_stall(xfer);
-		}
-		/* FALLTHROUGH */
 	case USB_ST_SETUP:
 	case USB_ST_TRANSFERRED:
+tr_setup:
 		/*
 		 * If output packets don't require headers (the common case) we
 		 * can just load the buffer up with payload bytes all at once.
@@ -1252,6 +1248,13 @@ uftdi_write_callback(struct usb_xfer *xfer, usb_error_t error)
 		if (buflen != 0) {
 			usbd_xfer_set_frame_len(xfer, 0, buflen);
 			usbd_transfer_submit(xfer);
+		}
+		break;
+	default:			/* Error */
+		if (error != USB_ERR_CANCELLED) {
+			/* try to clear stall first */
+			usbd_xfer_set_stall(xfer);
+			goto tr_setup;
 		}
 		break;
 	}

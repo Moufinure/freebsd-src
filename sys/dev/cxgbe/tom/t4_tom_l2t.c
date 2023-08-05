@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2012 Chelsio Communications, Inc.
  * All rights reserved.
@@ -271,8 +271,7 @@ again:
 	switch (e->state) {
 	case L2T_STATE_STALE:     /* entry is stale, kick off revalidation */
 
-		if (resolve_entry(sc, e) != EWOULDBLOCK)
-			goto again;	/* entry updated, re-examine state */
+		resolve_entry(sc, e);
 
 		/* Fall through */
 

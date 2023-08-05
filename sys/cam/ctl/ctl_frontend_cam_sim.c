@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2009 Silicon Graphics International Corp.
  * All rights reserved.
@@ -415,7 +415,7 @@ cfcs_datamove(union ctl_io *io)
 		xpt_done(ccb);
 	}
 
-	io->scsiio.be_move_done(io);
+	ctl_datamove_done(io, true);
 }
 
 static void

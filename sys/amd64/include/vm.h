@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2009 Hudson River Trading LLC
  * Written by: John H. Baldwin <jhb@FreeBSD.org>
@@ -43,5 +43,6 @@
 #define	VM_MEMATTR_WEAK_UNCACHEABLE	((vm_memattr_t)PAT_UNCACHED)
 
 #define	VM_MEMATTR_DEFAULT		VM_MEMATTR_WRITE_BACK
+#define	VM_MEMATTR_DEVICE		VM_MEMATTR_UNCACHEABLE
 
 #endif /* !_MACHINE_VM_H_ */

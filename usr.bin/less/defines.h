@@ -1,4 +1,3 @@
-/* $FreeBSD$ */
 /* defines.h.  Generated from defines.h.in by configure.  */
 /* defines.h.in.  Generated from configure.ac by autoheader.  */
 
@@ -82,7 +81,7 @@
  * PIPEC is 1 if you wish to have the "|" command
  * which allows the user to pipe data into a shell command.
  */
-#define	PIPEC		(!SECURE)
+#define	PIPEC		(!SECURE && HAVE_POPEN)
 
 /*
  * LOGFILE is 1 if you wish to allow the -o option (to create log files).
@@ -114,6 +113,7 @@
 #define	LESSKEYFILE		".less"
 #define	LESSKEYFILE_SYS		"/etc/lesskey"
 #define	DEF_LESSKEYINFILE	".lesskey"
+#define	LESSKEYINFILE_SYS	"/etc/syslesskey"
 #define LESSHISTFILE		".lesshst"
 
 
@@ -186,6 +186,9 @@
 /* Define to 1 if you have the strstr() function. */
 #define HAVE_STRSTR 1
 
+/* Define to 1 to support reading lesskey source files (not just binary). */
+#define HAVE_LESSKEYSRC 1
+
 /*
  * Sizes of various buffers.
  */
@@ -210,6 +213,9 @@
 #define	TAGLINE_SIZE	1024	/* Max size of line in tags file */
 #define	TABSTOP_MAX	128	/* Max number of custom tab stops */
 #endif
+
+/* Define as the return type of signal handlers (int or void).  */
+#define RETSIGTYPE void
 
 /* Settings automatically determined by configure.  */
 
@@ -238,9 +244,6 @@
 /* Define HAVE_FILENO if you have the fileno() macro. */
 #define HAVE_FILENO 1
 
-/* Define HAVE_FLOAT if your compiler supports the "double" type. */
-#define HAVE_FLOAT 1
-
 /* Define to 1 if you have the `fsync' function. */
 #define HAVE_FSYNC 1
 
@@ -253,11 +256,17 @@
 /* Define to 1 if you have the <limits.h> header file. */
 #define HAVE_LIMITS_H 1
 
+/* Define to 1 if you have the <linux/magic.h> header file. */
+/* #undef HAVE_LINUX_MAGIC_H */
+
 /* Define HAVE_LOCALE if you have locale.h and setlocale. */
 #define HAVE_LOCALE 1
 
 /* Define to 1 if you have the <memory.h> header file. */
 #define HAVE_MEMORY_H 1
+
+/* Define to 1 if you have the `nanosleep' function. */
+#define HAVE_NANOSLEEP 1
 
 /* Define HAVE_OSPEED if your termcap library has the ospeed variable. */
 #define HAVE_OSPEED 1
@@ -268,11 +277,18 @@
 /* PCRE2 (Perl-compatible regular expression) library */
 /* #undef HAVE_PCRE2 */
 
+/* Define to 1 if you have the `poll' function. */
+#define HAVE_POLL 1
+
 /* Define to 1 if you have the `popen' function. */
 #define HAVE_POPEN 1
 
 /* POSIX regcomp() and regex.h */
 #define HAVE_POSIX_REGCOMP 1
+
+/* Define HAVE_PROCFS if have have fstatfs with f_type and PROC_SUPER_MAGIC.
+   */
+/* #undef HAVE_PROCFS */
 
 /* Define to 1 if you have the `realpath' function. */
 #define HAVE_REALPATH 1
@@ -307,6 +323,9 @@
 /* Define HAVE_STAT_INO if your struct stat has st_ino and st_dev. */
 #define HAVE_STAT_INO 1
 
+/* Define to 1 if you have the <stdckdint.h> header file. */
+/* #undef HAVE_STDCKDINT_H */
+
 /* Define to 1 if you have the <stdint.h> header file. */
 #define HAVE_STDINT_H 1
 
@@ -324,6 +343,9 @@
 
 /* Define to 1 if you have the <string.h> header file. */
 #define HAVE_STRING_H 1
+
+/* Define to 1 if you have the `strsignal' function. */
+#define HAVE_STRSIGNAL 1
 
 /* Define to 1 if you have the `system' function. */
 #define HAVE_SYSTEM 1
@@ -343,6 +365,9 @@
 /* Define to 1 if you have the <sys/types.h> header file. */
 #define HAVE_SYS_TYPES_H 1
 
+/* Define to 1 if you have the <sys/wait.h> header file. */
+#define HAVE_SYS_WAIT_H 1
+
 /* Define to 1 if you have the <termcap.h> header file. */
 #define HAVE_TERMCAP_H 1
 
@@ -361,11 +386,17 @@
 /* Define HAVE_TIME_T if your system supports the "time_t" type. */
 #define HAVE_TIME_T 1
 
+/* Define to 1 if you have the `ttyname' function. */
+#define HAVE_TTYNAME 1
+
 /* Define to 1 if you have the <unistd.h> header file. */
 #define HAVE_UNISTD_H 1
 
 /* Define HAVE_UPPER_LOWER if you have isupper, islower, toupper, tolower. */
 #define HAVE_UPPER_LOWER 1
+
+/* Define to 1 if you have the `usleep' function. */
+#define HAVE_USLEEP 1
 
 /* Henry Spencer V8 regcomp() and regexp.h */
 /* #undef HAVE_V8_REGCOMP */
@@ -414,9 +445,6 @@
 /* Define to the version of this package. */
 #define PACKAGE_VERSION "1"
 
-/* Define as the return type of signal handlers (`int' or `void'). */
-#define RETSIGTYPE void
-
 /* Define SECURE_COMPILE=1 to build a secure version of less. */
 #define SECURE_COMPILE 0
 
@@ -425,9 +453,6 @@
 
 /* Define to 1 if you have the ANSI C header files. */
 #define STDC_HEADERS 1
-
-/* Define to 1 if you can safely include both <sys/time.h> and <time.h>. */
-#define TIME_WITH_SYS_TIME 1
 
 /* Enable large inode numbers on Mac OS X 10.5.  */
 #ifndef _DARWIN_USE_64_BIT_INODE

@@ -1,5 +1,6 @@
 /*-
  * Copyright (c) 2013-2019, Mellanox Technologies, Ltd.  All rights reserved.
+ * Copyright (c) 2022 NVIDIA corporation & affiliates.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -49,6 +50,8 @@
 
 #define MLX5_QCOUNTER_SETS_NETDEV 64
 #define MLX5_MAX_NUMBER_OF_VFS 128
+
+#define MLX5_INVALID_QUEUE_HANDLE 0xffffffff
 
 enum {
 	MLX5_BOARD_ID_LEN = 64,
@@ -174,7 +177,6 @@ enum {
 };
 
 struct mlx5_field_desc {
-	struct dentry	       *dent;
 	int			i;
 };
 
@@ -182,7 +184,6 @@ struct mlx5_rsc_debug {
 	struct mlx5_core_dev   *dev;
 	void		       *object;
 	enum dbg_rsc_type	type;
-	struct dentry	       *root;
 	struct mlx5_field_desc	fields[0];
 };
 
@@ -245,12 +246,6 @@ struct mlx5_fw_page {
 #define	mlx5_cmd_msg mlx5_fw_page
 
 struct mlx5_cmd_debug {
-	struct dentry	       *dbg_root;
-	struct dentry	       *dbg_in;
-	struct dentry	       *dbg_out;
-	struct dentry	       *dbg_outlen;
-	struct dentry	       *dbg_status;
-	struct dentry	       *dbg_run;
 	void		       *in_msg;
 	void		       *out_msg;
 	u8			status;
@@ -284,9 +279,6 @@ enum mlx5_cmd_mode {
 struct mlx5_cmd_stats {
 	u64		sum;
 	u64		n;
-	struct dentry  *root;
-	struct dentry  *avg;
-	struct dentry  *count;
 	/* protect command average calculations */
 	spinlock_t	lock;
 };
@@ -388,9 +380,7 @@ struct mlx5_core_psv {
 struct mlx5_core_sig_ctx {
 	struct mlx5_core_psv	psv_memory;
 	struct mlx5_core_psv	psv_wire;
-#if (__FreeBSD_version >= 1100000)
 	struct ib_sig_err       err_item;
-#endif
 	bool			sig_status_checked;
 	bool			sig_err_exists;
 	u32			sigerr_count;
@@ -551,6 +541,7 @@ struct mlx5_rl_entry {
 	u32			rate;
 	u16			burst;
 	u16			index;
+	u32			qos_handle; /* schedule queue handle */
 	u32			refcount;
 };
 
@@ -587,10 +578,7 @@ struct mlx5_priv {
 
 	/* start: qp staff */
 	struct mlx5_qp_table	qp_table;
-	struct dentry	       *qp_debugfs;
-	struct dentry	       *eq_debugfs;
-	struct dentry	       *cq_debugfs;
-	struct dentry	       *cmdif_debugfs;
+
 	/* end: qp staff */
 
 	/* start: cq staff */
@@ -607,7 +595,6 @@ struct mlx5_priv {
 	struct mutex   pgdir_mutex;
 	struct list_head        pgdir_list;
 	/* end: alloc staff */
-	struct dentry	       *dbg_root;
 
 	/* protect mkey key part */
 	spinlock_t		mkey_lock;
@@ -655,6 +642,26 @@ struct mlx5_special_contexts {
 	int resd_lkey;
 };
 
+struct mlx5_diag_cnt_id {
+	u16	id;
+	bool	enabled;
+};
+
+struct mlx5_diag_cnt {
+#define	DIAG_LOCK(dc) mutex_lock(&(dc)->lock)
+#define	DIAG_UNLOCK(dc) mutex_unlock(&(dc)->lock)
+	struct mutex lock;
+	struct sysctl_ctx_list sysctl_ctx;
+	struct mlx5_diag_cnt_id *cnt_id;
+	u16	num_of_samples;
+	u16	sample_index;
+	u8	num_cnt_id;
+	u8	log_num_of_samples;
+	u8	log_sample_period;
+	u8	flag;
+	u8	ready;
+};
+
 struct mlx5_flow_root_namespace;
 struct mlx5_core_dev {
 	struct pci_dev	       *pdev;
@@ -684,6 +691,7 @@ struct mlx5_core_dev {
 	struct mlx5_priv	priv;
 	struct mlx5_profile	*profile;
 	atomic_t		num_qps;
+	struct mlx5_diag_cnt	diag_cnt;
 	u32			vsc_addr;
 	u32			issi;
 	struct mlx5_special_contexts special_contexts;
@@ -805,10 +813,7 @@ struct mlx5_core_dct {
 	struct completion	drained;
 	struct mlx5_rsc_debug	*dbg;
 	int			pid;
-};
-
-enum {
-	MLX5_COMP_EQ_SIZE = 1024,
+	u16			uid;
 };
 
 enum {
@@ -880,8 +885,6 @@ static inline struct mlx5_core_dev *pci2mlx5_core_dev(struct pci_dev *pdev)
 {
 	return pci_get_drvdata(pdev);
 }
-
-extern struct dentry *mlx5_debugfs_root;
 
 static inline u16 fw_rev_maj(struct mlx5_core_dev *dev)
 {
@@ -984,8 +987,6 @@ void mlx5_drain_health_recovery(struct mlx5_core_dev *dev);
 void mlx5_trigger_health_work(struct mlx5_core_dev *dev);
 void mlx5_trigger_health_watchdog(struct mlx5_core_dev *dev);
 
-#define	mlx5_buf_alloc_node(dev, size, direct, buf, node) \
-	mlx5_buf_alloc(dev, size, direct, buf)
 int mlx5_buf_alloc(struct mlx5_core_dev *dev, int size, int max_direct,
 		   struct mlx5_buf *buf);
 void mlx5_buf_free(struct mlx5_core_dev *dev, struct mlx5_buf *buf);
@@ -1071,9 +1072,13 @@ void mlx5_eq_debugfs_cleanup(struct mlx5_core_dev *dev);
 int mlx5_cq_debugfs_init(struct mlx5_core_dev *dev);
 void mlx5_cq_debugfs_cleanup(struct mlx5_core_dev *dev);
 int mlx5_db_alloc(struct mlx5_core_dev *dev, struct mlx5_db *db);
-int mlx5_db_alloc_node(struct mlx5_core_dev *dev, struct mlx5_db *db,
-		       int node);
 void mlx5_db_free(struct mlx5_core_dev *dev, struct mlx5_db *db);
+
+static inline struct domainset *
+mlx5_dev_domainset(struct mlx5_core_dev *mdev)
+{
+	return (linux_get_vm_domain_set(mdev->priv.numa_node));
+}
 
 const char *mlx5_command_str(int command);
 int mlx5_cmdif_debugfs_init(struct mlx5_core_dev *dev);
@@ -1192,6 +1197,15 @@ void mlx5_cleanup_rl_table(struct mlx5_core_dev *dev);
 int mlx5_rl_add_rate(struct mlx5_core_dev *dev, u32 rate, u32 burst, u16 *index);
 void mlx5_rl_remove_rate(struct mlx5_core_dev *dev, u32 rate, u32 burst);
 bool mlx5_rl_is_in_range(const struct mlx5_core_dev *dev, u32 rate, u32 burst);
+int mlx5e_query_rate_limit_cmd(struct mlx5_core_dev *dev, u16 index, u32 *scq_handle);
+
+static inline u32 mlx5_rl_get_scq_handle(struct mlx5_core_dev *dev, uint16_t index)
+{
+	KASSERT(index > 0,
+	    ("invalid rate index for sq remap, failed retrieving SCQ handle"));
+
+        return (dev->priv.rl_table.rl_entry[index - 1].qos_handle);
+}
 
 static inline bool mlx5_rl_is_supported(struct mlx5_core_dev *dev)
 {
@@ -1201,5 +1215,26 @@ static inline bool mlx5_rl_is_supported(struct mlx5_core_dev *dev)
 
 void mlx5_disable_interrupts(struct mlx5_core_dev *);
 void mlx5_poll_interrupts(struct mlx5_core_dev *);
+
+static inline int mlx5_get_qp_default_ts(struct mlx5_core_dev *dev)
+{
+        return !MLX5_CAP_ROCE(dev, qp_ts_format) ?
+                       MLX5_QPC_TIMESTAMP_FORMAT_FREE_RUNNING :
+                       MLX5_QPC_TIMESTAMP_FORMAT_DEFAULT;
+}
+
+static inline int mlx5_get_rq_default_ts(struct mlx5_core_dev *dev)
+{
+        return !MLX5_CAP_GEN(dev, rq_ts_format) ?
+                       MLX5_RQC_TIMESTAMP_FORMAT_FREE_RUNNING :
+                       MLX5_RQC_TIMESTAMP_FORMAT_DEFAULT;
+}
+
+static inline int mlx5_get_sq_default_ts(struct mlx5_core_dev *dev)
+{
+        return !MLX5_CAP_GEN(dev, sq_ts_format) ?
+                       MLX5_SQC_TIMESTAMP_FORMAT_FREE_RUNNING :
+                       MLX5_SQC_TIMESTAMP_FORMAT_DEFAULT;
+}
 
 #endif /* MLX5_DRIVER_H */

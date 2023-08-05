@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2014-2019 Netflix Inc.
  *
@@ -29,8 +29,10 @@
 #ifndef _SYS_KTLS_H_
 #define	_SYS_KTLS_H_
 
+#ifdef _KERNEL
 #include <sys/refcount.h>
 #include <sys/_task.h>
+#endif
 
 struct tls_record_layer {
 	uint8_t  tls_type;
@@ -44,9 +46,12 @@ struct tls_record_layer {
 #define	TLS_MAX_PARAM_SIZE	1024	/* Max key/mac/iv in sockopt */
 #define	TLS_AEAD_GCM_LEN	4
 #define	TLS_1_3_GCM_IV_LEN	12
+#define	TLS_CHACHA20_IV_LEN	12
 #define	TLS_CBC_IMPLICIT_IV_LEN	16
 
 /* Type values for the record layer */
+#define	TLS_RLTYPE_ALERT	21
+#define	TLS_RLTYPE_HANDSHAKE	22
 #define	TLS_RLTYPE_APP		23
 
 /*
@@ -205,6 +210,11 @@ struct ktls_session {
 	struct task reset_tag_task;
 	struct inpcb *inp;
 	bool reset_pending;
+	bool sequential_records;
+
+	/* Only used for TLS 1.0. */
+	uint64_t next_seqno;
+	STAILQ_HEAD(, mbuf) pending_records;
 } __aligned(CACHE_LINE_SIZE);
 
 void ktls_check_rx(struct sockbuf *sb);
@@ -215,6 +225,7 @@ int ktls_enable_tx(struct socket *so, struct tls_enable *en);
 void ktls_destroy(struct ktls_session *tls);
 void ktls_frame(struct mbuf *m, struct ktls_session *tls, int *enqueue_cnt,
     uint8_t record_type);
+bool ktls_permit_empty_frames(struct ktls_session *tls);
 void ktls_seq(struct sockbuf *sb, struct mbuf *m);
 void ktls_enqueue(struct mbuf *m, struct socket *so, int page_count);
 void ktls_enqueue_to_free(struct mbuf *m);

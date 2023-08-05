@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2012-2015 Ian Lepore
  * Copyright (c) 2010 Mark Tinguely
@@ -64,6 +64,8 @@ __FBSDID("$FreeBSD$");
 #include <machine/cpu.h>
 #include <machine/md_var.h>
 
+//#define ARM_BUSDMA_MAPLOAD_STATS
+
 #define	BUSDMA_DCACHE_ALIGN	cpuinfo.dcache_line_size
 #define	BUSDMA_DCACHE_MASK	cpuinfo.dcache_line_mask
 
@@ -112,8 +114,6 @@ struct sync_list {
 	bus_size_t	datacount;	/* client data count */
 };
 
-int busdma_swi_pending;
-
 struct bounce_zone {
 	STAILQ_ENTRY(bounce_zone) links;
 	STAILQ_HEAD(bp_list, bounce_page) bounce_page_list;
@@ -139,14 +139,17 @@ static uint32_t tags_total;
 static uint32_t maps_total;
 static uint32_t maps_dmamem;
 static uint32_t maps_coherent;
+#ifdef ARM_BUSDMA_MAPLOAD_STATS
 static counter_u64_t maploads_total;
 static counter_u64_t maploads_bounced;
 static counter_u64_t maploads_coherent;
 static counter_u64_t maploads_dmamem;
 static counter_u64_t maploads_mbuf;
 static counter_u64_t maploads_physmem;
+#endif
 
 static STAILQ_HEAD(, bounce_zone) bounce_zone_list;
+static void *busdma_ih;
 
 SYSCTL_NODE(_hw, OID_AUTO, busdma, CTLFLAG_RD | CTLFLAG_MPSAFE, 0,
     "Busdma parameters");
@@ -158,6 +161,7 @@ SYSCTL_UINT(_hw_busdma, OID_AUTO, maps_dmamem, CTLFLAG_RD, &maps_dmamem, 0,
    "Number of active maps for bus_dmamem_alloc buffers");
 SYSCTL_UINT(_hw_busdma, OID_AUTO, maps_coherent, CTLFLAG_RD, &maps_coherent, 0,
    "Number of active maps with BUS_DMA_COHERENT flag set");
+#ifdef ARM_BUSDMA_MAPLOAD_STATS
 SYSCTL_COUNTER_U64(_hw_busdma, OID_AUTO, maploads_total, CTLFLAG_RD,
     &maploads_total, "Number of load operations performed");
 SYSCTL_COUNTER_U64(_hw_busdma, OID_AUTO, maploads_bounced, CTLFLAG_RD,
@@ -170,6 +174,7 @@ SYSCTL_COUNTER_U64(_hw_busdma, OID_AUTO, maploads_mbuf, CTLFLAG_RD,
     &maploads_mbuf, "Number of load operations for mbufs");
 SYSCTL_COUNTER_U64(_hw_busdma, OID_AUTO, maploads_physmem, CTLFLAG_RD,
     &maploads_physmem, "Number of load operations on physical buffers");
+#endif
 SYSCTL_INT(_hw_busdma, OID_AUTO, total_bpages, CTLFLAG_RD, &total_bpages, 0,
    "Total bounce pages");
 
@@ -222,12 +227,14 @@ busdma_init(void *dummy)
 {
 	int uma_flags;
 
+#ifdef ARM_BUSDMA_MAPLOAD_STATS
 	maploads_total    = counter_u64_alloc(M_WAITOK);
 	maploads_bounced  = counter_u64_alloc(M_WAITOK);
 	maploads_coherent = counter_u64_alloc(M_WAITOK);
 	maploads_dmamem   = counter_u64_alloc(M_WAITOK);
 	maploads_mbuf     = counter_u64_alloc(M_WAITOK);
 	maploads_physmem  = counter_u64_alloc(M_WAITOK);
+#endif
 
 	uma_flags = 0;
 
@@ -311,7 +318,7 @@ static __inline int
 alignment_bounce(bus_dma_tag_t dmat, bus_addr_t addr)
 {
 
-	return (addr & (dmat->alignment - 1));
+	return (!vm_addr_align_ok(addr, dmat->alignment));
 }
 
 /*
@@ -411,9 +418,7 @@ must_bounce(bus_dma_tag_t dmat, bus_dmamap_t map, bus_addr_t paddr,
 
 /*
  * Convenience function for manipulating driver locks from busdma (during
- * busdma_swi, for example).  Drivers that don't provide their own locks
- * should specify &Giant to dmat->lockfuncarg.  Drivers that use their own
- * non-mutex locking scheme don't have to use this at all.
+ * busdma_swi, for example).
  */
 void
 busdma_lock_mutex(void *arg, bus_dma_lock_op_t op)
@@ -1002,18 +1007,13 @@ static int
 _bus_dmamap_addseg(bus_dma_tag_t dmat, bus_dmamap_t map, bus_addr_t curaddr,
     bus_size_t sgsize, bus_dma_segment_t *segs, int *segp)
 {
-	bus_addr_t baddr, bmask;
 	int seg;
 
 	/*
 	 * Make sure we don't cross any boundaries.
 	 */
-	bmask = ~(dmat->boundary - 1);
-	if (dmat->boundary > 0) {
-		baddr = (curaddr + dmat->boundary) & bmask;
-		if (sgsize > (baddr - curaddr))
-			sgsize = (baddr - curaddr);
-	}
+	if (!vm_addr_bound_ok(curaddr, sgsize, dmat->boundary))
+		sgsize = roundup2(curaddr, dmat->boundary) - curaddr;
 
 	/*
 	 * Insert chunk into a segment, coalescing with
@@ -1027,8 +1027,8 @@ _bus_dmamap_addseg(bus_dma_tag_t dmat, bus_dmamap_t map, bus_addr_t curaddr,
 	} else {
 		if (curaddr == segs[seg].ds_addr + segs[seg].ds_len &&
 		    (segs[seg].ds_len + sgsize) <= dmat->maxsegsz &&
-		    (dmat->boundary == 0 ||
-		    (segs[seg].ds_addr & bmask) == (curaddr & bmask)))
+		    vm_addr_bound_ok(segs[seg].ds_addr,
+		    segs[seg].ds_len + sgsize, dmat->boundary))
 			segs[seg].ds_len += sgsize;
 		else {
 			if (++seg >= dmat->nsegments)
@@ -1058,13 +1058,17 @@ _bus_dmamap_load_phys(bus_dma_tag_t dmat, bus_dmamap_t map, vm_paddr_t buf,
 	if (segs == NULL)
 		segs = map->segments;
 
+#ifdef ARM_BUSDMA_MAPLOAD_STATS
 	counter_u64_add(maploads_total, 1);
 	counter_u64_add(maploads_physmem, 1);
+#endif
 
 	if (might_bounce(dmat, map, (bus_addr_t)buf, buflen)) {
 		_bus_dmamap_count_phys(dmat, map, buf, buflen, flags);
 		if (map->pagesneeded != 0) {
+#ifdef ARM_BUSDMA_MAPLOAD_STATS
 			counter_u64_add(maploads_bounced, 1);
+#endif
 			error = _bus_dmamap_reserve_pages(dmat, map, flags);
 			if (error)
 				return (error);
@@ -1143,24 +1147,30 @@ _bus_dmamap_load_buffer(bus_dma_tag_t dmat, bus_dmamap_t map, void *buf,
 	struct sync_list *sl;
 	int error;
 
+#ifdef ARM_BUSDMA_MAPLOAD_STATS
 	counter_u64_add(maploads_total, 1);
 	if (map->flags & DMAMAP_COHERENT)
 		counter_u64_add(maploads_coherent, 1);
 	if (map->flags & DMAMAP_DMAMEM_ALLOC)
 		counter_u64_add(maploads_dmamem, 1);
+#endif
 
 	if (segs == NULL)
 		segs = map->segments;
 
 	if (flags & BUS_DMA_LOAD_MBUF) {
+#ifdef ARM_BUSDMA_MAPLOAD_STATS
 		counter_u64_add(maploads_mbuf, 1);
+#endif
 		map->flags |= DMAMAP_MBUF;
 	}
 
 	if (might_bounce(dmat, map, (bus_addr_t)buf, buflen)) {
 		_bus_dmamap_count_pages(dmat, pmap, map, buf, buflen, flags);
 		if (map->pagesneeded != 0) {
+#ifdef ARM_BUSDMA_MAPLOAD_STATS
 			counter_u64_add(maploads_bounced, 1);
+#endif
 			error = _bus_dmamap_reserve_pages(dmat, map, flags);
 			if (error)
 				return (error);
@@ -1277,10 +1287,13 @@ bus_dmamap_unload(bus_dma_tag_t dmat, bus_dmamap_t map)
 			free_bounce_page(dmat, bpage);
 		}
 
-		bz = dmat->bounce_zone;
-		bz->free_bpages += map->pagesreserved;
-		bz->reserved_bpages -= map->pagesreserved;
-		map->pagesreserved = 0;
+		if (map->pagesreserved != 0) {
+			mtx_lock(&bounce_lock);
+			bz->free_bpages += map->pagesreserved;
+			bz->reserved_bpages -= map->pagesreserved;
+			mtx_unlock(&bounce_lock);
+			map->pagesreserved = 0;
+		}
 		map->pagesneeded = 0;
 	}
 	map->sync_count = 0;
@@ -1698,6 +1711,7 @@ free_bounce_page(bus_dma_tag_t dmat, struct bounce_page *bpage)
 {
 	struct bus_dmamap *map;
 	struct bounce_zone *bz;
+	bool schedule_swi;
 
 	bz = dmat->bounce_zone;
 	bpage->datavaddr = 0;
@@ -1712,6 +1726,7 @@ free_bounce_page(bus_dma_tag_t dmat, struct bounce_page *bpage)
 		bpage->busaddr &= ~PAGE_MASK;
 	}
 
+	schedule_swi = false;
 	mtx_lock(&bounce_lock);
 	STAILQ_INSERT_HEAD(&bz->bounce_page_list, bpage, links);
 	bz->free_bpages++;
@@ -1721,16 +1736,17 @@ free_bounce_page(bus_dma_tag_t dmat, struct bounce_page *bpage)
 			STAILQ_REMOVE_HEAD(&bounce_map_waitinglist, links);
 			STAILQ_INSERT_TAIL(&bounce_map_callbacklist,
 			    map, links);
-			busdma_swi_pending = 1;
 			bz->total_deferred++;
-			swi_sched(vm_ih, 0);
+			schedule_swi = true;
 		}
 	}
 	mtx_unlock(&bounce_lock);
+	if (schedule_swi)
+		swi_sched(busdma_ih, 0);
 }
 
-void
-busdma_swi(void)
+static void
+busdma_swi(void *dummy __unused)
 {
 	bus_dma_tag_t dmat;
 	struct bus_dmamap *map;
@@ -1748,3 +1764,13 @@ busdma_swi(void)
 	}
 	mtx_unlock(&bounce_lock);
 }
+
+static void
+start_busdma_swi(void *dummy __unused)
+{
+	if (swi_add(NULL, "busdma", busdma_swi, NULL, SWI_BUSDMA, INTR_MPSAFE,
+	    &busdma_ih))
+		panic("died while creating busdma swi ithread");
+}
+SYSINIT(start_busdma_swi, SI_SUB_SOFTINTR, SI_ORDER_ANY, start_busdma_swi,
+    NULL);

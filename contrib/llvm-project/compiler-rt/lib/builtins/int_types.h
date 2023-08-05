@@ -64,7 +64,7 @@ typedef union {
 } udwords;
 
 #if defined(__LP64__) || defined(__wasm__) || defined(__mips64) ||             \
-    defined(__riscv) || defined(_WIN64)
+    defined(__SIZEOF_INT128__) || defined(_WIN64)
 #define CRT_HAS_128BIT
 #endif
 
@@ -121,7 +121,15 @@ static __inline tu_int make_tu(du_int h, du_int l) {
 
 #endif // CRT_HAS_128BIT
 
-#ifndef _STANDALONE
+// FreeBSD's boot environment does not support using floating-point and poisons
+// the float and double keywords.
+#if defined(__FreeBSD__) && defined(_STANDALONE)
+#define CRT_HAS_FLOATING_POINT 0
+#else
+#define CRT_HAS_FLOATING_POINT 1
+#endif
+
+#if CRT_HAS_FLOATING_POINT
 typedef union {
   su_int u;
   float f;
@@ -157,7 +165,7 @@ typedef struct {
 #define HAS_80_BIT_LONG_DOUBLE 0
 #endif
 
-#ifndef _STANDALONE
+#if CRT_HAS_FLOATING_POINT
 typedef union {
   uqwords u;
   long double f;

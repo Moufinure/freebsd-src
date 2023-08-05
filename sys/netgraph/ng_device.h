@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2002 Mark Santcroos <marks@ripe.net>
  *
@@ -39,6 +39,7 @@
 /* Netgraph control messages */
 enum {
 	NGM_DEVICE_GET_DEVNAME,
+	NGM_DEVICE_ETHERALIGN,
 };
 
 #if 0

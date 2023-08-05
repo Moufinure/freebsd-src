@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright 1996, 1997, 1998, 1999 John D. Polstra.
  * All rights reserved.
@@ -33,6 +33,7 @@
  * John Polstra <jdp@polstra.com>.
  */
 
+#define _WANT_P_OSREL
 #include <sys/param.h>
 #include <sys/mman.h>
 #include <machine/cpufunc.h>
@@ -257,7 +258,7 @@ reloc_non_plt(Obj_Entry *obj, Obj_Entry *obj_rtld, int flags,
 			 * dynamically loaded modules. If we run out
 			 * of space, we generate an error.
 			 */
-			if (!defobj->tls_done) {
+			if (!defobj->tls_static) {
 				if (!allocate_tls_offset(
 				    __DECONST(Obj_Entry *, defobj))) {
 					_rtld_error("%s: No space available "
@@ -278,7 +279,7 @@ reloc_non_plt(Obj_Entry *obj, Obj_Entry *obj_rtld, int flags,
 			 * dynamically loaded modules. If we run out
 			 * of space, we generate an error.
 			 */
-			if (!defobj->tls_done) {
+			if (!defobj->tls_static) {
 				if (!allocate_tls_offset(
 				    __DECONST(Obj_Entry *, defobj))) {
 					_rtld_error("%s: No space available "
@@ -530,7 +531,12 @@ allocate_initial_tls(Obj_Entry *objs)
 	 */
 	tls_static_space = tls_last_offset + RTLD_STATIC_TLS_EXTRA;
 
-	addr = allocate_tls(objs, 0, 3 * sizeof(Elf_Addr), sizeof(Elf_Addr));
+	addr = allocate_tls(objs, 0, TLS_TCB_SIZE, TLS_TCB_ALIGN);
+
+	/*
+	 * This does not use _tcb_set() as it calls amd64_set_fsbase()
+	 * which is an ifunc and rtld must not use ifuncs.
+	 */
 	if (__getosreldate() >= P_OSREL_WRFSBASE &&
 	    (cpu_stdext_feature & CPUID_STDEXT_FSGSBASE) != 0)
 		wrfsbase((uintptr_t)addr);
@@ -538,41 +544,32 @@ allocate_initial_tls(Obj_Entry *objs)
 		sysarch(AMD64_SET_FSBASE, &addr);
 }
 
-void *__tls_get_addr(tls_index *ti)
+void *
+__tls_get_addr(tls_index *ti)
 {
-    Elf_Addr** segbase;
+	uintptr_t **dtvp;
 
-    __asm __volatile("movq %%fs:0, %0" : "=r" (segbase));
+	dtvp = &_tcb_get()->tcb_dtv;
+	return (tls_get_addr_common(dtvp, ti->ti_module, ti->ti_offset));
+}
 
-    return tls_get_addr_common(&segbase[1], ti->ti_module, ti->ti_offset);
+size_t
+calculate_tls_offset(size_t prev_offset, size_t prev_size __unused,
+    size_t size, size_t align, size_t offset)
+{
+	size_t res;
+
+        /*
+	 * res is the smallest integer satisfying res - prev_offset >= size
+         * and (-res) % p_align = p_vaddr % p_align (= p_offset % p_align).
+	 */
+        res = prev_offset + size + align - 1;
+        res -= (res + offset) & (align - 1);
+        return (res);
 }
 
 size_t
 calculate_first_tls_offset(size_t size, size_t align, size_t offset)
 {
-	size_t res;
-
-	res = roundup(size, align);
-	offset &= align - 1;
-	if (offset != 0)
-		res += align - offset;
-	return (res);
-}
-
-size_t
-calculate_tls_offset(size_t prev_offset, size_t prev_size __unused, size_t size,
-    size_t align, size_t offset)
-{
-	size_t res;
-
-	res = roundup(prev_offset + size, align);
-	offset &= align - 1;
-	if (offset != 0)
-		res += align - offset;
-	return (res);
-}
-size_t
-calculate_tls_end(size_t off, size_t size __unused)
-{
-	return (off);
+	return (calculate_tls_offset(0, 0, size, align, offset));
 }

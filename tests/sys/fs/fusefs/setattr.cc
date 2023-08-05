@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2019 The FreeBSD Foundation
  *
@@ -31,9 +31,14 @@
  */
 
 extern "C" {
+#include <sys/types.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 
 #include <fcntl.h>
+#include <semaphore.h>
+#include <signal.h>
 }
 
 #include "mockfs.hh"
@@ -41,11 +46,15 @@ extern "C" {
 
 using namespace testing;
 
-class Setattr : public FuseTest {};
+class Setattr : public FuseTest {
+public:
+static sig_atomic_t s_sigxfsz;
+};
 
 class RofsSetattr: public Setattr {
 public:
 virtual void SetUp() {
+	s_sigxfsz = 0;
 	m_ro = true;
 	Setattr::SetUp();
 }
@@ -59,6 +68,12 @@ virtual void SetUp() {
 }
 };
 
+
+sig_atomic_t Setattr::s_sigxfsz = 0;
+
+void sigxfsz_handler(int __unused sig) {
+	Setattr::s_sigxfsz = 1;
+}
 
 /*
  * If setattr returns a non-zero cache timeout, then subsequent VOP_GETATTRs
@@ -515,6 +530,7 @@ TEST_F(Setattr, truncate_discards_cached_data) {
 		auto osize = std::min(
 			static_cast<uint64_t>(cur_size) - in.body.read.offset,
 			static_cast<uint64_t>(in.body.read.size));
+		assert(osize <= sizeof(out.body.bytes));
 		out.header.len = sizeof(struct fuse_out_header) + osize;
 		if (should_have_data)
 			memset(out.body.bytes, 'X', osize);
@@ -550,6 +566,34 @@ TEST_F(Setattr, truncate_discards_cached_data) {
 	free(w0buf);
 
 	leak(fd);
+}
+
+/* truncate should fail if it would cause the file to exceed RLIMIT_FSIZE */
+TEST_F(Setattr, truncate_rlimit_rsize)
+{
+	const char FULLPATH[] = "mountpoint/some_file.txt";
+	const char RELPATH[] = "some_file.txt";
+	struct rlimit rl;
+	const uint64_t ino = 42;
+	const uint64_t oldsize = 0;
+	const uint64_t newsize = 100'000'000;
+
+	EXPECT_LOOKUP(FUSE_ROOT_ID, RELPATH)
+	.WillOnce(Invoke(ReturnImmediate([=](auto in __unused, auto& out) {
+		SET_OUT_HEADER_LEN(out, entry);
+		out.body.entry.attr.mode = S_IFREG | 0644;
+		out.body.entry.nodeid = ino;
+		out.body.entry.attr.size = oldsize;
+	})));
+
+	rl.rlim_cur = newsize / 2;
+	rl.rlim_max = 10 * newsize;
+	ASSERT_EQ(0, setrlimit(RLIMIT_FSIZE, &rl)) << strerror(errno);
+	ASSERT_NE(SIG_ERR, signal(SIGXFSZ, sigxfsz_handler)) << strerror(errno);
+
+	EXPECT_EQ(-1, truncate(FULLPATH, newsize));
+	EXPECT_EQ(EFBIG, errno);
+	EXPECT_EQ(1, s_sigxfsz);
 }
 
 /* Change a file's timestamps */
@@ -722,6 +766,53 @@ TEST_F(Setattr, utimensat_utime_now) {
 	EXPECT_EQ(now[0].tv_nsec, sb.st_atim.tv_nsec);
 	EXPECT_EQ(now[1].tv_sec, sb.st_mtim.tv_sec);
 	EXPECT_EQ(now[1].tv_nsec, sb.st_mtim.tv_nsec);
+}
+
+/*
+ * FUSE_SETATTR returns a different file type, even though the entry cache
+ * hasn't expired.  This is a server bug!  It probably means that the server
+ * removed the file and recreated it with the same inode but a different vtyp.
+ * The best thing fusefs can do is return ENOENT to the caller.  After all, the
+ * entry must not have existed recently.
+ */
+TEST_F(Setattr, vtyp_conflict)
+{
+	const char FULLPATH[] = "mountpoint/some_file.txt";
+	const char RELPATH[] = "some_file.txt";
+	const uint64_t ino = 42;
+	uid_t newuser = 12345;
+	sem_t sem;
+
+	ASSERT_EQ(0, sem_init(&sem, 0, 0)) << strerror(errno);
+
+	EXPECT_LOOKUP(FUSE_ROOT_ID, RELPATH)
+	.WillOnce(Invoke(ReturnImmediate([=](auto in __unused, auto& out) {
+		SET_OUT_HEADER_LEN(out, entry);
+		out.body.entry.attr.mode = S_IFREG | 0777;
+		out.body.entry.nodeid = ino;
+		out.body.entry.entry_valid = UINT64_MAX;
+	})));
+
+	EXPECT_CALL(*m_mock, process(
+		ResultOf([](auto in) {
+			return (in.header.opcode == FUSE_SETATTR &&
+				in.header.nodeid == ino);
+		}, Eq(true)),
+		_)
+	).WillOnce(Invoke(ReturnImmediate([=](auto in __unused, auto& out) {
+		SET_OUT_HEADER_LEN(out, attr);
+		out.body.attr.attr.ino = ino;
+		out.body.attr.attr.mode = S_IFDIR | 0777;	// Changed!
+		out.body.attr.attr.uid = newuser;
+	})));
+	// We should reclaim stale vnodes
+	expect_forget(ino, 1, &sem);
+
+	EXPECT_NE(0, chown(FULLPATH, newuser, -1));
+	EXPECT_EQ(ENOENT, errno);
+
+	sem_wait(&sem);
+	sem_destroy(&sem);
 }
 
 /* On a read-only mount, no attributes may be changed */

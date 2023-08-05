@@ -2,7 +2,7 @@
 __FBSDID("$FreeBSD$");
 
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2003 Scott Long
  * All rights reserved.
@@ -478,7 +478,8 @@ static uint8_t
 umct_calc_baud(uint32_t baud)
 {
 	switch (baud) {
-		case B300:return (0x1);
+	case B300:
+		return (0x1);
 	case B600:
 		return (0x2);
 	case B1200:

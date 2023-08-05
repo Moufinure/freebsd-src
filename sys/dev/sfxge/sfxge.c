@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2010-2016 Solarflare Communications Inc.
  * All rights reserved.
@@ -984,7 +984,7 @@ sfxge_vpd_init(struct sfxge_softc *sc)
 
 	if ((rc = efx_vpd_size(sc->enp, &sc->vpd_size)) != 0) {
 		/*
-		 * Unpriviledged functions deny VPD access.
+		 * Unprivileged functions deny VPD access.
 		 * Simply skip VPD in this case.
 		 */
 		if (rc == EACCES)

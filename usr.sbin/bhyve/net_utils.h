@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2019 Vincenzo Maffione <v.maffione@gmail.com>
  *
@@ -34,7 +34,7 @@
 #include "pci_emul.h"
 
 void	net_genmac(struct pci_devinst *pi, uint8_t *macaddr);
-int	net_parsemac(char *mac_str, uint8_t *mac_addr);
+int	net_parsemac(const char *mac_str, uint8_t *mac_addr);
 int	net_parsemtu(const char *mtu_str, unsigned long *mtu);
 
 #endif /* _NET_UTILS_H_ */

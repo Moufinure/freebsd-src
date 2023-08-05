@@ -26,9 +26,16 @@
  * $FreeBSD$
  */
 
-#ifndef	_LINUX_SWAP_H_
-#define	_LINUX_SWAP_H_
+#ifndef	_LINUXKPI_LINUX_SWAP_H_
+#define	_LINUXKPI_LINUX_SWAP_H_
 
+#include <sys/param.h>
+#include <sys/domainset.h>
+#include <sys/queue.h>
+#include <sys/proc.h>
+#include <sys/pcpu.h>
+
+#include <vm/vm.h>
 #include <vm/swap_pager.h>
 #include <vm/vm_pageout.h>
 

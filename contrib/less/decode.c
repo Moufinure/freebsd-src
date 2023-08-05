@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 1984-2020  Mark Nudelman
+ * Copyright (C) 1984-2023  Mark Nudelman
  *
  * You may distribute under the terms of either the GNU General Public
  * License or the Less License, as specified in the README file.
@@ -14,7 +14,7 @@
  * This is all table driven.
  * A command table is a sequence of command descriptors.
  * Each command descriptor is a sequence of bytes with the following format:
- *	<c1><c2>...<cN><0><action>
+ *     <c1><c2>...<cN><0><action>
  * The characters c1,c2,...,cN are the command string; that is,
  * the characters which the user must type.
  * It is terminated by a null <0> byte.
@@ -48,173 +48,177 @@ extern int sc_height;
 
 static unsigned char cmdtable[] =
 {
-	'\r',0,				A_F_LINE,
-	'\n',0,				A_F_LINE,
-	'e',0,				A_F_LINE,
-	'j',0,				A_F_LINE,
-	SK(SK_DOWN_ARROW),0,		A_F_LINE,
-	CONTROL('E'),0,			A_F_LINE,
-	CONTROL('N'),0,			A_F_LINE,
-	'k',0,				A_B_LINE,
-	'y',0,				A_B_LINE,
-	CONTROL('Y'),0,			A_B_LINE,
-	SK(SK_CONTROL_K),0,		A_B_LINE,
-	CONTROL('P'),0,			A_B_LINE,
-	SK(SK_UP_ARROW),0,		A_B_LINE,
-	'J',0,				A_FF_LINE,
-	'K',0,				A_BF_LINE,
-	'Y',0,				A_BF_LINE,
-	'd',0,				A_F_SCROLL,
-	CONTROL('D'),0,			A_F_SCROLL,
-	'u',0,				A_B_SCROLL,
-	CONTROL('U'),0,			A_B_SCROLL,
-	ESC,'[','M',0,			A_X11MOUSE_IN,
-	ESC,'[','<',0,			A_X116MOUSE_IN,
-	' ',0,				A_F_SCREEN,
-	'f',0,				A_F_SCREEN,
-	CONTROL('F'),0,			A_F_SCREEN,
-	CONTROL('V'),0,			A_F_SCREEN,
-	SK(SK_PAGE_DOWN),0,		A_F_SCREEN,
-	'b',0,				A_B_SCREEN,
-	CONTROL('B'),0,			A_B_SCREEN,
-	ESC,'v',0,			A_B_SCREEN,
-	SK(SK_PAGE_UP),0,		A_B_SCREEN,
-	'z',0,				A_F_WINDOW,
-	'w',0,				A_B_WINDOW,
-	ESC,' ',0,			A_FF_SCREEN,
-	'F',0,				A_F_FOREVER,
-	ESC,'F',0,			A_F_UNTIL_HILITE,
-	'R',0,				A_FREPAINT,
-	'r',0,				A_REPAINT,
-	CONTROL('R'),0,			A_REPAINT,
-	CONTROL('L'),0,			A_REPAINT,
-	ESC,'u',0,			A_UNDO_SEARCH,
-	'g',0,				A_GOLINE,
-	SK(SK_HOME),0,			A_GOLINE,
-	'<',0,				A_GOLINE,
-	ESC,'<',0,			A_GOLINE,
-	'p',0,				A_PERCENT,
-	'%',0,				A_PERCENT,
-	ESC,'[',0,			A_LSHIFT,
-	ESC,']',0,			A_RSHIFT,
-	ESC,'(',0,			A_LSHIFT,
-	ESC,')',0,			A_RSHIFT,
-	ESC,'{',0,			A_LLSHIFT,
-	ESC,'}',0,			A_RRSHIFT,
-	SK(SK_RIGHT_ARROW),0,		A_RSHIFT,
-	SK(SK_LEFT_ARROW),0,		A_LSHIFT,
-	SK(SK_CTL_RIGHT_ARROW),0,	A_RRSHIFT,
-	SK(SK_CTL_LEFT_ARROW),0,	A_LLSHIFT,
-	'{',0,				A_F_BRACKET|A_EXTRA,	'{','}',0,
-	'}',0,				A_B_BRACKET|A_EXTRA,	'{','}',0,
-	'(',0,				A_F_BRACKET|A_EXTRA,	'(',')',0,
-	')',0,				A_B_BRACKET|A_EXTRA,	'(',')',0,
-	'[',0,				A_F_BRACKET|A_EXTRA,	'[',']',0,
-	']',0,				A_B_BRACKET|A_EXTRA,	'[',']',0,
-	ESC,CONTROL('F'),0,		A_F_BRACKET,
-	ESC,CONTROL('B'),0,		A_B_BRACKET,
-	'G',0,				A_GOEND,
-	ESC,'G',0,			A_GOEND_BUF,
-	ESC,'>',0,			A_GOEND,
-	'>',0,				A_GOEND,
-	SK(SK_END),0,			A_GOEND,
-	'P',0,				A_GOPOS,
+	'\r',0,                         A_F_LINE,
+	'\n',0,                         A_F_LINE,
+	'e',0,                          A_F_LINE,
+	'j',0,                          A_F_LINE,
+	SK(SK_DOWN_ARROW),0,            A_F_LINE,
+	CONTROL('E'),0,                 A_F_LINE,
+	CONTROL('N'),0,                 A_F_LINE,
+	'k',0,                          A_B_LINE,
+	'y',0,                          A_B_LINE,
+	CONTROL('Y'),0,                 A_B_LINE,
+	SK(SK_CONTROL_K),0,             A_B_LINE,
+	CONTROL('P'),0,                 A_B_LINE,
+	SK(SK_UP_ARROW),0,              A_B_LINE,
+	'J',0,                          A_FF_LINE,
+	'K',0,                          A_BF_LINE,
+	'Y',0,                          A_BF_LINE,
+	'd',0,                          A_F_SCROLL,
+	CONTROL('D'),0,                 A_F_SCROLL,
+	'u',0,                          A_B_SCROLL,
+	CONTROL('U'),0,                 A_B_SCROLL,
+	ESC,'[','M',0,                  A_X11MOUSE_IN,
+	ESC,'[','<',0,                  A_X116MOUSE_IN,
+	' ',0,                          A_F_SCREEN,
+	'f',0,                          A_F_SCREEN,
+	CONTROL('F'),0,                 A_F_SCREEN,
+	CONTROL('V'),0,                 A_F_SCREEN,
+	SK(SK_PAGE_DOWN),0,             A_F_SCREEN,
+	'b',0,                          A_B_SCREEN,
+	CONTROL('B'),0,                 A_B_SCREEN,
+	ESC,'v',0,                      A_B_SCREEN,
+	SK(SK_PAGE_UP),0,               A_B_SCREEN,
+	'z',0,                          A_F_WINDOW,
+	'w',0,                          A_B_WINDOW,
+	ESC,' ',0,                      A_FF_SCREEN,
+	'F',0,                          A_F_FOREVER,
+	ESC,'F',0,                      A_F_UNTIL_HILITE,
+	'R',0,                          A_FREPAINT,
+	'r',0,                          A_REPAINT,
+	CONTROL('R'),0,                 A_REPAINT,
+	CONTROL('L'),0,                 A_REPAINT,
+	ESC,'u',0,                      A_UNDO_SEARCH,
+	ESC,'U',0,                      A_CLR_SEARCH,
+	'g',0,                          A_GOLINE,
+	SK(SK_HOME),0,                  A_GOLINE,
+	'<',0,                          A_GOLINE,
+	ESC,'<',0,                      A_GOLINE,
+	'p',0,                          A_PERCENT,
+	'%',0,                          A_PERCENT,
+	ESC,'[',0,                      A_LSHIFT,
+	ESC,']',0,                      A_RSHIFT,
+	ESC,'(',0,                      A_LSHIFT,
+	ESC,')',0,                      A_RSHIFT,
+	ESC,'{',0,                      A_LLSHIFT,
+	ESC,'}',0,                      A_RRSHIFT,
+	SK(SK_RIGHT_ARROW),0,           A_RSHIFT,
+	SK(SK_LEFT_ARROW),0,            A_LSHIFT,
+	SK(SK_CTL_RIGHT_ARROW),0,       A_RRSHIFT,
+	SK(SK_CTL_LEFT_ARROW),0,        A_LLSHIFT,
+	'{',0,                          A_F_BRACKET|A_EXTRA,        '{','}',0,
+	'}',0,                          A_B_BRACKET|A_EXTRA,        '{','}',0,
+	'(',0,                          A_F_BRACKET|A_EXTRA,        '(',')',0,
+	')',0,                          A_B_BRACKET|A_EXTRA,        '(',')',0,
+	'[',0,                          A_F_BRACKET|A_EXTRA,        '[',']',0,
+	']',0,                          A_B_BRACKET|A_EXTRA,        '[',']',0,
+	ESC,CONTROL('F'),0,             A_F_BRACKET,
+	ESC,CONTROL('B'),0,             A_B_BRACKET,
+	'G',0,                          A_GOEND,
+	ESC,'G',0,                      A_GOEND_BUF,
+	ESC,'>',0,                      A_GOEND,
+	'>',0,                          A_GOEND,
+	SK(SK_END),0,                   A_GOEND,
+	'P',0,                          A_GOPOS,
 
-	'0',0,				A_DIGIT,
-	'1',0,				A_DIGIT,
-	'2',0,				A_DIGIT,
-	'3',0,				A_DIGIT,
-	'4',0,				A_DIGIT,
-	'5',0,				A_DIGIT,
-	'6',0,				A_DIGIT,
-	'7',0,				A_DIGIT,
-	'8',0,				A_DIGIT,
-	'9',0,				A_DIGIT,
-	'.',0,				A_DIGIT,
+	'0',0,                          A_DIGIT,
+	'1',0,                          A_DIGIT,
+	'2',0,                          A_DIGIT,
+	'3',0,                          A_DIGIT,
+	'4',0,                          A_DIGIT,
+	'5',0,                          A_DIGIT,
+	'6',0,                          A_DIGIT,
+	'7',0,                          A_DIGIT,
+	'8',0,                          A_DIGIT,
+	'9',0,                          A_DIGIT,
+	'.',0,                          A_DIGIT,
 
-	'=',0,				A_STAT,
-	CONTROL('G'),0,			A_STAT,
-	':','f',0,			A_STAT,
-	'/',0,				A_F_SEARCH,
-	'?',0,				A_B_SEARCH,
-	ESC,'/',0,			A_F_SEARCH|A_EXTRA,	'*',0,
-	ESC,'?',0,			A_B_SEARCH|A_EXTRA,	'*',0,
-	'n',0,				A_AGAIN_SEARCH,
-	ESC,'n',0,			A_T_AGAIN_SEARCH,
-	'N',0,				A_REVERSE_SEARCH,
-	ESC,'N',0,			A_T_REVERSE_SEARCH,
-	'&',0,				A_FILTER,
-	'm',0,				A_SETMARK,
-	'M',0,				A_SETMARKBOT,
-	ESC,'m',0,			A_CLRMARK,
-	'\'',0,				A_GOMARK,
-	CONTROL('X'),CONTROL('X'),0,	A_GOMARK,
-	'E',0,				A_EXAMINE,
-	':','e',0,			A_EXAMINE,
-	CONTROL('X'),CONTROL('V'),0,	A_EXAMINE,
-	':','n',0,			A_NEXT_FILE,
-	':','p',0,			A_PREV_FILE,
-	't',0,				A_NEXT_TAG,
-	'T',0,				A_PREV_TAG,
-	':','x',0,			A_INDEX_FILE,
-	':','d',0,			A_REMOVE_FILE,
-	'-',0,				A_OPT_TOGGLE,
-	':','t',0,			A_OPT_TOGGLE|A_EXTRA,	't',0,
-	's',0,				A_OPT_TOGGLE|A_EXTRA,	'o',0,
-	'_',0,				A_DISP_OPTION,
-	'|',0,				A_PIPE,
-	'v',0,				A_VISUAL,
-	'!',0,				A_SHELL,
-	'+',0,				A_FIRSTCMD,
+	'=',0,                          A_STAT,
+	CONTROL('G'),0,                 A_STAT,
+	':','f',0,                      A_STAT,
+	'/',0,                          A_F_SEARCH,
+	'?',0,                          A_B_SEARCH,
+	ESC,'/',0,                      A_F_SEARCH|A_EXTRA,        '*',0,
+	ESC,'?',0,                      A_B_SEARCH|A_EXTRA,        '*',0,
+	'n',0,                          A_AGAIN_SEARCH,
+	ESC,'n',0,                      A_T_AGAIN_SEARCH,
+	'N',0,                          A_REVERSE_SEARCH,
+	ESC,'N',0,                      A_T_REVERSE_SEARCH,
+	'&',0,                          A_FILTER,
+	'm',0,                          A_SETMARK,
+	'M',0,                          A_SETMARKBOT,
+	ESC,'m',0,                      A_CLRMARK,
+	'\'',0,                         A_GOMARK,
+	CONTROL('X'),CONTROL('X'),0,    A_GOMARK,
+	'E',0,                          A_EXAMINE,
+	':','e',0,                      A_EXAMINE,
+	CONTROL('X'),CONTROL('V'),0,    A_EXAMINE,
+	':','n',0,                      A_NEXT_FILE,
+	':','p',0,                      A_PREV_FILE,
+	't',0,                          A_NEXT_TAG,
+	'T',0,                          A_PREV_TAG,
+	':','x',0,                      A_INDEX_FILE,
+	':','d',0,                      A_REMOVE_FILE,
+	'-',0,                          A_OPT_TOGGLE,
+	':','t',0,                      A_OPT_TOGGLE|A_EXTRA,        't',0,
+	's',0,                          A_OPT_TOGGLE|A_EXTRA,        'o',0,
+	'_',0,                          A_DISP_OPTION,
+	'|',0,                          A_PIPE,
+	'v',0,                          A_VISUAL,
+	'!',0,                          A_SHELL,
+	'#',0,                          A_PSHELL,
+	'+',0,                          A_FIRSTCMD,
 
-	'H',0,				A_HELP,
-	'h',0,				A_HELP,
-	SK(SK_F1),0,			A_HELP,
-	'V',0,				A_VERSION,
-	'q',0,				A_QUIT,
-	'Q',0,				A_QUIT,
-	':','q',0,			A_QUIT,
-	':','Q',0,			A_QUIT,
-	'Z','Z',0,			A_QUIT
+	'H',0,                          A_HELP,
+	'h',0,                          A_HELP,
+	SK(SK_F1),0,                    A_HELP,
+	'V',0,                          A_VERSION,
+	'q',0,                          A_QUIT,
+	'Q',0,                          A_QUIT,
+	':','q',0,                      A_QUIT,
+	':','Q',0,                      A_QUIT,
+	'Z','Z',0,                      A_QUIT
 };
 
 static unsigned char edittable[] =
 {
-	'\t',0,	    			EC_F_COMPLETE,	/* TAB */
-	'\17',0,			EC_B_COMPLETE,	/* BACKTAB */
-	SK(SK_BACKTAB),0,		EC_B_COMPLETE,	/* BACKTAB */
-	ESC,'\t',0,			EC_B_COMPLETE,	/* ESC TAB */
-	CONTROL('L'),0,			EC_EXPAND,	/* CTRL-L */
-	CONTROL('V'),0,			EC_LITERAL,	/* BACKSLASH */
-	CONTROL('A'),0,			EC_LITERAL,	/* BACKSLASH */
-   	ESC,'l',0,			EC_RIGHT,	/* ESC l */
-	SK(SK_RIGHT_ARROW),0,		EC_RIGHT,	/* RIGHTARROW */
-	ESC,'h',0,			EC_LEFT,	/* ESC h */
-	SK(SK_LEFT_ARROW),0,		EC_LEFT,	/* LEFTARROW */
-	ESC,'b',0,			EC_W_LEFT,	/* ESC b */
-	ESC,SK(SK_LEFT_ARROW),0,	EC_W_LEFT,	/* ESC LEFTARROW */
-	SK(SK_CTL_LEFT_ARROW),0,	EC_W_LEFT,	/* CTRL-LEFTARROW */
-	ESC,'w',0,			EC_W_RIGHT,	/* ESC w */
-	ESC,SK(SK_RIGHT_ARROW),0,	EC_W_RIGHT,	/* ESC RIGHTARROW */
-	SK(SK_CTL_RIGHT_ARROW),0,	EC_W_RIGHT,	/* CTRL-RIGHTARROW */
-	ESC,'i',0,			EC_INSERT,	/* ESC i */
-	SK(SK_INSERT),0,		EC_INSERT,	/* INSERT */
-	ESC,'x',0,			EC_DELETE,	/* ESC x */
-	SK(SK_DELETE),0,		EC_DELETE,	/* DELETE */
-	ESC,'X',0,			EC_W_DELETE,	/* ESC X */
-	ESC,SK(SK_DELETE),0,		EC_W_DELETE,	/* ESC DELETE */
-	SK(SK_CTL_DELETE),0,		EC_W_DELETE,	/* CTRL-DELETE */
-	SK(SK_CTL_BACKSPACE),0,		EC_W_BACKSPACE, /* CTRL-BACKSPACE */
-	ESC,'\b',0,			EC_W_BACKSPACE,	/* ESC BACKSPACE */
-	ESC,'0',0,			EC_HOME,	/* ESC 0 */
-	SK(SK_HOME),0,			EC_HOME,	/* HOME */
-	ESC,'$',0,			EC_END,		/* ESC $ */
-	SK(SK_END),0,			EC_END,		/* END */
-	ESC,'k',0,			EC_UP,		/* ESC k */
-	SK(SK_UP_ARROW),0,		EC_UP,		/* UPARROW */
-	ESC,'j',0,			EC_DOWN,	/* ESC j */
-	SK(SK_DOWN_ARROW),0,		EC_DOWN,	/* DOWNARROW */
-	CONTROL('G'),0,			EC_ABORT,	/* CTRL-G */
+	'\t',0,                         EC_F_COMPLETE,  /* TAB */
+	'\17',0,                        EC_B_COMPLETE,  /* BACKTAB */
+	SK(SK_BACKTAB),0,               EC_B_COMPLETE,  /* BACKTAB */
+	ESC,'\t',0,                     EC_B_COMPLETE,  /* ESC TAB */
+	CONTROL('L'),0,                 EC_EXPAND,      /* CTRL-L */
+	CONTROL('V'),0,                 EC_LITERAL,     /* BACKSLASH */
+	CONTROL('A'),0,                 EC_LITERAL,     /* BACKSLASH */
+	ESC,'l',0,                      EC_RIGHT,       /* ESC l */
+	SK(SK_RIGHT_ARROW),0,           EC_RIGHT,       /* RIGHTARROW */
+	ESC,'h',0,                      EC_LEFT,        /* ESC h */
+	SK(SK_LEFT_ARROW),0,            EC_LEFT,        /* LEFTARROW */
+	ESC,'b',0,                      EC_W_LEFT,      /* ESC b */
+	ESC,SK(SK_LEFT_ARROW),0,        EC_W_LEFT,      /* ESC LEFTARROW */
+	SK(SK_CTL_LEFT_ARROW),0,        EC_W_LEFT,      /* CTRL-LEFTARROW */
+	ESC,'w',0,                      EC_W_RIGHT,     /* ESC w */
+	ESC,SK(SK_RIGHT_ARROW),0,       EC_W_RIGHT,     /* ESC RIGHTARROW */
+	SK(SK_CTL_RIGHT_ARROW),0,       EC_W_RIGHT,     /* CTRL-RIGHTARROW */
+	ESC,'i',0,                      EC_INSERT,      /* ESC i */
+	SK(SK_INSERT),0,                EC_INSERT,      /* INSERT */
+	ESC,'x',0,                      EC_DELETE,      /* ESC x */
+	SK(SK_DELETE),0,                EC_DELETE,      /* DELETE */
+	ESC,'X',0,                      EC_W_DELETE,    /* ESC X */
+	ESC,SK(SK_DELETE),0,            EC_W_DELETE,    /* ESC DELETE */
+	SK(SK_CTL_DELETE),0,            EC_W_DELETE,    /* CTRL-DELETE */
+	SK(SK_CTL_BACKSPACE),0,         EC_W_BACKSPACE, /* CTRL-BACKSPACE */
+	ESC,SK(SK_BACKSPACE),0,         EC_W_BACKSPACE, /* ESC BACKSPACE */
+	ESC,'0',0,                      EC_HOME,        /* ESC 0 */
+	SK(SK_HOME),0,                  EC_HOME,        /* HOME */
+	ESC,'$',0,                      EC_END,         /* ESC $ */
+	SK(SK_END),0,                   EC_END,         /* END */
+	ESC,'k',0,                      EC_UP,          /* ESC k */
+	SK(SK_UP_ARROW),0,              EC_UP,          /* UPARROW */
+	ESC,'j',0,                      EC_DOWN,        /* ESC j */
+	SK(SK_DOWN_ARROW),0,            EC_DOWN,        /* DOWNARROW */
+	CONTROL('G'),0,                 EC_ABORT,       /* CTRL-G */
+	ESC,'[','M',0,                  EC_X11MOUSE,    /* X11 mouse report */
+	ESC,'[','<',0,                  EC_X116MOUSE,   /* X11 1006 mouse report */
 };
 
 /*
@@ -239,10 +243,7 @@ static struct tablelist *list_sysvar_tables = NULL;
 /*
  * Expand special key abbreviations in a command table.
  */
-	static void
-expand_special_keys(table, len)
-	char *table;
-	int len;
+static void expand_special_keys(char *table, int len)
 {
 	char *fm;
 	char *to;
@@ -265,7 +266,7 @@ expand_special_keys(table, len)
 			}
 			/*
 			 * After SK_SPECIAL_KEY, next byte is the type
-			 * of special key (one of the SK_* contants),
+			 * of special key (one of the SK_* constants),
 			 * and the byte after that is the number of bytes,
 			 * N, reserved by the abbreviation (including the
 			 * SK_SPECIAL_KEY and key type bytes).
@@ -300,9 +301,7 @@ expand_special_keys(table, len)
 /*
  * Expand special key abbreviations in a list of command tables.
  */
-	static void
-expand_cmd_table(tlist)
-	struct tablelist *tlist;
+static void expand_cmd_table(struct tablelist *tlist)
 {
 	struct tablelist *t;
 	for (t = tlist;  t != NULL;  t = t->t_next)
@@ -314,8 +313,7 @@ expand_cmd_table(tlist)
 /*
  * Expand special key abbreviations in all command tables.
  */
-	public void
-expand_cmd_tables(VOID_PARAM)
+public void expand_cmd_tables(void)
 {
 	expand_cmd_table(list_fcmd_tables);
 	expand_cmd_table(list_ecmd_tables);
@@ -327,8 +325,7 @@ expand_cmd_tables(VOID_PARAM)
 /*
  * Initialize the command lists.
  */
-	public void
-init_cmds(VOID_PARAM)
+public void init_cmds(void)
 {
 	/*
 	 * Add the default command tables.
@@ -336,32 +333,48 @@ init_cmds(VOID_PARAM)
 	add_fcmd_table((char*)cmdtable, sizeof(cmdtable));
 	add_ecmd_table((char*)edittable, sizeof(edittable));
 #if USERFILE
-	/*
-	 * For backwards compatibility,
-	 * try to add tables in the OLD system lesskey file.
-	 */
-#ifdef BINDIR
-	add_hometable(NULL, BINDIR "/.sysless", 1);
+#ifdef BINDIR /* For backwards compatibility */
+	/* Try to add tables in the OLD system lesskey file. */
+	add_hometable(lesskey, NULL, BINDIR "/.sysless", 1);
 #endif
 	/*
-	 * Try to add the tables in the system lesskey file.
+	 * Try to load lesskey source file or binary file.
+	 * If the source file succeeds, don't load binary file. 
+	 * The binary file is likely to have been generated from 
+	 * a (possibly out of date) copy of the src file, 
+	 * so loading it is at best redundant.
 	 */
-	add_hometable("LESSKEY_SYSTEM", LESSKEYFILE_SYS, 1);
 	/*
-	 * Try to add the tables in the standard lesskey file "$HOME/.less".
+	 * Try to add tables in system lesskey src file.
 	 */
-	add_hometable("LESSKEY", LESSKEYFILE, 0);
+#if HAVE_LESSKEYSRC 
+	if (add_hometable(lesskey_src, "LESSKEYIN_SYSTEM", LESSKEYINFILE_SYS, 1) != 0)
+#endif
+	{
+		/*
+		 * Try to add the tables in the system lesskey binary file.
+		 */
+		add_hometable(lesskey, "LESSKEY_SYSTEM", LESSKEYFILE_SYS, 1);
+	}
+	/*
+	 * Try to add tables in the lesskey src file "$HOME/.lesskey".
+	 */
+#if HAVE_LESSKEYSRC 
+	if (add_hometable(lesskey_src, "LESSKEYIN", DEF_LESSKEYINFILE, 0) != 0)
+#endif
+	{
+		/*
+		 * Try to add the tables in the standard lesskey binary file "$HOME/.less".
+		 */
+		add_hometable(lesskey, "LESSKEY", LESSKEYFILE, 0);
+	}
 #endif
 }
 
 /*
  * Add a command table.
  */
-	static int
-add_cmd_table(tlist, buf, len)
-	struct tablelist **tlist;
-	char *buf;
-	int len;
+static int add_cmd_table(struct tablelist **tlist, char *buf, int len)
 {
 	struct tablelist *t;
 
@@ -386,10 +399,7 @@ add_cmd_table(tlist, buf, len)
 /*
  * Add a command table.
  */
-	public void
-add_fcmd_table(buf, len)
-	char *buf;
-	int len;
+public void add_fcmd_table(char *buf, int len)
 {
 	if (add_cmd_table(&list_fcmd_tables, buf, len) < 0)
 		error("Warning: some commands disabled", NULL_PARG);
@@ -398,10 +408,7 @@ add_fcmd_table(buf, len)
 /*
  * Add an editing command table.
  */
-	public void
-add_ecmd_table(buf, len)
-	char *buf;
-	int len;
+public void add_ecmd_table(char *buf, int len)
 {
 	if (add_cmd_table(&list_ecmd_tables, buf, len) < 0)
 		error("Warning: some edit commands disabled", NULL_PARG);
@@ -410,11 +417,7 @@ add_ecmd_table(buf, len)
 /*
  * Add an environment variable table.
  */
-	static void
-add_var_table(tlist, buf, len)
-	struct tablelist **tlist;
-	char *buf;
-	int len;
+static void add_var_table(struct tablelist **tlist, char *buf, int len)
 {
 	if (add_cmd_table(tlist, buf, len) < 0)
 		error("Warning: environment variables from lesskey file unavailable", NULL_PARG);
@@ -423,8 +426,7 @@ add_var_table(tlist, buf, len)
 /*
  * Return action for a mouse wheel down event.
  */
-	static int
-mouse_wheel_down(VOID_PARAM)
+static int mouse_wheel_down(void)
 {
 	return ((mousecap == OPT_ONPLUS) ? A_B_MOUSE : A_F_MOUSE);
 }
@@ -432,8 +434,7 @@ mouse_wheel_down(VOID_PARAM)
 /*
  * Return action for a mouse wheel up event.
  */
-	static int
-mouse_wheel_up(VOID_PARAM)
+static int mouse_wheel_up(void)
 {
 	return ((mousecap == OPT_ONPLUS) ? A_F_MOUSE : A_B_MOUSE);
 }
@@ -441,10 +442,7 @@ mouse_wheel_up(VOID_PARAM)
 /*
  * Return action for a mouse button release event.
  */
-	static int
-mouse_button_rel(x, y)
-	int x;
-	int y;
+static int mouse_button_rel(int x, int y)
 {
 	/*
 	 * {{ It would be better to return an action and then do this 
@@ -461,9 +459,7 @@ mouse_button_rel(x, y)
 /*
  * Read a decimal integer. Return the integer and set *pterm to the terminating char.
  */
-	static int
-getcc_int(pterm)
-	char* pterm;
+static int getcc_int(char *pterm)
 {
 	int num = 0;
 	int digits = 0;
@@ -477,7 +473,8 @@ getcc_int(pterm)
 				return (-1);
 			return (num);
 		}
-		num = (10 * num) + (ch - '0');
+		if (ckd_mul(&num, num, 10) || ckd_add(&num, num, ch - '0'))
+			return -1;
 		++digits;
 	}
 }
@@ -486,12 +483,13 @@ getcc_int(pterm)
  * Read suffix of mouse input and return the action to take.
  * The prefix ("\e[M") has already been read.
  */
-	static int
-x11mouse_action(VOID_PARAM)
+static int x11mouse_action(int skip)
 {
 	int b = getcc() - X11MOUSE_OFFSET;
 	int x = getcc() - X11MOUSE_OFFSET-1;
 	int y = getcc() - X11MOUSE_OFFSET-1;
+	if (skip)
+		return (A_NOACTION);
 	switch (b) {
 	default:
 		return (A_NOACTION);
@@ -508,8 +506,7 @@ x11mouse_action(VOID_PARAM)
  * Read suffix of mouse input and return the action to take.
  * The prefix ("\e[<") has already been read.
  */
-	static int
-x116mouse_action(VOID_PARAM)
+static int x116mouse_action(int skip)
 {
 	char ch;
 	int x, y;
@@ -519,6 +516,8 @@ x116mouse_action(VOID_PARAM)
 	if (x < 0 || ch != ';') return (A_NOACTION);
 	y = getcc_int(&ch) - 1;
 	if (y < 0) return (A_NOACTION);
+	if (skip)
+		return (A_NOACTION);
 	switch (b) {
 	case X11MOUSE_WHEEL_DOWN:
 		return mouse_wheel_down();
@@ -533,12 +532,7 @@ x116mouse_action(VOID_PARAM)
 /*
  * Search a single command table for the command string in cmd.
  */
-	static int
-cmd_search(cmd, table, endtable, sp)
-	char *cmd;
-	char *table;
-	char *endtable;
-	char **sp;
+static int cmd_search(char *cmd, char *table, char *endtable, char **sp)
 {
 	char *p;
 	char *q;
@@ -580,9 +574,9 @@ cmd_search(cmd, table, endtable, sp)
 					a &= ~A_EXTRA;
 				}
 				if (a == A_X11MOUSE_IN)
-					a = x11mouse_action();
+					a = x11mouse_action(0);
 				else if (a == A_X116MOUSE_IN)
-					a = x116mouse_action();
+					a = x116mouse_action(0);
 				return (a);
 			}
 		} else if (*q == '\0')
@@ -629,11 +623,7 @@ cmd_search(cmd, table, endtable, sp)
  * Decode a command character and return the associated action.
  * The "extra" string, if any, is returned in sp.
  */
-	static int
-cmd_decode(tlist, cmd, sp)
-	struct tablelist *tlist;
-	char *cmd;
-	char **sp;
+static int cmd_decode(struct tablelist *tlist, char *cmd, char **sp)
 {
 	struct tablelist *t;
 	int action = A_INVALID;
@@ -656,10 +646,7 @@ cmd_decode(tlist, cmd, sp)
 /*
  * Decode a command from the cmdtables list.
  */
-	public int
-fcmd_decode(cmd, sp)
-	char *cmd;
-	char **sp;
+public int fcmd_decode(char *cmd, char **sp)
 {
 	return (cmd_decode(list_fcmd_tables, cmd, sp));
 }
@@ -667,10 +654,7 @@ fcmd_decode(cmd, sp)
 /*
  * Decode a command from the edittables list.
  */
-	public int
-ecmd_decode(cmd, sp)
-	char *cmd;
-	char **sp;
+public int ecmd_decode(char *cmd, char **sp)
 {
 	return (cmd_decode(list_ecmd_tables, cmd, sp));
 }
@@ -679,9 +663,7 @@ ecmd_decode(cmd, sp)
  * Get the value of an environment variable.
  * Looks first in the lesskey file, then in the real environment.
  */
-	public char *
-lgetenv(var)
-	char *var;
+public char * lgetenv(char *var)
 {
 	int a;
 	char *s;
@@ -701,9 +683,7 @@ lgetenv(var)
 /*
  * Is a string null or empty? 
  */
-	public int
-isnullenv(s)
-	char* s;
+public int isnullenv(char *s)
 {
 	return (s == NULL || *s == '\0');
 }
@@ -714,9 +694,7 @@ isnullenv(s)
  * Integers are stored in a funny format: 
  * two bytes, low order first, in radix KRADIX.
  */
-	static int
-gint(sp)
-	char **sp;
+static int gint(char **sp)
 {
 	int n;
 
@@ -728,10 +706,7 @@ gint(sp)
 /*
  * Process an old (pre-v241) lesskey file.
  */
-	static int
-old_lesskey(buf, len)
-	char *buf;
-	int len;
+static int old_lesskey(char *buf, int len)
 {
 	/*
 	 * Old-style lesskey file.
@@ -749,13 +724,10 @@ old_lesskey(buf, len)
 /* 
  * Process a new (post-v241) lesskey file.
  */
-	static int
-new_lesskey(buf, len, sysvar)
-	char *buf;
-	int len;
-	int sysvar;
+static int new_lesskey(char *buf, int len, int sysvar)
 {
 	char *p;
+	char *end;
 	int c;
 	int n;
 
@@ -768,6 +740,7 @@ new_lesskey(buf, len, sysvar)
 	    buf[len-1] != C2_END_LESSKEY_MAGIC)
 		return (-1);
 	p = buf + 4;
+	end = buf + len;
 	for (;;)
 	{
 		c = *p++;
@@ -775,16 +748,22 @@ new_lesskey(buf, len, sysvar)
 		{
 		case CMD_SECTION:
 			n = gint(&p);
+			if (n < 0 || p+n >= end)
+				return (-1);
 			add_fcmd_table(p, n);
 			p += n;
 			break;
 		case EDIT_SECTION:
 			n = gint(&p);
+			if (n < 0 || p+n >= end)
+				return (-1);
 			add_ecmd_table(p, n);
 			p += n;
 			break;
 		case VAR_SECTION:
 			n = gint(&p);
+			if (n < 0 || p+n >= end)
+				return (-1);
 			add_var_table((sysvar) ? 
 				&list_sysvar_tables : &list_var_tables, p, n);
 			p += n;
@@ -803,10 +782,7 @@ new_lesskey(buf, len, sysvar)
 /*
  * Set up a user command table, based on a "lesskey" file.
  */
-	public int
-lesskey(filename, sysvar)
-	char *filename;
-	int sysvar;
+public int lesskey(char *filename, int sysvar)
 {
 	char *buf;
 	POSITION len;
@@ -862,48 +838,78 @@ lesskey(filename, sysvar)
 	 * Figure out if this is an old-style (before version 241)
 	 * or new-style lesskey file format.
 	 */
-	if (buf[0] != C0_LESSKEY_MAGIC || buf[1] != C1_LESSKEY_MAGIC ||
+	if (len < 4 || 
+	    buf[0] != C0_LESSKEY_MAGIC || buf[1] != C1_LESSKEY_MAGIC ||
 	    buf[2] != C2_LESSKEY_MAGIC || buf[3] != C3_LESSKEY_MAGIC)
 		return (old_lesskey(buf, (int)len));
 	return (new_lesskey(buf, (int)len, sysvar));
 }
 
+#if HAVE_LESSKEYSRC 
+public int lesskey_src(char *filename, int sysvar)
+{
+	static struct lesskey_tables tables;
+	int r = parse_lesskey(filename, &tables);
+	if (r != 0)
+		return (r);
+	add_fcmd_table(xbuf_char_data(&tables.cmdtable.buf), tables.cmdtable.buf.end);
+	add_ecmd_table(xbuf_char_data(&tables.edittable.buf), tables.edittable.buf.end);
+	add_var_table(sysvar ? &list_sysvar_tables : &list_var_tables,
+		xbuf_char_data(&tables.vartable.buf), tables.vartable.buf.end);
+	return (0);
+}
+
+void lesskey_parse_error(char *s)
+{
+	PARG parg;
+	parg.p_string = s;
+	error("%s", &parg);
+}
+#endif /* HAVE_LESSKEYSRC */
+
 /*
- * Add the standard lesskey file "$HOME/.less"
+ * Add a lesskey file.
  */
-	public void
-add_hometable(envname, def_filename, sysvar)
-	char *envname;
-	char *def_filename;
-	int sysvar;
+public int add_hometable(int (*call_lesskey)(char *, int), char *envname, char *def_filename, int sysvar)
 {
 	char *filename;
-	PARG parg;
+	int r;
 
 	if (envname != NULL && (filename = lgetenv(envname)) != NULL)
 		filename = save(filename);
-	else if (sysvar)
+	else if (sysvar) /* def_filename is full path */
 		filename = save(def_filename);
-	else
-		filename = homefile(def_filename);
-	if (filename == NULL)
-		return;
-	if (lesskey(filename, sysvar) < 0)
+	else /* def_filename is just basename */
 	{
-		parg.p_string = filename;
-		error("Cannot use lesskey file \"%s\"", &parg);
+		/* Remove first char (normally a dot) unless stored in $HOME. */
+		char *xdg = lgetenv("XDG_CONFIG_HOME");
+		if (!isnullenv(xdg))
+			filename = dirfile(xdg, &def_filename[1], 1);
+		if (filename == NULL)
+		{
+			char *home = lgetenv("HOME");
+			if (!isnullenv(home))
+			{
+				char *cfg_dir = dirfile(home, ".config", 0);
+				filename = dirfile(cfg_dir, &def_filename[1], 1);
+				free(cfg_dir);
+			}
+		}
+		if (filename == NULL)
+			filename = homefile(def_filename);
 	}
+	if (filename == NULL)
+		return -1;
+	r = (*call_lesskey)(filename, sysvar);
 	free(filename);
+	return (r);
 }
 #endif
 
 /*
  * See if a char is a special line-editing command.
  */
-	public int
-editchar(c, flags)
-	int c;
-	int flags;
+public int editchar(int c, int flags)
 {
 	int action;
 	int nch;
@@ -924,7 +930,6 @@ editchar(c, flags)
 #if MSDOS_COMPILER==WIN32C
 		if (!win32_kbhit())
 #endif
-
 		return (EC_LINEKILL);
 	}
 		
@@ -934,15 +939,20 @@ editchar(c, flags)
 	 */
 	nch = 0;
 	do {
-	  	if (nch > 0)
+	        if (nch > 0)
 			c = getcc();
 		usercmd[nch] = c;
 		usercmd[nch+1] = '\0';
 		nch++;
 		action = ecmd_decode(usercmd, &s);
-	} while (action == A_PREFIX);
-	
-	if (flags & EC_NORIGHTLEFT)
+	} while (action == A_PREFIX && nch < MAX_CMDLEN);
+
+	if (action == EC_X11MOUSE)
+		return (x11mouse_action(1));
+	if (action == EC_X116MOUSE)
+		return (x116mouse_action(1));
+
+	if (flags & ECF_NORIGHTLEFT)
 	{
 		switch (action)
 		{
@@ -953,7 +963,7 @@ editchar(c, flags)
 		}
 	}
 #if CMD_HISTORY
-	if (flags & EC_NOHISTORY) 
+	if (flags & ECF_NOHISTORY) 
 	{
 		/*
 		 * The caller says there is no history list.
@@ -969,7 +979,7 @@ editchar(c, flags)
 	}
 #endif
 #if TAB_COMPLETE_FILENAME
-	if (flags & EC_NOCOMPLETE) 
+	if (flags & ECF_NOCOMPLETE) 
 	{
 		/*
 		 * The caller says we don't want any filename completion cmds.
@@ -985,7 +995,7 @@ editchar(c, flags)
 		}
 	}
 #endif
-	if ((flags & EC_PEEK) || action == A_INVALID)
+	if ((flags & ECF_PEEK) || action == A_INVALID)
 	{
 		/*
 		 * We're just peeking, or we didn't understand the command.

@@ -80,8 +80,6 @@ int zap_iterate_prefetch = B_TRUE;
 
 int fzap_default_block_shift = 14; /* 16k blocksize */
 
-extern inline zap_phys_t *zap_f_phys(zap_t *zap);
-
 static uint64_t zap_allocate_blocks(zap_t *zap, int nblocks);
 
 void
@@ -221,7 +219,8 @@ zap_table_grow(zap_t *zap, zap_table_phys_t *tbl,
 	tbl->zt_blks_copied++;
 
 	dprintf("copied block %llu of %llu\n",
-	    tbl->zt_blks_copied, tbl->zt_numblks);
+	    (u_longlong_t)tbl->zt_blks_copied,
+	    (u_longlong_t)tbl->zt_numblks);
 
 	if (tbl->zt_blks_copied == tbl->zt_numblks) {
 		(void) dmu_free_range(zap->zap_objset, zap->zap_object,
@@ -234,7 +233,7 @@ zap_table_grow(zap_t *zap, zap_table_phys_t *tbl,
 		tbl->zt_blks_copied = 0;
 
 		dprintf("finished; numblocks now %llu (%uk entries)\n",
-		    tbl->zt_numblks, 1<<(tbl->zt_shift-10));
+		    (u_longlong_t)tbl->zt_numblks, 1<<(tbl->zt_shift-10));
 	}
 
 	return (0);
@@ -249,7 +248,8 @@ zap_table_store(zap_t *zap, zap_table_phys_t *tbl, uint64_t idx, uint64_t val,
 	ASSERT(RW_LOCK_HELD(&zap->zap_rwlock));
 	ASSERT(tbl->zt_blk != 0);
 
-	dprintf("storing %llx at index %llx\n", val, idx);
+	dprintf("storing %llx at index %llx\n", (u_longlong_t)val,
+	    (u_longlong_t)idx);
 
 	uint64_t blk = idx >> (bs-3);
 	uint64_t off = idx & ((1<<(bs-3))-1);

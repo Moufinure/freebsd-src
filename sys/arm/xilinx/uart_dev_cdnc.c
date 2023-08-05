@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2005 Olivier Houchard All rights reserved.
  * Copyright (c) 2012 Thomas Skibo All rights reserved.
@@ -326,7 +326,7 @@ cdnc_uart_term(struct uart_bas *bas)
 
 /*
  * Put a character of console output (so we do it here polling rather than
- * interrutp driven).
+ * interrupt driven).
  */
 static void
 cdnc_uart_putc(struct uart_bas *bas, int c)

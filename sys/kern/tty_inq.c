@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2008 Ed Schouten <ed@FreeBSD.org>
  * All rights reserved.
@@ -464,7 +464,6 @@ ttyinq_line_iterate(struct ttyinq *ti,
 		/* Last byte iterated - go to the next block. */
 		if (boff == TTYINQ_DATASIZE - 1)
 			tib = tib->tib_next;
-		MPASS(tib != NULL);
 	}
 }
 

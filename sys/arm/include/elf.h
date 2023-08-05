@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2001 David E. O'Brien
  * Copyright (c) 1996-1997 John D. Polstra.
@@ -78,7 +78,7 @@ __ElfType(Auxinfo);
 #define	EF_ARM_EABI_VERSION_UNKNOWN 0
 #define	EF_ARM_EABI_FREEBSD_MIN 4
 
-#define	ET_DYN_LOAD_ADDR	0x500000
+#define	ET_DYN_LOAD_ADDR 0x01001000
 
 /* Flags passed in AT_HWCAP. */
 #define	HWCAP_SWP		0x00000001	/* Unsupported, never set.    */

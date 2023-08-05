@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2000-2004
  *	Poul-Henning Kamp.  All rights reserved.
@@ -974,7 +974,7 @@ devfs_ioctl(struct vop_ioctl_args *ap)
 
 		/* Get rid of reference to old control tty */
 		if (vpold)
-			vrele(vpold);
+			devfs_ctty_unref(vpold);
 	}
 	return (error);
 }
@@ -1354,7 +1354,7 @@ devfs_pathconf(struct vop_pathconf_args *ap)
 #ifdef MAC
 		/*
 		 * If MAC is enabled, devfs automatically supports
-		 * trivial non-persistant label storage.
+		 * trivial non-persistent label storage.
 		 */
 		*ap->a_retval = 1;
 #else

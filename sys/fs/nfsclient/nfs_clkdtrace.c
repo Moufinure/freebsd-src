@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2009 Robert N. M. Watson
  * All rights reserved.
@@ -541,7 +541,7 @@ dtnfsclient_load(void *dummy)
 }
 
 static int
-dtnfsclient_unload()
+dtnfsclient_unload(void)
 {
 
 	dtrace_nfscl_nfs234_start_probe = NULL;

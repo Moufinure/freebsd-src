@@ -25,9 +25,8 @@
 #include "clang/Basic/SourceLocation.h"
 #include "clang/Basic/Specifiers.h"
 #include "llvm/ADT/ArrayRef.h"
-#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
-#include "llvm/ADT/None.h"
+#include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/PointerIntPair.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringRef.h"
@@ -320,6 +319,13 @@ public:
     return const_cast<ObjCMethodDecl*>(this)->getClassInterface();
   }
 
+  /// If this method is declared or implemented in a category, return
+  /// that category.
+  ObjCCategoryDecl *getCategory();
+  const ObjCCategoryDecl *getCategory() const {
+    return const_cast<ObjCMethodDecl*>(this)->getCategory();
+  }
+
   Selector getSelector() const { return getDeclName().getObjCSelector(); }
 
   QualType getReturnType() const { return MethodDeclType; }
@@ -367,8 +373,7 @@ public:
   // ArrayRef access to formal parameters.  This should eventually
   // replace the iterator interface above.
   ArrayRef<ParmVarDecl*> parameters() const {
-    return llvm::makeArrayRef(const_cast<ParmVarDecl**>(getParams()),
-                              NumParams);
+    return llvm::ArrayRef(const_cast<ParmVarDecl **>(getParams()), NumParams);
   }
 
   ParmVarDecl *getParamDecl(unsigned Idx) {
@@ -382,9 +387,8 @@ public:
   /// Sets the method's parameters and selector source locations.
   /// If the method is implicit (not coming from source) \p SelLocs is
   /// ignored.
-  void setMethodParams(ASTContext &C,
-                       ArrayRef<ParmVarDecl*> Params,
-                       ArrayRef<SourceLocation> SelLocs = llvm::None);
+  void setMethodParams(ASTContext &C, ArrayRef<ParmVarDecl *> Params,
+                       ArrayRef<SourceLocation> SelLocs = std::nullopt);
 
   // Iterator access to parameter types.
   struct GetTypeFn {
@@ -479,6 +483,9 @@ public:
 
   /// True if the method is tagged as objc_direct
   bool isDirectMethod() const;
+
+  /// True if the method has a parameter that's destroyed in the callee.
+  bool hasParamDestroyedInCallee() const;
 
   /// Returns the property associated with this method's selector.
   ///
@@ -649,20 +656,8 @@ public:
 /// \endcode
 class ObjCTypeParamList final
     : private llvm::TrailingObjects<ObjCTypeParamList, ObjCTypeParamDecl *> {
-  /// Stores the components of a SourceRange as a POD.
-  struct PODSourceRange {
-    unsigned Begin;
-    unsigned End;
-  };
-
-  union {
-    /// Location of the left and right angle brackets.
-    PODSourceRange Brackets;
-
-    // Used only for alignment.
-    ObjCTypeParamDecl *AlignmentHack;
-  };
-
+  /// Location of the left and right angle brackets.
+  SourceRange Brackets;
   /// The number of parameters in the list, which are tail-allocated.
   unsigned NumParams;
 
@@ -710,17 +705,9 @@ public:
     return *(end() - 1);
   }
 
-  SourceLocation getLAngleLoc() const {
-    return SourceLocation::getFromRawEncoding(Brackets.Begin);
-  }
-
-  SourceLocation getRAngleLoc() const {
-    return SourceLocation::getFromRawEncoding(Brackets.End);
-  }
-
-  SourceRange getSourceRange() const {
-    return SourceRange(getLAngleLoc(), getRAngleLoc());
-  }
+  SourceLocation getLAngleLoc() const { return Brackets.getBegin(); }
+  SourceLocation getRAngleLoc() const { return Brackets.getEnd(); }
+  SourceRange getSourceRange() const { return Brackets; }
 
   /// Gather the default set of type arguments to be substituted for
   /// these type parameters when dealing with an unspecialized type.
@@ -789,17 +776,13 @@ private:
         LParenLoc(LParenLocation), DeclType(T), DeclTypeSourceInfo(TSI),
         PropertyAttributes(ObjCPropertyAttribute::kind_noattr),
         PropertyAttributesAsWritten(ObjCPropertyAttribute::kind_noattr),
-        PropertyImplementation(propControl), GetterName(Selector()),
-        SetterName(Selector()) {}
+        PropertyImplementation(propControl) {}
 
 public:
-  static ObjCPropertyDecl *Create(ASTContext &C, DeclContext *DC,
-                                  SourceLocation L,
-                                  IdentifierInfo *Id, SourceLocation AtLocation,
-                                  SourceLocation LParenLocation,
-                                  QualType T,
-                                  TypeSourceInfo *TSI,
-                                  PropertyControl propControl = None);
+  static ObjCPropertyDecl *
+  Create(ASTContext &C, DeclContext *DC, SourceLocation L, IdentifierInfo *Id,
+         SourceLocation AtLocation, SourceLocation LParenLocation, QualType T,
+         TypeSourceInfo *TSI, PropertyControl propControl = None);
 
   static ObjCPropertyDecl *CreateDeserialized(ASTContext &C, unsigned ID);
 
@@ -865,9 +848,7 @@ public:
   bool isClassProperty() const {
     return PropertyAttributes & ObjCPropertyAttribute::kind_class;
   }
-  bool isDirectProperty() const {
-    return PropertyAttributes & ObjCPropertyAttribute::kind_direct;
-  }
+  bool isDirectProperty() const;
 
   ObjCPropertyQueryKind getQueryKind() const {
     return isClassProperty() ? ObjCPropertyQueryKind::OBJC_PR_query_class :
@@ -1087,21 +1068,23 @@ public:
   bool HasUserDeclaredSetterMethod(const ObjCPropertyDecl *P) const;
   ObjCIvarDecl *getIvarDecl(IdentifierInfo *Id) const;
 
+  ObjCPropertyDecl *getProperty(const IdentifierInfo *Id,
+                                bool IsInstance) const;
+
   ObjCPropertyDecl *
   FindPropertyDeclaration(const IdentifierInfo *PropertyId,
                           ObjCPropertyQueryKind QueryKind) const;
 
   using PropertyMap =
-      llvm::DenseMap<std::pair<IdentifierInfo *, unsigned/*isClassProperty*/>,
-                     ObjCPropertyDecl *>;
+      llvm::MapVector<std::pair<IdentifierInfo *, unsigned /*isClassProperty*/>,
+                      ObjCPropertyDecl *>;
   using ProtocolPropertySet = llvm::SmallDenseSet<const ObjCProtocolDecl *, 8>;
   using PropertyDeclOrder = llvm::SmallVector<ObjCPropertyDecl *, 8>;
 
   /// This routine collects list of properties to be implemented in the class.
   /// This includes, class's and its conforming protocols' properties.
   /// Note, the superclass's properties are not included in the list.
-  virtual void collectPropertiesToImplement(PropertyMap &PM,
-                                            PropertyDeclOrder &PO) const {}
+  virtual void collectPropertiesToImplement(PropertyMap &PM) const {}
 
   SourceLocation getAtStartLoc() const { return ObjCContainerDeclBits.AtStart; }
 
@@ -1163,6 +1146,7 @@ public:
 class ObjCInterfaceDecl : public ObjCContainerDecl
                         , public Redeclarable<ObjCInterfaceDecl> {
   friend class ASTContext;
+  friend class ODRDiagsEmitter;
 
   /// TypeForDecl - This indicates the Type object that represents this
   /// TypeDecl.  It is a cache maintained by ASTContext::getObjCInterfaceType
@@ -1220,6 +1204,12 @@ class ObjCInterfaceDecl : public ObjCContainerDecl
     /// One of the \c InheritedDesignatedInitializersState enumeratos.
     mutable unsigned InheritedDesignatedInitializers : 2;
 
+    /// Tracks whether a ODR hash has been computed for this interface.
+    unsigned HasODRHash : 1;
+
+    /// A hash of parts of the class to help in ODR checking.
+    unsigned ODRHash = 0;
+
     /// The location of the last location in this declaration, before
     /// the properties/methods. For example, this will be the '>', '}', or
     /// identifier,
@@ -1228,7 +1218,7 @@ class ObjCInterfaceDecl : public ObjCContainerDecl
     DefinitionData()
         : ExternallyCompleted(false), IvarListMissingImplementation(true),
           HasDesignatedInitializers(false),
-          InheritedDesignatedInitializers(IDI_Unknown) {}
+          InheritedDesignatedInitializers(IDI_Unknown), HasODRHash(false) {}
   };
 
   /// The type parameters associated with this class, if any.
@@ -1552,6 +1542,13 @@ public:
   /// a forward declaration (\@class) to a definition (\@interface).
   void startDefinition();
 
+  /// Starts the definition without sharing it with other redeclarations.
+  /// Such definition shouldn't be used for anything but only to compare if
+  /// a duplicate is compatible with previous definition or if it is
+  /// a distinct duplicate.
+  void startDuplicateDefinitionForComparison();
+  void mergeDuplicateDefinitionWithCommon(const ObjCInterfaceDecl *Definition);
+
   /// Retrieve the superclass type.
   const ObjCObjectType *getSuperClassType() const {
     if (TypeSourceInfo *TInfo = getSuperClassTInfo())
@@ -1793,8 +1790,7 @@ public:
     *FindPropertyVisibleInPrimaryClass(IdentifierInfo *PropertyId,
                                        ObjCPropertyQueryKind QueryKind) const;
 
-  void collectPropertiesToImplement(PropertyMap &PM,
-                                    PropertyDeclOrder &PO) const override;
+  void collectPropertiesToImplement(PropertyMap &PM) const override;
 
   /// isSuperClassOf - Return true if this class is the specified class or is a
   /// super class of the specified interface class.
@@ -1910,10 +1906,17 @@ public:
   const Type *getTypeForDecl() const { return TypeForDecl; }
   void setTypeForDecl(const Type *TD) const { TypeForDecl = TD; }
 
+  /// Get precomputed ODRHash or add a new one.
+  unsigned getODRHash();
+
   static bool classof(const Decl *D) { return classofKind(D->getKind()); }
   static bool classofKind(Kind K) { return K == ObjCInterface; }
 
 private:
+  /// True if a valid hash is stored in ODRHash.
+  bool hasODRHash() const;
+  void setHasODRHash(bool HasHash);
+
   const ObjCInterfaceDecl *findInterfaceWithDesignatedInitializers() const;
   bool inheritsDesignatedInitializers() const;
 };
@@ -1964,11 +1967,21 @@ public:
   /// in; this is either the interface where the ivar was declared, or the
   /// interface the ivar is conceptually a part of in the case of synthesized
   /// ivars.
-  const ObjCInterfaceDecl *getContainingInterface() const;
+  ObjCInterfaceDecl *getContainingInterface();
+  const ObjCInterfaceDecl *getContainingInterface() const {
+    return const_cast<ObjCIvarDecl *>(this)->getContainingInterface();
+  }
 
   ObjCIvarDecl *getNextIvar() { return NextIvar; }
   const ObjCIvarDecl *getNextIvar() const { return NextIvar; }
   void setNextIvar(ObjCIvarDecl *ivar) { NextIvar = ivar; }
+
+  ObjCIvarDecl *getCanonicalDecl() override {
+    return cast<ObjCIvarDecl>(FieldDecl::getCanonicalDecl());
+  }
+  const ObjCIvarDecl *getCanonicalDecl() const {
+    return const_cast<ObjCIvarDecl *>(this)->getCanonicalDecl();
+  }
 
   void setAccessControl(AccessControl ac) { DeclAccess = ac; }
 
@@ -2060,6 +2073,12 @@ class ObjCProtocolDecl : public ObjCContainerDecl,
 
     /// Referenced protocols
     ObjCProtocolList ReferencedProtocols;
+
+    /// Tracks whether a ODR hash has been computed for this protocol.
+    unsigned HasODRHash : 1;
+
+    /// A hash of parts of the class to help in ODR checking.
+    unsigned ODRHash = 0;
   };
 
   /// Contains a pointer to the data associated with this class,
@@ -2096,10 +2115,15 @@ class ObjCProtocolDecl : public ObjCContainerDecl,
     return getMostRecentDecl();
   }
 
+  /// True if a valid hash is stored in ODRHash.
+  bool hasODRHash() const;
+  void setHasODRHash(bool HasHash);
+
 public:
   friend class ASTDeclReader;
   friend class ASTDeclWriter;
   friend class ASTReader;
+  friend class ODRDiagsEmitter;
 
   static ObjCProtocolDecl *Create(ASTContext &C, DeclContext *DC,
                                   IdentifierInfo *Id,
@@ -2171,6 +2195,14 @@ public:
     data().ReferencedProtocols.set(List, Num, Locs, C);
   }
 
+  /// This is true iff the protocol is tagged with the
+  /// `objc_non_runtime_protocol` attribute.
+  bool isNonRuntimeProtocol() const;
+
+  /// Get the set of all protocols implied by this protocols inheritance
+  /// hierarchy.
+  void getImpliedProtocols(llvm::DenseSet<const ObjCProtocolDecl *> &IPs) const;
+
   ObjCProtocolDecl *lookupProtocolNamed(IdentifierInfo *PName);
 
   // Lookup a method. First, we search locally. If a method isn't
@@ -2216,6 +2248,13 @@ public:
   /// Starts the definition of this Objective-C protocol.
   void startDefinition();
 
+  /// Starts the definition without sharing it with other redeclarations.
+  /// Such definition shouldn't be used for anything but only to compare if
+  /// a duplicate is compatible with previous definition or if it is
+  /// a distinct duplicate.
+  void startDuplicateDefinitionForComparison();
+  void mergeDuplicateDefinitionWithCommon(const ObjCProtocolDecl *Definition);
+
   /// Produce a name to be used for protocol's metadata. It comes either via
   /// objc_runtime_name attribute or protocol name.
   StringRef getObjCRuntimeNameAsString() const;
@@ -2241,12 +2280,14 @@ public:
   ObjCProtocolDecl *getCanonicalDecl() override { return getFirstDecl(); }
   const ObjCProtocolDecl *getCanonicalDecl() const { return getFirstDecl(); }
 
-  void collectPropertiesToImplement(PropertyMap &PM,
-                                    PropertyDeclOrder &PO) const override;
+  void collectPropertiesToImplement(PropertyMap &PM) const override;
 
   void collectInheritedProtocolProperties(const ObjCPropertyDecl *Property,
                                           ProtocolPropertySet &PS,
                                           PropertyDeclOrder &PO) const;
+
+  /// Get precomputed ODRHash or add a new one.
+  unsigned getODRHash();
 
   static bool classof(const Decl *D) { return classofKind(D->getKind()); }
   static bool classofKind(Kind K) { return K == ObjCProtocol; }
@@ -2883,15 +2924,16 @@ ObjCInterfaceDecl::filtered_category_iterator<Filter>::operator++() {
 }
 
 inline bool ObjCInterfaceDecl::isVisibleCategory(ObjCCategoryDecl *Cat) {
-  return Cat->isUnconditionallyVisible();
+  return !Cat->isInvalidDecl() && Cat->isUnconditionallyVisible();
 }
 
 inline bool ObjCInterfaceDecl::isVisibleExtension(ObjCCategoryDecl *Cat) {
-  return Cat->IsClassExtension() && Cat->isUnconditionallyVisible();
+  return !Cat->isInvalidDecl() && Cat->IsClassExtension() &&
+         Cat->isUnconditionallyVisible();
 }
 
 inline bool ObjCInterfaceDecl::isKnownExtension(ObjCCategoryDecl *Cat) {
-  return Cat->IsClassExtension();
+  return !Cat->isInvalidDecl() && Cat->IsClassExtension();
 }
 
 } // namespace clang

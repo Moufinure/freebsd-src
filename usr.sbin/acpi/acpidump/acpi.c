@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 1998 Doug Rabson
  * Copyright (c) 2000 Mitsuru IWASAKI <iwasaki@FreeBSD.org>
@@ -219,16 +219,22 @@ acpi_get_fadt_revision(ACPI_TABLE_FADT *fadt)
 	if (addr_size == 8) {
 		fadt_revision = 2;
 
+#if defined(__i386__)
 		/*
 		 * A few systems (e.g., IBM T23) have an RSDP that claims
 		 * revision 2 but the 64 bit addresses are invalid.  If
 		 * revision 2 and the 32 bit address is non-zero but the
 		 * 32 and 64 bit versions don't match, prefer the 32 bit
 		 * version for all subsequent tables.
+		 *
+		 * The only known ACPI systems this affects are early
+		 * implementations on 32-bit x86. Because of this limit the
+		 * workaround to i386.
 		 */
 		if (fadt->Facs != 0 &&
 		    (fadt->XFacs & 0xffffffff) != fadt->Facs)
 			fadt_revision = 1;
+#endif
 	} else
 		fadt_revision = 1;
 	return (fadt_revision);
@@ -549,7 +555,8 @@ acpi_print_madt(ACPI_SUBTABLE_HEADER *mp)
 		printf("\tGICR ADDR=%016jx\n",
 		    (uintmax_t)gicc->GicrBaseAddress);
 		printf("\tMPIDR=%jx\n", (uintmax_t)gicc->ArmMpidr);
-		printf("\tEfficency Class=%d\n", (u_int)gicc->EfficiencyClass);
+		printf("\tEfficiency Class=%d\n", (u_int)gicc->EfficiencyClass);
+		printf("\tSPE INTR=%d\n", gicc->SpeInterrupt);
 		break;
 	case ACPI_MADT_TYPE_GENERIC_DISTRIBUTOR:
 		gicd = (ACPI_MADT_GENERIC_DISTRIBUTOR *)mp;
@@ -1571,7 +1578,7 @@ static void
 acpi_print_nfit(ACPI_NFIT_HEADER *nfit)
 {
 	char *uuidstr;
-	uint32_t status;
+	uint32_t m, status;
 
 	ACPI_NFIT_SYSTEM_ADDRESS *sysaddr;
 	ACPI_NFIT_MEMORY_MAP *mmap;
@@ -1648,7 +1655,10 @@ acpi_print_nfit(ACPI_NFIT_HEADER *nfit)
 		    (u_int)ileave->InterleaveIndex);
 		printf("\tLineCount=%u\n", (u_int)ileave->LineCount);
 		printf("\tLineSize=%u\n", (u_int)ileave->LineSize);
-		/* XXX ileave->LineOffset[i] output is not supported */
+		for (m = 0; m < ileave->LineCount; m++) {
+			printf("\tLine%uOffset=0x%08x\n", (u_int)m + 1,
+			    (u_int)ileave->LineOffset[m]);
+		}
 		break;
 	case ACPI_NFIT_TYPE_SMBIOS:
 		smbios = (ACPI_NFIT_SMBIOS *)nfit;
@@ -1709,7 +1719,10 @@ acpi_print_nfit(ACPI_NFIT_HEADER *nfit)
 		fladdr = (ACPI_NFIT_FLUSH_ADDRESS *)nfit;
 		printf("\tDeviceHandle=%u\n", (u_int)fladdr->DeviceHandle);
 		printf("\tHintCount=%u\n", (u_int)fladdr->HintCount);
-		/* XXX fladdr->HintAddress[i] output is not supported */
+		for (m = 0; m < fladdr->HintCount; m++) {
+			printf("\tHintAddress%u=0x%016jx\n", (u_int)m + 1,
+			    (uintmax_t)fladdr->HintAddress[m]);
+		}
 		break;
 	case ACPI_NFIT_TYPE_CAPABILITIES:
 		caps = (ACPI_NFIT_CAPABILITIES *)nfit;

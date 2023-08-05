@@ -53,9 +53,7 @@ __FBSDID("$FreeBSD$");
 
 /*
  * Convenience function for manipulating driver locks from busdma (during
- * busdma_swi, for example).  Drivers that don't provide their own locks
- * should specify &Giant to dmat->lockfuncarg.  Drivers that use their own
- * non-mutex locking scheme don't have to use this at all.
+ * busdma_swi, for example).
  */
 void
 busdma_lock_mutex(void *arg, bus_dma_lock_op_t op)
@@ -104,7 +102,7 @@ bus_dma_run_filter(struct bus_dma_tag_common *tc, bus_addr_t paddr)
 	retval = 0;
 	do {
 		if (((paddr > tc->lowaddr && paddr <= tc->highaddr) ||
-		    ((paddr & (tc->alignment - 1)) != 0)) &&
+		    !vm_addr_align_ok(paddr, tc->alignment)) &&
 		    (tc->filter == NULL ||
 		    (*tc->filter)(tc->filterarg, paddr) != 0))
 			retval = 1;

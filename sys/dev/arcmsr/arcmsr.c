@@ -83,6 +83,11 @@
 ** 1.40.00.01   10/30/2017  Ching Huang     Fixed release memory resource
 ** 1.50.00.00   09/30/2020  Ching Huang     Added support ARC-1886, NVMe/SAS/SATA controller
 ** 1.50.00.01   02/26/2021  Ching Huang     Fixed no action of hot plugging device on type_F adapter
+** 1.50.00.02   04/16/2021  Ching Huang     Fixed scsi command timeout on ARC-1886 when
+**                                          scatter-gather count large than some number
+** 1.50.00.03   05/04/2021  Ching Huang     Fixed doorbell status arrived late on ARC-1886
+** 1.50.00.04   12/08/2021  Ching Huang     Fixed boot up hung under ARC-1886 with no volume created
+** 1.50.00.05   03/23/2023  Ching Huang     Fixed reading buffer empty length error
 ******************************************************************************************
 */
 
@@ -140,7 +145,7 @@ __FBSDID("$FreeBSD$");
 
 #define arcmsr_callout_init(a)	callout_init(a, /*mpsafe*/1);
 
-#define ARCMSR_DRIVER_VERSION	"arcmsr version 1.50.00.01 2021-02-26"
+#define ARCMSR_DRIVER_VERSION	"arcmsr version 1.50.00.05 2023-03-23"
 #include <dev/arcmsr/arcmsr.h>
 /*
 **************************************************************************
@@ -236,12 +241,6 @@ static struct cdevsw arcmsr_cdevsw={
 */
 static int arcmsr_open(struct cdev *dev, int flags, int fmt, struct thread *proc)
 {
-	int	unit = dev2unit(dev);
-	struct AdapterControlBlock *acb = devclass_get_softc(arcmsr_devclass, unit);
-
-	if (acb == NULL) {
-		return ENXIO;
-	}
 	return (0);
 }
 /*
@@ -250,12 +249,6 @@ static int arcmsr_open(struct cdev *dev, int flags, int fmt, struct thread *proc
 */
 static int arcmsr_close(struct cdev *dev, int flags, int fmt, struct thread *proc)
 {
-	int	unit = dev2unit(dev);
-	struct AdapterControlBlock *acb = devclass_get_softc(arcmsr_devclass, unit);
-
-	if (acb == NULL) {
-		return ENXIO;
-	}
 	return 0;
 }
 /*
@@ -264,12 +257,8 @@ static int arcmsr_close(struct cdev *dev, int flags, int fmt, struct thread *pro
 */
 static int arcmsr_ioctl(struct cdev *dev, u_long ioctl_cmd, caddr_t arg, int flags, struct thread *proc)
 {
-	int	unit = dev2unit(dev);
-	struct AdapterControlBlock *acb = devclass_get_softc(arcmsr_devclass, unit);
+	struct AdapterControlBlock *acb = dev->si_drv1;
 
-	if (acb == NULL) {
-		return ENXIO;
-	}
 	return (arcmsr_iop_ioctlcmd(acb, ioctl_cmd, arg));
 }
 /*
@@ -1183,8 +1172,12 @@ static void arcmsr_post_srb(struct AdapterControlBlock *acb, struct CommandContr
 
 			if (srb->arc_cdb_size <= 0x300)
 				arc_cdb_size = (srb->arc_cdb_size - 1) >> 6 | 1;
-			else
-				arc_cdb_size = (((srb->arc_cdb_size + 0xff) >> 8) + 2) << 1 | 1;
+			else {
+				arc_cdb_size = ((srb->arc_cdb_size + 0xff) >> 8) + 2;
+				if (arc_cdb_size > 0xF)
+					arc_cdb_size = 0xF;
+				arc_cdb_size = (arc_cdb_size << 1) | 1;
+			}
 			ccb_post_stamp = (srb->smid | arc_cdb_size);
 			CHIP_REG_WRITE32(HBF_MessageUnit, 0, inbound_queueport_high, 0);
 			CHIP_REG_WRITE32(HBF_MessageUnit, 0, inbound_queueport_low, ccb_post_stamp);
@@ -1569,8 +1562,10 @@ static void arcmsr_iop2drv_data_wrote_handle(struct AdapterControlBlock *acb)
 	/*check this iop data if overflow my rqbuffer*/
 	ARCMSR_LOCK_ACQUIRE(&acb->qbuffer_lock);
 	prbuffer = arcmsr_get_iop_rqbuffer(acb);
-	my_empty_len = (acb->rqbuf_lastindex - acb->rqbuf_firstindex - 1) &
-		(ARCMSR_MAX_QBUFFER-1);
+	if (acb->rqbuf_lastindex >= acb->rqbuf_firstindex)
+		my_empty_len = (ARCMSR_MAX_QBUFFER - 1) - (acb->rqbuf_lastindex - acb->rqbuf_firstindex);
+	else
+		my_empty_len = acb->rqbuf_firstindex - acb->rqbuf_lastindex - 1;
 	if(my_empty_len >= prbuffer->data_len) {
 		if(arcmsr_Read_iop_rqbuffer_data(acb, prbuffer) == 0)
 			acb->acb_flags |= ACB_F_IOPDATA_OVERFLOW;
@@ -2027,6 +2022,39 @@ static void arcmsr_hbe_doorbell_isr(struct AdapterControlBlock *acb)
 **************************************************************************
 **************************************************************************
 */
+static void arcmsr_hbf_doorbell_isr(struct AdapterControlBlock *acb)
+{
+	u_int32_t doorbell_status, in_doorbell;
+
+	/*
+	*******************************************************************
+	**  Maybe here we need to check wrqbuffer_lock is lock or not
+	**  DOORBELL: din! don!
+	**  check if there are any mail need to pack from firmware
+	*******************************************************************
+	*/
+	while(1) {
+		in_doorbell = CHIP_REG_READ32(HBE_MessageUnit, 0, iobound_doorbell);
+		if ((in_doorbell != 0) && (in_doorbell != 0xFFFFFFFF))
+			break;
+	}
+	CHIP_REG_WRITE32(HBE_MessageUnit, 0, host_int_status, 0); /* clear doorbell interrupt */
+	doorbell_status = in_doorbell ^ acb->in_doorbell;
+	if(doorbell_status & ARCMSR_HBEMU_IOP2DRV_DATA_WRITE_OK) {
+		arcmsr_iop2drv_data_wrote_handle(acb);
+	}
+	if(doorbell_status & ARCMSR_HBEMU_IOP2DRV_DATA_READ_OK) {
+		arcmsr_iop2drv_data_read_handle(acb);
+	}
+	if(doorbell_status & ARCMSR_HBEMU_IOP2DRV_MESSAGE_CMD_DONE) {
+		arcmsr_hbe_message_isr(acb);    /* messenger of "driver to iop commands" */
+	}
+	acb->in_doorbell = in_doorbell;
+}
+/*
+**************************************************************************
+**************************************************************************
+*/
 static void arcmsr_hba_postqueue_isr(struct AdapterControlBlock *acb)
 {
 	u_int32_t flag_srb;
@@ -2400,7 +2428,7 @@ static void arcmsr_handle_hbf_isr( struct AdapterControlBlock *acb)
 	do {
 		/* MU doorbell interrupts*/
 		if(host_interrupt_status & ARCMSR_HBEMU_OUTBOUND_DOORBELL_ISR) {
-			arcmsr_hbe_doorbell_isr(acb);
+			arcmsr_hbf_doorbell_isr(acb);
 		}
 		/* MU post queue interrupts*/
 		if(host_interrupt_status & ARCMSR_HBEMU_OUTBOUND_POSTQUEUE_ISR) {
@@ -4826,9 +4854,9 @@ static u_int32_t arcmsr_initialize(device_t dev)
 		acb->in_doorbell = 0;
 		acb->out_doorbell = 0;
 		acb->rid[0] = rid0;
-		arcmsr_wait_firmware_ready(acb);
 		CHIP_REG_WRITE32(HBF_MessageUnit, 0, host_int_status, 0); /*clear interrupt*/
 		CHIP_REG_WRITE32(HBF_MessageUnit, 0, iobound_doorbell, ARCMSR_HBEMU_DOORBELL_SYNC); /* synchronize doorbell to 0 */
+		arcmsr_wait_firmware_ready(acb);
 		host_buffer_dma = acb->completeQ_phys + COMPLETION_Q_POOL_SIZE;
 		CHIP_REG_WRITE32(HBF_MessageUnit, 0, inbound_msgaddr0, (u_int32_t)(host_buffer_dma | 1));  /* host buffer low addr, bit0:1 all buffer active */
 		CHIP_REG_WRITE32(HBF_MessageUnit, 0, inbound_msgaddr1, (u_int32_t)((host_buffer_dma >> 16) >> 16));/* host buffer high addr */
@@ -4891,6 +4919,7 @@ irq_alloc_failed:
 */
 static int arcmsr_attach(device_t dev)
 {
+	struct make_dev_args args;
 	struct AdapterControlBlock *acb=(struct AdapterControlBlock *)device_get_softc(dev);
 	u_int32_t unit=device_get_unit(dev);
 	struct ccb_setasync csa;
@@ -4959,7 +4988,13 @@ irqx:
 	xpt_action((union ccb *)&csa);
 	ARCMSR_LOCK_RELEASE(&acb->isr_lock);
 	/* Create the control device.  */
-	acb->ioctl_dev = make_dev(&arcmsr_cdevsw, unit, UID_ROOT, GID_WHEEL /* GID_OPERATOR */, S_IRUSR | S_IWUSR, "arcmsr%d", unit);
+	make_dev_args_init(&args);
+	args.mda_devsw = &arcmsr_cdevsw;
+	args.mda_uid = UID_ROOT;
+	args.mda_gid = GID_WHEEL /* GID_OPERATOR */;
+	args.mda_mode = S_IRUSR | S_IWUSR;
+	args.mda_si_drv1 = acb;
+	(void)make_dev_s(&args, &acb->ioctl_dev, "arcmsr%d", unit);
 		
 	(void)make_dev_alias(acb->ioctl_dev, "arc%d", unit);
 	arcmsr_callout_init(&acb->devmap_callout);

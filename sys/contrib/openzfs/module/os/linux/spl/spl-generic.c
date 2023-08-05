@@ -48,6 +48,7 @@
 #include <linux/mod_compat.h>
 #include <sys/cred.h>
 #include <sys/vnode.h>
+#include <sys/misc.h>
 
 char spl_gitrev[64] = ZFS_META_GITREV;
 
@@ -224,8 +225,10 @@ __div_u64(uint64_t u, uint32_t v)
  * replacements for libgcc-provided functions and will never be called
  * directly.
  */
+#if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
+#endif
 
 /*
  * Implementation of 64-bit unsigned division for 32-bit machines.
@@ -424,7 +427,9 @@ __aeabi_ldivmod(int64_t u, int64_t v)
 EXPORT_SYMBOL(__aeabi_ldivmod);
 #endif /* __arm || __arm__ */
 
+#if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC diagnostic pop
+#endif
 
 #endif /* BITS_PER_LONG */
 
@@ -540,6 +545,38 @@ ddi_copyin(const void *from, void *to, size_t len, int flags)
 }
 EXPORT_SYMBOL(ddi_copyin);
 
+/*
+ * Post a uevent to userspace whenever a new vdev adds to the pool. It is
+ * necessary to sync blkid information with udev, which zed daemon uses
+ * during device hotplug to identify the vdev.
+ */
+void
+spl_signal_kobj_evt(struct block_device *bdev)
+{
+#if defined(HAVE_BDEV_KOBJ) || defined(HAVE_PART_TO_DEV)
+#ifdef HAVE_BDEV_KOBJ
+	struct kobject *disk_kobj = bdev_kobj(bdev);
+#else
+	struct kobject *disk_kobj = &part_to_dev(bdev->bd_part)->kobj;
+#endif
+	if (disk_kobj) {
+		int ret = kobject_uevent(disk_kobj, KOBJ_CHANGE);
+		if (ret) {
+			pr_warn("ZFS: Sending event '%d' to kobject: '%s'"
+			    " (%p): failed(ret:%d)\n", KOBJ_CHANGE,
+			    kobject_name(disk_kobj), disk_kobj, ret);
+		}
+	}
+#else
+/*
+ * This is encountered if neither bdev_kobj() nor part_to_dev() is available
+ * in the kernel - likely due to an API change that needs to be chased down.
+ */
+#error "Unsupported kernel: unable to get struct kobj from bdev"
+#endif
+}
+EXPORT_SYMBOL(spl_signal_kobj_evt);
+
 int
 ddi_copyout(const void *from, void *to, size_t len, int flags)
 {
@@ -586,8 +623,10 @@ spl_getattr(struct file *filp, struct kstat *stat)
 	    AT_STATX_SYNC_AS_STAT);
 #elif defined(HAVE_2ARGS_VFS_GETATTR)
 	rc = vfs_getattr(&filp->f_path, stat);
-#else
+#elif defined(HAVE_3ARGS_VFS_GETATTR)
 	rc = vfs_getattr(filp->f_path.mnt, filp->f_dentry, stat);
+#else
+#error "No available vfs_getattr()"
 #endif
 	if (rc)
 		return (-rc);
@@ -655,6 +694,7 @@ hostid_read(uint32_t *hostid)
 		return (error);
 	}
 	size = stat.size;
+	// cppcheck-suppress sizeofwithnumericparameter
 	if (size < sizeof (HW_HOSTID_MASK)) {
 		filp_close(filp, 0);
 		return (EINVAL);

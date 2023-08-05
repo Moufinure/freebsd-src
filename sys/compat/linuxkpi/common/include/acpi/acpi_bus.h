@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2020 Vladimir Kondratyev <wulf@FreeBSD.org>
  *
@@ -28,8 +28,8 @@
  * $FreeBSD$
  */
 
-#ifndef _ACPI_ACPI_BUS_H_
-#define _ACPI_ACPI_BUS_H_
+#ifndef _LINUXKPI_ACPI_ACPI_BUS_H_
+#define _LINUXKPI_ACPI_ACPI_BUS_H_
 
 typedef char acpi_device_class[20];
 
@@ -49,4 +49,4 @@ int		register_acpi_notifier(struct notifier_block *nb);
 int		unregister_acpi_notifier(struct notifier_block *nb);
 uint32_t	acpi_target_system_state(void);
 
-#endif /* !_ACPI_ACPI_BUS_H_ */
+#endif /* _LINUXKPI_ACPI_ACPI_BUS_H_ */

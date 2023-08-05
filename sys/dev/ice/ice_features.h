@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
-/*  Copyright (c) 2021, Intel Corporation
+/*  Copyright (c) 2023, Intel Corporation
  *  All rights reserved.
  *
  *  Redistribution and use in source and binary forms, with or without
@@ -63,7 +63,13 @@ enum feat_list {
 	ICE_FEATURE_RDMA,
 	ICE_FEATURE_SAFE_MODE,
 	ICE_FEATURE_LENIENT_LINK_MODE,
-	ICE_FEATURE_DEFAULT_OVERRIDE,
+	ICE_FEATURE_LINK_MGMT_VER_1,
+	ICE_FEATURE_LINK_MGMT_VER_2,
+	ICE_FEATURE_HEALTH_STATUS,
+	ICE_FEATURE_FW_LOGGING,
+	ICE_FEATURE_HAS_PBA,
+	ICE_FEATURE_DCB,
+	ICE_FEATURE_TX_BALANCE,
 	/* Must be last entry */
 	ICE_FEATURE_COUNT
 };

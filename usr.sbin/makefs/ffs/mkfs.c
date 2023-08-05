@@ -80,6 +80,23 @@ static int count_digits(int);
 #define	UMASK		0755
 #define	POWEROF2(num)	(((num) & ((num) - 1)) == 0)
 
+/*
+ * The definition of "struct cg" used to contain an extra field at the end
+ * to represent the variable-length data that followed the fixed structure.
+ * This had the effect of artificially limiting the number of blocks that
+ * newfs would put in a CG, since newfs thought that the fixed-size header
+ * was bigger than it really was.  When we started validating that the CG
+ * header data actually fit into one fs block, the placeholder field caused
+ * a problem because it caused struct cg to be a different size depending on
+ * platform.  The placeholder field was later removed, but this caused a
+ * backward compatibility problem with older binaries that still thought
+ * struct cg was larger, and a new file system could fail validation if
+ * viewed by the older binaries.  To avoid this compatibility problem, we
+ * now artificially reduce the amount of space that the variable-length data
+ * can use such that new file systems will pass validation by older binaries.
+ */
+#define CGSIZEFUDGE 8
+
 static union {
 	struct fs fs;
 	char pad[SBLOCKSIZE];
@@ -117,10 +134,13 @@ static int     avgfpdir;	   /* expected number of files per directory */
 struct fs *
 ffs_mkfs(const char *fsys, const fsinfo_t *fsopts, time_t tstamp)
 {
-	int fragsperinode, optimalfpg, origdensity, minfpg, lastminfpg;
+	int fragsperinode, optimalfpg, origdensity, mindensity;
+	int minfpg, lastminfpg;
 	int32_t csfrags;
 	uint32_t i, cylno;
 	long long sizepb;
+	ino_t maxinum;
+	int minfragsperinode;   /* minimum ratio of frags to inodes */
 	void *space;
 	int size;
 	int nprintcols, printcolwidth;
@@ -312,7 +332,20 @@ ffs_mkfs(const char *fsys, const fsinfo_t *fsopts, time_t tstamp)
 	 * can put into each cylinder group. If this is too big, we reduce
 	 * the density until it fits.
 	 */
+	maxinum = (((int64_t)(1)) << 32) - INOPB(&sblock);
+	minfragsperinode = 1 + fssize / maxinum;
+	mindensity = minfragsperinode * fsize;
+	if (density == 0)
+		density = MAX(2, minfragsperinode) * fsize;
+	if (density < mindensity) {
+		origdensity = density;
+		density = mindensity;
+		fprintf(stderr, "density increased from %d to %d\n",
+		    origdensity, density);
+	}
 	origdensity = density;
+	if (!ffs_opts->min_inodes)
+		density = MIN(density, MAX(2, minfragsperinode) * fsize);
 	for (;;) {
 		fragsperinode = MAX(numfrags(&sblock, density), 1);
 		minfpg = fragsperinode * INOPB(&sblock);
@@ -331,7 +364,8 @@ ffs_mkfs(const char *fsys, const fsinfo_t *fsopts, time_t tstamp)
 			sblock.fs_fpg = minfpg;
 		sblock.fs_ipg = roundup(howmany(sblock.fs_fpg, fragsperinode),
 		    INOPB(&sblock));
-		if (CGSIZE(&sblock) < (unsigned long)sblock.fs_bsize)
+		if (CGSIZE(&sblock) < (unsigned long)sblock.fs_bsize -
+		    CGSIZEFUDGE)
 			break;
 		density -= sblock.fs_fsize;
 	}
@@ -350,9 +384,11 @@ ffs_mkfs(const char *fsys, const fsinfo_t *fsopts, time_t tstamp)
 		    INOPB(&sblock));
 		if (sblock.fs_size / sblock.fs_fpg < 1)
 			break;
-		if (CGSIZE(&sblock) < (unsigned long)sblock.fs_bsize)
+		if (CGSIZE(&sblock) < (unsigned long)sblock.fs_bsize -
+		    CGSIZEFUDGE)
 			continue;
-		if (CGSIZE(&sblock) == (unsigned long)sblock.fs_bsize)
+		if (CGSIZE(&sblock) == (unsigned long)sblock.fs_bsize -
+		    CGSIZEFUDGE)
 			break;
 		sblock.fs_fpg -= sblock.fs_frag;
 		sblock.fs_ipg = roundup(howmany(sblock.fs_fpg, fragsperinode),
@@ -513,8 +549,9 @@ ffs_mkfs(const char *fsys, const fsinfo_t *fsopts, time_t tstamp)
 		initcg(cylno, tstamp, fsopts);
 		if (cylno % nprintcols == 0)
 			printf("\n");
-		printf(" %*lld,", printcolwidth,
-			(long long)fsbtodb(&sblock, cgsblock(&sblock, cylno)));
+		printf(" %*lld%s", printcolwidth,
+		    (long long)fsbtodb(&sblock, cgsblock(&sblock, cylno)),
+		    cylno == sblock.fs_ncg - 1 ? "" : ",");
 		fflush(stdout);
 	}
 	printf("\n");
@@ -617,7 +654,7 @@ initcg(uint32_t cylno, time_t utime, const fsinfo_t *fsopts)
 	acg.cg_ndblk = dmax - cbase;
 	if (sblock.fs_contigsumsize > 0)
 		acg.cg_nclusterblks = acg.cg_ndblk >> sblock.fs_fragshift;
-	start = &acg.cg_space[0] - (u_char *)(&acg.cg_firstfield);
+	start = sizeof(acg);
 	if (Oflag == 2) {
 		acg.cg_iusedoff = start;
 	} else {
@@ -778,7 +815,7 @@ ffs_rdfs(daddr_t bno, int size, void *bf, const fsinfo_t *fsopts)
 	int n;
 	off_t offset;
 
-	offset = bno * fsopts->sectorsize + fsopts->offset;
+	offset = (off_t)bno * fsopts->sectorsize + fsopts->offset;
 	if (lseek(fsopts->fd, offset, SEEK_SET) < 0)
 		err(1, "%s: seek error for sector %lld", __func__,
 		    (long long)bno);
@@ -802,7 +839,7 @@ ffs_wtfs(daddr_t bno, int size, void *bf, const fsinfo_t *fsopts)
 	int n;
 	off_t offset;
 
-	offset = bno * fsopts->sectorsize + fsopts->offset;
+	offset = (off_t)bno * fsopts->sectorsize + fsopts->offset;
 	if (lseek(fsopts->fd, offset, SEEK_SET) < 0)
 		err(1, "%s: seek error for sector %lld", __func__,
 		    (long long)bno);

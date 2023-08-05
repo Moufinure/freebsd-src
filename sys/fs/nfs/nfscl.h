@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2009 Rick Macklem, University of Guelph
  * All rights reserved.
@@ -49,10 +49,10 @@ struct nfsv4node {
 /*
  * Just a macro to convert the nfscl_reqstart arguments.
  */
-#define	NFSCL_REQSTART(n, p, v) 					\
+#define	NFSCL_REQSTART(n, p, v, c) 					\
 	nfscl_reqstart((n), (p), VFSTONFS((v)->v_mount), 		\
 	    VTONFS(v)->n_fhp->nfh_fh, VTONFS(v)->n_fhp->nfh_len, NULL,	\
-	    NULL, 0, 0)
+	    NULL, 0, 0, (c))
 
 /*
  * These two macros convert between a lease duration and renew interval.
@@ -80,5 +80,10 @@ struct nfsv4node {
 		if (nfscl_debuglevel >= (level))			\
 			printf(__VA_ARGS__);				\
 	} while (0)
+
+struct nfscl_reconarg {
+	int	minorvers;
+	uint8_t	sessionid[NFSX_V4SESSIONID];
+};
 
 #endif	/* _NFS_NFSCL_H */

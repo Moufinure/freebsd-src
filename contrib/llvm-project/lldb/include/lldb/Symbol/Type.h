@@ -9,18 +9,20 @@
 #ifndef LLDB_SYMBOL_TYPE_H
 #define LLDB_SYMBOL_TYPE_H
 
+#include "lldb/Core/Declaration.h"
 #include "lldb/Symbol/CompilerDecl.h"
 #include "lldb/Symbol/CompilerType.h"
-#include "lldb/Symbol/Declaration.h"
 #include "lldb/Utility/ConstString.h"
 #include "lldb/Utility/UserID.h"
 #include "lldb/lldb-private.h"
 
 #include "llvm/ADT/APSInt.h"
 
+#include <optional>
 #include <set>
 
 namespace lldb_private {
+class SymbolFileCommon;
 
 /// CompilerContext allows an array of these items to be passed to perform
 /// detailed lookups in SymbolVendor and SymbolFile functions.
@@ -51,11 +53,12 @@ public:
 
   SymbolFileType(SymbolFile &symbol_file, const lldb::TypeSP &type_sp);
 
-  ~SymbolFileType() {}
+  ~SymbolFileType() = default;
 
   Type *operator->() { return GetType(); }
 
   Type *GetType();
+  SymbolFile &GetSymbolFile() const { return m_symbol_file; }
 
 protected:
   SymbolFile &m_symbol_file;
@@ -65,24 +68,30 @@ protected:
 class Type : public std::enable_shared_from_this<Type>, public UserID {
 public:
   enum EncodingDataType {
+    /// Invalid encoding.
     eEncodingInvalid,
-    eEncodingIsUID,      ///< This type is the type whose UID is m_encoding_uid
-    eEncodingIsConstUID, ///< This type is the type whose UID is m_encoding_uid
-                         /// with the const qualifier added
-    eEncodingIsRestrictUID, ///< This type is the type whose UID is
-                            /// m_encoding_uid with the restrict qualifier added
-    eEncodingIsVolatileUID, ///< This type is the type whose UID is
-                            /// m_encoding_uid with the volatile qualifier added
-    eEncodingIsTypedefUID,  ///< This type is pointer to a type whose UID is
-                            /// m_encoding_uid
-    eEncodingIsPointerUID,  ///< This type is pointer to a type whose UID is
-                            /// m_encoding_uid
-    eEncodingIsLValueReferenceUID, ///< This type is L value reference to a type
-                                   /// whose UID is m_encoding_uid
-    eEncodingIsRValueReferenceUID, ///< This type is R value reference to a type
-                                   /// whose UID is m_encoding_uid,
-    eEncodingIsAtomicUID,          ///< This type is the type whose UID is
-                                   /// m_encoding_uid as an atomic type.
+    /// This type is the type whose UID is m_encoding_uid.
+    eEncodingIsUID,
+    /// This type is the type whose UID is m_encoding_uid with the const
+    /// qualifier added.
+    eEncodingIsConstUID,
+    /// This type is the type whose UID is m_encoding_uid with the restrict
+    /// qualifier added.
+    eEncodingIsRestrictUID,
+    /// This type is the type whose UID is m_encoding_uid with the volatile
+    /// qualifier added.
+    eEncodingIsVolatileUID,
+    /// This type is alias to a type whose UID is m_encoding_uid.
+    eEncodingIsTypedefUID,
+    /// This type is pointer to a type whose UID is m_encoding_uid.
+    eEncodingIsPointerUID,
+    /// This type is L value reference to a type whose UID is m_encoding_uid.
+    eEncodingIsLValueReferenceUID,
+    /// This type is R value reference to a type whose UID is m_encoding_uid.
+    eEncodingIsRValueReferenceUID,
+    /// This type is the type whose UID is m_encoding_uid as an atomic type.
+    eEncodingIsAtomicUID,
+    /// This type is the synthetic type whose UID is m_encoding_uid.
     eEncodingIsSyntheticUID
   };
 
@@ -93,39 +102,41 @@ public:
     Full = 3
   };
 
-  Type(lldb::user_id_t uid, SymbolFile *symbol_file, ConstString name,
-       llvm::Optional<uint64_t> byte_size, SymbolContextScope *context,
-       lldb::user_id_t encoding_uid, EncodingDataType encoding_uid_type,
-       const Declaration &decl, const CompilerType &compiler_qual_type,
-       ResolveState compiler_type_resolve_state, uint32_t opaque_payload = 0);
-
-  // This makes an invalid type.  Used for functions that return a Type when
-  // they get an error.
-  Type();
-
   void Dump(Stream *s, bool show_context,
             lldb::DescriptionLevel level = lldb::eDescriptionLevelFull);
 
   void DumpTypeName(Stream *s);
 
-  // Since Type instances only keep a "SymbolFile *" internally, other classes
-  // like TypeImpl need make sure the module is still around before playing
-  // with
-  // Type instances. They can store a weak pointer to the Module;
+  /// Since Type instances only keep a "SymbolFile *" internally, other classes
+  /// like TypeImpl need make sure the module is still around before playing
+  /// with
+  /// Type instances. They can store a weak pointer to the Module;
   lldb::ModuleSP GetModule();
 
-  void GetDescription(Stream *s, lldb::DescriptionLevel level, bool show_name);
+  /// GetModule may return module for compile unit's object file.
+  /// GetExeModule returns module for executable object file that contains
+  /// compile unit where type was actually defined.
+  /// GetModule and GetExeModule may return the same value.
+  lldb::ModuleSP GetExeModule();
+
+  void GetDescription(Stream *s, lldb::DescriptionLevel level, bool show_name,
+                      ExecutionContextScope *exe_scope);
 
   SymbolFile *GetSymbolFile() { return m_symbol_file; }
   const SymbolFile *GetSymbolFile() const { return m_symbol_file; }
 
   ConstString GetName();
 
-  llvm::Optional<uint64_t> GetByteSize();
+  ConstString GetBaseName();
+
+  std::optional<uint64_t> GetByteSize(ExecutionContextScope *exe_scope);
 
   uint32_t GetNumChildren(bool omit_empty_base_classes);
 
   bool IsAggregateType();
+
+  // Returns if the type is a templated decl. Does not look through typedefs.
+  bool IsTemplateType();
 
   bool IsValidType() { return m_encoding_uid_type != eEncodingInvalid; }
 
@@ -151,14 +162,6 @@ public:
 
   bool WriteToMemory(ExecutionContext *exe_ctx, lldb::addr_t address,
                      AddressType address_type, DataExtractor &data);
-
-  bool GetIsDeclaration() const;
-
-  void SetIsDeclaration(bool b);
-
-  bool GetIsExternal() const;
-
-  void SetIsExternal(bool b);
 
   lldb::Format GetFormat();
 
@@ -189,7 +192,7 @@ public:
 
   // From a fully qualified typename, split the type into the type basename and
   // the remaining type scope (namespaces/classes).
-  static bool GetTypeScopeAndBasename(const llvm::StringRef& name,
+  static bool GetTypeScopeAndBasename(llvm::StringRef name,
                                       llvm::StringRef &scope,
                                       llvm::StringRef &basename,
                                       lldb::TypeClass &type_class);
@@ -205,23 +208,47 @@ public:
 
 protected:
   ConstString m_name;
-  SymbolFile *m_symbol_file;
+  SymbolFile *m_symbol_file = nullptr;
   /// The symbol context in which this type is defined.
-  SymbolContextScope *m_context;
-  Type *m_encoding_type;
-  lldb::user_id_t m_encoding_uid;
-  EncodingDataType m_encoding_uid_type;
+  SymbolContextScope *m_context = nullptr;
+  Type *m_encoding_type = nullptr;
+  lldb::user_id_t m_encoding_uid = LLDB_INVALID_UID;
+  EncodingDataType m_encoding_uid_type = eEncodingInvalid;
   uint64_t m_byte_size : 63;
   uint64_t m_byte_size_has_value : 1;
   Declaration m_decl;
   CompilerType m_compiler_type;
-  ResolveState m_compiler_type_resolve_state;
+  ResolveState m_compiler_type_resolve_state = ResolveState::Unresolved;
   /// Language-specific flags.
   Payload m_payload;
 
   Type *GetEncodingType();
 
   bool ResolveCompilerType(ResolveState compiler_type_resolve_state);
+private:
+  /// Only allow Symbol File to create types, as they should own them by keeping
+  /// them in their TypeList. \see SymbolFileCommon::MakeType() reference in the
+  /// header documentation here so users will know what function to use if the
+  /// get a compile error.
+  friend class lldb_private::SymbolFileCommon;
+
+  Type(lldb::user_id_t uid, SymbolFile *symbol_file, ConstString name,
+       std::optional<uint64_t> byte_size, SymbolContextScope *context,
+       lldb::user_id_t encoding_uid, EncodingDataType encoding_uid_type,
+       const Declaration &decl, const CompilerType &compiler_qual_type,
+       ResolveState compiler_type_resolve_state, uint32_t opaque_payload = 0);
+
+  // This makes an invalid type.  Used for functions that return a Type when
+  // they get an error.
+  Type();
+
+  Type(Type &t) = default;
+
+  Type(Type &&t) = default;
+
+  Type &operator=(const Type &t) = default;
+
+  Type &operator=(Type &&t) = default;
 };
 
 // the two classes here are used by the public API as a backend to the SBType
@@ -231,7 +258,7 @@ class TypeImpl {
 public:
   TypeImpl() = default;
 
-  ~TypeImpl() {}
+  ~TypeImpl() = default;
 
   TypeImpl(const lldb::TypeSP &type_sp);
 
@@ -259,6 +286,8 @@ public:
 
   void Clear();
 
+  lldb::ModuleSP GetModule() const;
+
   ConstString GetName() const;
 
   ConstString GetDisplayTypeName() const;
@@ -279,22 +308,26 @@ public:
 
   CompilerType GetCompilerType(bool prefer_dynamic);
 
-  TypeSystem *GetTypeSystem(bool prefer_dynamic);
+  CompilerType::TypeSystemSPWrapper GetTypeSystem(bool prefer_dynamic);
 
   bool GetDescription(lldb_private::Stream &strm,
                       lldb::DescriptionLevel description_level);
 
 private:
   bool CheckModule(lldb::ModuleSP &module_sp) const;
+  bool CheckExeModule(lldb::ModuleSP &module_sp) const;
+  bool CheckModuleCommon(const lldb::ModuleWP &input_module_wp,
+                         lldb::ModuleSP &module_sp) const;
 
   lldb::ModuleWP m_module_wp;
+  lldb::ModuleWP m_exe_module_wp;
   CompilerType m_static_type;
   CompilerType m_dynamic_type;
 };
 
 class TypeListImpl {
 public:
-  TypeListImpl() : m_content() {}
+  TypeListImpl() = default;
 
   void Append(const lldb::TypeImplSP &type) { m_content.push_back(type); }
 
@@ -325,11 +358,7 @@ private:
 
 class TypeMemberImpl {
 public:
-  TypeMemberImpl()
-      : m_type_impl_sp(), m_bit_offset(0), m_name(), m_bitfield_bit_size(0),
-        m_is_bitfield(false)
-
-  {}
+  TypeMemberImpl() = default;
 
   TypeMemberImpl(const lldb::TypeImplSP &type_impl_sp, uint64_t bit_offset,
                  ConstString name, uint32_t bitfield_bit_size = 0,
@@ -338,7 +367,7 @@ public:
         m_bitfield_bit_size(bitfield_bit_size), m_is_bitfield(is_bitfield) {}
 
   TypeMemberImpl(const lldb::TypeImplSP &type_impl_sp, uint64_t bit_offset)
-      : m_type_impl_sp(type_impl_sp), m_bit_offset(bit_offset), m_name(),
+      : m_type_impl_sp(type_impl_sp), m_bit_offset(bit_offset),
         m_bitfield_bit_size(0), m_is_bitfield(false) {
     if (m_type_impl_sp)
       m_name = m_type_impl_sp->GetName();
@@ -362,10 +391,10 @@ public:
 
 protected:
   lldb::TypeImplSP m_type_impl_sp;
-  uint64_t m_bit_offset;
+  uint64_t m_bit_offset = 0;
   ConstString m_name;
-  uint32_t m_bitfield_bit_size; // Bit size for bitfield members only
-  bool m_is_bitfield;
+  uint32_t m_bitfield_bit_size = 0; // Bit size for bitfield members only
+  bool m_is_bitfield = false;
 };
 
 ///
@@ -421,9 +450,7 @@ private:
 
 class TypeMemberFunctionImpl {
 public:
-  TypeMemberFunctionImpl()
-      : m_type(), m_decl(), m_name(), m_kind(lldb::eMemberFunctionKindUnknown) {
-  }
+  TypeMemberFunctionImpl() = default;
 
   TypeMemberFunctionImpl(const CompilerType &type, const CompilerDecl &decl,
                          const std::string &name,
@@ -455,16 +482,15 @@ private:
   CompilerType m_type;
   CompilerDecl m_decl;
   ConstString m_name;
-  lldb::MemberFunctionKind m_kind;
+  lldb::MemberFunctionKind m_kind = lldb::eMemberFunctionKindUnknown;
 };
 
 class TypeEnumMemberImpl {
 public:
-  TypeEnumMemberImpl()
-      : m_integer_type_sp(), m_name("<invalid>"), m_value(), m_valid(false) {}
+  TypeEnumMemberImpl() : m_name("<invalid>") {}
 
-  TypeEnumMemberImpl(const lldb::TypeImplSP &integer_type_sp,
-                     ConstString name, const llvm::APSInt &value);
+  TypeEnumMemberImpl(const lldb::TypeImplSP &integer_type_sp, ConstString name,
+                     const llvm::APSInt &value);
 
   TypeEnumMemberImpl(const TypeEnumMemberImpl &rhs) = default;
 
@@ -484,12 +510,12 @@ protected:
   lldb::TypeImplSP m_integer_type_sp;
   ConstString m_name;
   llvm::APSInt m_value;
-  bool m_valid;
+  bool m_valid = false;
 };
 
 class TypeEnumMemberListImpl {
 public:
-  TypeEnumMemberListImpl() : m_content() {}
+  TypeEnumMemberListImpl() = default;
 
   void Append(const lldb::TypeEnumMemberImplSP &type) {
     m_content.push_back(type);

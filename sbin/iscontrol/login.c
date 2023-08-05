@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2005-2010 Daniel Braniss <danny@cs.huji.ac.il>
  * All rights reserved.
@@ -59,7 +59,7 @@ static char *status_class1[] = {
      "Too many connections",
      "Missing parameter",
      "Can't include in session",
-     "Session type not suported",
+     "Session type not supported",
      "Session does not exist",
      "Invalid during login",
 };

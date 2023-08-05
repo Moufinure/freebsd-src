@@ -134,8 +134,6 @@ in6_pcbbind(struct inpcb *inp, struct sockaddr *nam,
 	INP_WLOCK_ASSERT(inp);
 	INP_HASH_WLOCK_ASSERT(pcbinfo);
 
-	if (CK_STAILQ_EMPTY(&V_in6_ifaddrhead))	/* XXX broken! */
-		return (EADDRNOTAVAIL);
 	if (inp->inp_lport || !IN6_IS_ADDR_UNSPECIFIED(&inp->in6p_laddr))
 		return (EINVAL);
 	if ((so->so_options & (SO_REUSEADDR|SO_REUSEPORT|SO_REUSEPORT_LB)) == 0)
@@ -146,13 +144,10 @@ in6_pcbbind(struct inpcb *inp, struct sockaddr *nam,
 			return (error);
 	} else {
 		sin6 = (struct sockaddr_in6 *)nam;
-		if (nam->sa_len != sizeof(*sin6))
-			return (EINVAL);
-		/*
-		 * family check.
-		 */
-		if (nam->sa_family != AF_INET6)
-			return (EAFNOSUPPORT);
+		KASSERT(sin6->sin6_family == AF_INET6,
+		    ("%s: invalid address family for %p", __func__, sin6));
+		KASSERT(sin6->sin6_len == sizeof(*sin6),
+		    ("%s: invalid address length for %p", __func__, sin6));
 
 		if ((error = sa6_embedscope(sin6, V_ip6_use_defzone)) != 0)
 			return(error);
@@ -345,10 +340,9 @@ in6_pcbbind(struct inpcb *inp, struct sockaddr *nam,
  *   have forced minor changes in every protocol).
  */
 static int
-in6_pcbladdr(struct inpcb *inp, struct sockaddr *nam,
+in6_pcbladdr(struct inpcb *inp, struct sockaddr_in6 *sin6,
     struct in6_addr *plocal_addr6)
 {
-	struct sockaddr_in6 *sin6 = (struct sockaddr_in6 *)nam;
 	int error = 0;
 	int scope_ambiguous = 0;
 	struct in6_addr in6a;
@@ -357,10 +351,6 @@ in6_pcbladdr(struct inpcb *inp, struct sockaddr *nam,
 	INP_WLOCK_ASSERT(inp);
 	INP_HASH_WLOCK_ASSERT(inp->inp_pcbinfo);	/* XXXRW: why? */
 
-	if (nam->sa_len != sizeof (*sin6))
-		return (EINVAL);
-	if (sin6->sin6_family != AF_INET6)
-		return (EAFNOSUPPORT);
 	if (sin6->sin6_port == 0)
 		return (EADDRNOTAVAIL);
 
@@ -386,6 +376,8 @@ in6_pcbladdr(struct inpcb *inp, struct sockaddr *nam,
 	NET_EPOCH_EXIT(et);
 	if (error)
 		return (error);
+	if (IN6_IS_ADDR_UNSPECIFIED(&in6a))
+		return (EHOSTUNREACH);
 
 	/*
 	 * Do not update this earlier, in case we return with an error.
@@ -421,6 +413,11 @@ in6_pcbconnect_mbuf(struct inpcb *inp, struct sockaddr *nam,
 	struct sockaddr_in6 laddr6;
 	int error;
 
+	KASSERT(sin6->sin6_family == AF_INET6,
+	    ("%s: invalid address family for %p", __func__, sin6));
+	KASSERT(sin6->sin6_len == sizeof(*sin6),
+	    ("%s: invalid address length for %p", __func__, sin6));
+
 	bzero(&laddr6, sizeof(laddr6));
 	laddr6.sin6_family = AF_INET6;
 
@@ -442,7 +439,7 @@ in6_pcbconnect_mbuf(struct inpcb *inp, struct sockaddr *nam,
 	 * Call inner routine, to assign local interface address.
 	 * in6_pcbladdr() may automatically fill in sin6_scope_id.
 	 */
-	if ((error = in6_pcbladdr(inp, nam, &laddr6.sin6_addr)) != 0)
+	if ((error = in6_pcbladdr(inp, sin6, &laddr6.sin6_addr)) != 0)
 		return (error);
 
 	if (in6_pcblookup_hash_locked(pcbinfo, &sin6->sin6_addr,
@@ -505,7 +502,8 @@ in6_pcbdisconnect(struct inpcb *inp)
 	INP_WLOCK_ASSERT(inp);
 	INP_HASH_WLOCK_ASSERT(inp->inp_pcbinfo);
 
-	bzero((caddr_t)&inp->in6p_faddr, sizeof(inp->in6p_faddr));
+	memset(&inp->in6p_laddr, 0, sizeof(inp->in6p_laddr));
+	memset(&inp->in6p_faddr, 0, sizeof(inp->in6p_faddr));
 	inp->inp_fport = 0;
 	/* clear flowinfo - draft-itojun-ipv6-flowlabel-api-00 */
 	inp->inp_flow &= ~IPV6_FLOWLABEL_MASK;

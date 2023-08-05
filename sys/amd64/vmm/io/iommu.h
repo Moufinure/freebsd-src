@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2011 NetApp, Inc.
  * All rights reserved.
@@ -60,8 +60,8 @@ struct iommu_ops {
 	iommu_invalidate_tlb_t	invalidate_tlb;
 };
 
-extern struct iommu_ops iommu_ops_intel;
-extern struct iommu_ops iommu_ops_amd;
+extern const struct iommu_ops iommu_ops_intel;
+extern const struct iommu_ops iommu_ops_amd;
 
 void	iommu_cleanup(void);
 void	*iommu_host_domain(void);

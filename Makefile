@@ -24,7 +24,6 @@
 # kernel-toolchain    - Builds the subset of world necessary to build a kernel
 # kernel-toolchains   - Build kernel-toolchain for all universe targets.
 # doxygen             - Build API documentation of the kernel, needs doxygen.
-# update              - Convenient way to update your source tree(s).
 # checkworld          - Run test suite on installed world.
 # check-old           - List obsolete directories/files/libraries.
 # check-old-dirs      - List obsolete directories.
@@ -34,6 +33,9 @@
 # delete-old-dirs     - Delete obsolete directories.
 # delete-old-files    - Delete obsolete files.
 # delete-old-libs     - Delete obsolete libraries.
+# list-old-dirs       - Raw list of possibly obsolete directories.
+# list-old-files      - Raw list of possibly obsolete files.
+# list-old-libs       - Raw list of possibly obsolete libraries.
 # targets             - Print a list of supported TARGET/TARGET_ARCH pairs
 #                       for world and kernel targets.
 # toolchains          - Build a toolchain for all world and kernel targets.
@@ -155,7 +157,8 @@ TGTS=	all all-man buildenv buildenvvars buildkernel buildworld \
 	installkernel.debug packagekernel packageworld \
 	reinstallkernel reinstallkernel.debug \
 	installworld kernel-toolchain libraries maninstall \
-	obj objlink showconfig tags toolchain update \
+	list-old-dirs list-old-files list-old-libs \
+	obj objlink showconfig tags toolchain \
 	makeman sysent \
 	_worldtmp _legacy _bootstrap-tools _cleanobj _obj \
 	_build-tools _build-metadata _cross-tools _includes _libraries \
@@ -213,13 +216,18 @@ META_TGT_WHITELIST+= \
 .ORDER: buildkernel reinstallkernel
 .ORDER: buildkernel reinstallkernel.debug
 
+# Only sanitize PATH on FreeBSD.
+# PATH may include tools that are required to cross-build
+# on non-FreeBSD systems.
+.if ${.MAKE.OS} == "FreeBSD"
 PATH=	/sbin:/bin:/usr/sbin:/usr/bin
+.endif
 MAKEOBJDIRPREFIX?=	/usr/obj
 _MAKEOBJDIRPREFIX!= /usr/bin/env -i PATH=${PATH} ${MAKE} MK_AUTO_OBJ=no \
     ${.MAKEFLAGS:MMAKEOBJDIRPREFIX=*} __MAKE_CONF=${__MAKE_CONF} \
     SRCCONF=${SRCCONF} SRC_ENV_CONF= \
     -f /dev/null -V MAKEOBJDIRPREFIX dummy
-.if !empty(_MAKEOBJDIRPREFIX)
+.if !empty(_MAKEOBJDIRPREFIX) || !empty(.MAKEOVERRIDES:MMAKEOBJDIRPREFIX)
 .error MAKEOBJDIRPREFIX can only be set in environment or src-env.conf(5),\
     not as a global (in make.conf(5) or src.conf(5)) or command-line variable.
 .endif
@@ -458,7 +466,7 @@ MMAKE=		${MMAKEENV} ${MAKE} \
 		OBJTOP=${MYMAKE:H}/obj \
 		OBJROOT='$${OBJTOP}/' \
 		MAKEOBJDIRPREFIX= \
-		MAN= -DNO_SHARED \
+		MK_MAN=no -DNO_SHARED \
 		-DNO_CPU_CFLAGS MK_WERROR=no \
 		-DNO_SUBDIR \
 		DESTDIR= PROGNAME=${MYMAKE:T}
@@ -525,12 +533,15 @@ TARGET_ARCHES_${target}?= ${target}
 .endfor
 
 .if defined(USE_GCC_TOOLCHAINS)
-TOOLCHAINS_amd64=	amd64-gcc6
-TOOLCHAINS_arm64=	aarch64-gcc6
-TOOLCHAINS_i386=	i386-gcc6
-TOOLCHAINS_mips=	mips-gcc6
-TOOLCHAINS_powerpc=	powerpc-gcc6 powerpc64-gcc6
-TOOLCHAIN_powerpc64=	powerpc64-gcc6
+TOOLCHAINS_amd64=	amd64-gcc9
+TOOLCHAINS_arm=		armv6-gcc9 armv7-gcc9
+TOOLCHAIN_armv7=	armv7-gcc9
+TOOLCHAINS_arm64=	aarch64-gcc9
+TOOLCHAINS_i386=	i386-gcc9
+TOOLCHAINS_mips=	mips-gcc9
+TOOLCHAINS_powerpc=	powerpc-gcc9 powerpc64-gcc9
+TOOLCHAIN_powerpc64=	powerpc64-gcc9
+TOOLCHAINS_riscv=	riscv64-gcc9
 .endif
 
 # If a target is using an external toolchain, set MAKE_PARAMS to enable use

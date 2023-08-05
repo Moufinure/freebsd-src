@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2003-2007 Tim Kientzle
  * All rights reserved.
@@ -77,12 +77,12 @@ bsdar_verrc(struct bsdar *bsdar, int code, const char *fmt, va_list ap)
 }
 
 void
-bsdar_errc(struct bsdar *bsdar, int eval, int code, const char *fmt, ...)
+bsdar_errc(struct bsdar *bsdar, int code, const char *fmt, ...)
 {
 	va_list ap;
 
 	va_start(ap, fmt);
 	bsdar_verrc(bsdar, code, fmt, ap);
 	va_end(ap);
-	exit(eval);
+	exit(EXIT_FAILURE);
 }

@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2000 Michael Smith
  * Copyright (c) 2001 Scott Long
@@ -469,6 +469,14 @@ struct aac_softc
 	u_int32_t	FwDebugFlags;		/* FW Debug Flags */
 	u_int32_t	FwDebugBufferSize;	/* FW Debug Buffer size */	
 };
+
+/*
+ * Max. I/O size in bytes.
+ * Reserve one page for the DMA subsystem, that may need it when the
+ * I/O buffer is not page aligned.
+ */
+#define AAC_MAXIO_SIZE(sc)	MIN(((sc)->aac_max_sectors << 9) - PAGE_SIZE, \
+					maxphys)
 
 /*
  * Event callback mechanism for the driver

@@ -185,7 +185,7 @@ cloudabi_sys_file_link(struct thread *td,
 
 	error = kern_linkat(td, uap->fd1.fd, uap->fd2, path1, path2,
 	    UIO_SYSSPACE, (uap->fd1.flags & CLOUDABI_LOOKUP_SYMLINK_FOLLOW) ?
-	    FOLLOW : NOFOLLOW);
+	    AT_SYMLINK_FOLLOW : 0);
 	cloudabi_freestr(path1);
 	cloudabi_freestr(path2);
 	return (error);
@@ -659,7 +659,7 @@ cloudabi_sys_file_stat_get(struct thread *td,
 
 	error = kern_statat(td,
 	    (uap->fd.flags & CLOUDABI_LOOKUP_SYMLINK_FOLLOW) != 0 ? 0 :
-	    AT_SYMLINK_NOFOLLOW, uap->fd.fd, path, UIO_SYSSPACE, &sb, NULL);
+	    AT_SYMLINK_NOFOLLOW, uap->fd.fd, path, UIO_SYSSPACE, &sb);
 	cloudabi_freestr(path);
 	if (error != 0)
 		return (error);

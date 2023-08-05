@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 1999,2000 Jonathan Lemon
  * All rights reserved.
@@ -334,9 +334,9 @@ ida_startup(void *arg)
 
 	config_intrhook_disestablish(&ida->ich);
 
-	mtx_lock(&Giant);
+	bus_topo_lock();
 	bus_generic_attach(ida->dev);
-	mtx_unlock(&Giant);
+	bus_topo_unlock();
 }
 
 int

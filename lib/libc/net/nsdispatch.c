@@ -1,7 +1,7 @@
 /*	$NetBSD: nsdispatch.c,v 1.9 1999/01/25 00:16:17 lukem Exp $	*/
 
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-NetBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 1997, 1998, 1999 The NetBSD Foundation, Inc.
  * All rights reserved.
@@ -335,7 +335,9 @@ static int
 nss_configure(void)
 {
 	static time_t	 confmod;
+#ifndef NS_REREAD_CONF
 	static int	 already_initialized = 0;
+#endif
 	struct stat	 statbuf;
 	int		 result, isthreaded;
 	const char	*path;

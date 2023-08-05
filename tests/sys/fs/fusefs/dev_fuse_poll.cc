@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2019 The FreeBSD Foundation
  *
@@ -93,7 +93,6 @@ TEST_P(DevFusePoll, access)
 /* Ensure that we wake up pollers during unmount */
 TEST_P(DevFusePoll, destroy)
 {
-	expect_forget(FUSE_ROOT_ID, 1);
 	expect_destroy(0);
 
 	m_mock->unmount();

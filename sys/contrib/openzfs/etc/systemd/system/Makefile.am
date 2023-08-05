@@ -12,10 +12,14 @@ systemdunit_DATA = \
 	zfs-volume-wait.service \
 	zfs-import.target \
 	zfs-volumes.target \
-	zfs.target
+	zfs.target \
+	zfs-scrub-monthly@.timer \
+	zfs-scrub-weekly@.timer \
+	zfs-scrub@.service
 
 SUBSTFILES += $(systemdpreset_DATA) $(systemdunit_DATA)
 
 install-data-hook:
 	$(MKDIR_P) "$(DESTDIR)$(systemdunitdir)"
 	ln -sf /dev/null "$(DESTDIR)$(systemdunitdir)/zfs-import.service"
+	ln -sf /dev/null "$(DESTDIR)$(systemdunitdir)/zfs-load-key.service"

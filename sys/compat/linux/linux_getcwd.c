@@ -1,7 +1,7 @@
 /* $OpenBSD: linux_getcwd.c,v 1.2 2001/05/16 12:50:21 ho Exp $ */
 /* $NetBSD: vfs_getcwd.c,v 1.3.2.3 1999/07/11 10:24:09 sommerfeld Exp $ */
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-NetBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 1999 The NetBSD Foundation, Inc.
  * Copyright (c) 2015 The FreeBSD Foundation
@@ -38,13 +38,10 @@
 #include <sys/cdefs.h>
 __FBSDID("$FreeBSD$");
 
-#include "opt_compat.h"
-
 #include <sys/param.h>
-#include <sys/systm.h>
-#include <sys/vnode.h>
-#include <sys/proc.h>
 #include <sys/malloc.h>
+#include <sys/proc.h>
+#include <sys/vnode.h>
 
 #ifdef COMPAT_LINUX32
 #include <machine/../linux32/linux.h>
@@ -54,7 +51,6 @@ __FBSDID("$FreeBSD$");
 #include <machine/../linux/linux_proto.h>
 #endif
 #include <compat/linux/linux_misc.h>
-#include <compat/linux/linux_util.h>
 
 /*
  * Find pathname of process's current directory.
@@ -74,6 +70,8 @@ linux_getcwd(struct thread *td, struct linux_getcwd_args *uap)
 
 	buf = malloc(buflen, M_TEMP, M_WAITOK);
 	error = vn_getcwd(buf, &retbuf, &buflen);
+	if (error == ENOMEM)
+		error = ERANGE;
 	if (error == 0) {
 		error = copyout(retbuf, uap->buf, buflen);
 		if (error == 0)

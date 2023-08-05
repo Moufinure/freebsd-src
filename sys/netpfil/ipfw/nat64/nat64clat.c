@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2019 Yandex LLC
  * Copyright (c) 2019 Andrey V. Elsukov <ae@FreeBSD.org>
@@ -71,7 +71,7 @@ nat64clat_log(struct pfloghdr *plog, struct mbuf *m, sa_family_t family,
 	static uint32_t pktid = 0;
 
 	memset(plog, 0, sizeof(*plog));
-	plog->length = PFLOG_REAL_HDRLEN;
+	plog->length = PFLOG_HDRLEN;
 	plog->af = family;
 	plog->action = PF_NAT;
 	plog->dir = PF_IN;

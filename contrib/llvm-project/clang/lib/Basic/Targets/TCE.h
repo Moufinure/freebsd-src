@@ -35,14 +35,22 @@ static const unsigned TCEOpenCLAddrSpaceMap[] = {
     4, // opencl_local
     5, // opencl_constant
     0, // opencl_private
+    1, // opencl_global_device
+    1, // opencl_global_host
     // FIXME: generic has to be added to the target
     0, // opencl_generic
     0, // cuda_device
     0, // cuda_constant
     0, // cuda_shared
+    0, // sycl_global
+    0, // sycl_global_device
+    0, // sycl_global_host
+    0, // sycl_local
+    0, // sycl_private
     0, // ptr32_sptr
     0, // ptr32_uptr
     0, // ptr64
+    0, // hlsl_groupshared
 };
 
 class LLVM_LIBRARY_VISIBILITY TCETargetInfo : public TargetInfo {
@@ -84,7 +92,9 @@ public:
 
   bool hasFeature(StringRef Feature) const override { return Feature == "tce"; }
 
-  ArrayRef<Builtin::Info> getTargetBuiltins() const override { return None; }
+  ArrayRef<Builtin::Info> getTargetBuiltins() const override {
+    return std::nullopt;
+  }
 
   const char *getClobbers() const override { return ""; }
 
@@ -92,7 +102,9 @@ public:
     return TargetInfo::VoidPtrBuiltinVaList;
   }
 
-  ArrayRef<const char *> getGCCRegNames() const override { return None; }
+  ArrayRef<const char *> getGCCRegNames() const override {
+    return std::nullopt;
+  }
 
   bool validateAsmConstraint(const char *&Name,
                              TargetInfo::ConstraintInfo &info) const override {
@@ -100,7 +112,7 @@ public:
   }
 
   ArrayRef<TargetInfo::GCCRegAlias> getGCCRegAliases() const override {
-    return None;
+    return std::nullopt;
   }
 };
 

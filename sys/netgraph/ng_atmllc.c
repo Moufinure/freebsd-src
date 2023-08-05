@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2003-2004 Benno Rice <benno@eloquent.com.au>
  * All Rights Reserved.
@@ -92,6 +92,8 @@ static int
 ng_atmllc_constructor(node_p node)
 {
 	struct	ng_atmllc_priv *priv;
+
+	gone_in(14, "ng_atmllc");
 
 	priv = malloc(sizeof(*priv), M_NETGRAPH, M_WAITOK | M_ZERO);
 	NG_NODE_SET_PRIVATE(node, priv);

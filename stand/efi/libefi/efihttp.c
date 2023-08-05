@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2019 Intel Corporation
  *
@@ -94,7 +94,7 @@ struct devsw efihttp_dev = {
 	.dv_close =	efihttp_dev_close,
 	.dv_ioctl =	noioctl,
 	.dv_print =	NULL,
-	.dv_cleanup =	NULL,
+	.dv_cleanup =	nullsys,
 };
 
 struct fs_ops efihttp_fsops = {

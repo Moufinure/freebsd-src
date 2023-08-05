@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2014 The FreeBSD Foundation
  *
@@ -170,7 +170,8 @@ unmount_by_fsid(const fsid_t fsid, const char *mountpoint)
 			log_warn("cannot unmount %s (%s)",
 			    mountpoint, fsid_str);
 		}
-	}
+	} else
+		rpc_umntall();
 
 	free(fsid_str);
 

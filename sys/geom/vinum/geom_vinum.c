@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  *  Copyright (c) 2004, 2007 Lukas Ertl
  *  Copyright (c) 2007, 2009 Ulf Lilleengen
@@ -599,6 +599,7 @@ gv_taste(struct g_class *mp, struct g_provider *pp, int flags __unused)
 	sc = gp->softc;
 
 	cp = g_new_consumer(gp);
+	cp->flags |= G_CF_DIRECT_SEND | G_CF_DIRECT_RECEIVE;
 	if (g_attach(cp, pp) != 0) {
 		g_destroy_consumer(cp);
 		return (NULL);

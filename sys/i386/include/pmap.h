@@ -238,6 +238,8 @@ pmap_vmspace_copy(pmap_t dst_pmap __unused, pmap_t src_pmap __unused)
 
 struct sf_buf;
 
+#define	pmap_vm_page_alloc_check(m)
+
 /*
  * Only the following functions or macros may be used before pmap_bootstrap()
  * is called: pmap_kenter(), pmap_kextract(), pmap_kremove(), vtophys(), and
@@ -284,6 +286,7 @@ void	pmap_invalidate_cache_range(vm_offset_t sva, vm_offset_t eva);
 void	pmap_force_invalidate_cache_range(vm_offset_t sva, vm_offset_t eva);
 void	*pmap_trm_alloc(size_t size, int flags);
 void	pmap_trm_free(void *addr, size_t size);
+#define	pmap_map_delete(pmap, sva, eva)	pmap_remove(pmap, sva, eva)
 
 void	invltlb_glob(void);
 

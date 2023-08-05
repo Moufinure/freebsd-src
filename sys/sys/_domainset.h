@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2017,	Jeffrey Roberson <jeff@freebsd.org>
  * All rights reserved.
@@ -43,7 +43,7 @@
 #define	DOMAINSET_SETSIZE	DOMAINSET_MAXSIZE
 #endif
 
-BITSET_DEFINE(_domainset, DOMAINSET_SETSIZE);
+__BITSET_DEFINE(_domainset, DOMAINSET_SETSIZE);
 typedef struct _domainset domainset_t;
 
 /*

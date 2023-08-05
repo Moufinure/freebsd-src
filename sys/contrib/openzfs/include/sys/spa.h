@@ -73,27 +73,6 @@ struct dsl_dataset;
 struct dsl_crypto_params;
 
 /*
- * We currently support block sizes from 512 bytes to 16MB.
- * The benefits of larger blocks, and thus larger IO, need to be weighed
- * against the cost of COWing a giant block to modify one byte, and the
- * large latency of reading or writing a large block.
- *
- * Note that although blocks up to 16MB are supported, the recordsize
- * property can not be set larger than zfs_max_recordsize (default 1MB).
- * See the comment near zfs_max_recordsize in dsl_dataset.c for details.
- *
- * Note that although the LSIZE field of the blkptr_t can store sizes up
- * to 32MB, the dnode's dn_datablkszsec can only store sizes up to
- * 32MB - 512 bytes.  Therefore, we limit SPA_MAXBLOCKSIZE to 16MB.
- */
-#define	SPA_MINBLOCKSHIFT	9
-#define	SPA_OLD_MAXBLOCKSHIFT	17
-#define	SPA_MAXBLOCKSHIFT	24
-#define	SPA_MINBLOCKSIZE	(1ULL << SPA_MINBLOCKSHIFT)
-#define	SPA_OLD_MAXBLOCKSIZE	(1ULL << SPA_OLD_MAXBLOCKSHIFT)
-#define	SPA_MAXBLOCKSIZE	(1ULL << SPA_MAXBLOCKSHIFT)
-
-/*
  * Alignment Shift (ashift) is an immutable, internal top-level vdev property
  * which can only be set at vdev creation time. Physical writes are always done
  * according to it, which makes 2^ashift the smallest possible IO on a vdev.
@@ -404,6 +383,12 @@ typedef struct blkptr {
 
 /*
  * Macros to get and set fields in a bp or DVA.
+ */
+
+/*
+ * Note, for gang blocks, DVA_GET_ASIZE() is the total space allocated for
+ * this gang DVA including its children BP's.  The space allocated at this
+ * DVA's vdev/offset is vdev_gang_header_asize(vdev).
  */
 #define	DVA_GET_ASIZE(dva)	\
 	BF64_GET_SB((dva)->dva_word[0], 0, SPA_ASIZEBITS, SPA_MINBLOCKSHIFT, 0)
@@ -800,6 +785,7 @@ extern int bpobj_enqueue_free_cb(void *arg, const blkptr_t *bp, dmu_tx_t *tx);
 #define	SPA_ASYNC_L2CACHE_REBUILD		0x800
 #define	SPA_ASYNC_L2CACHE_TRIM			0x1000
 #define	SPA_ASYNC_REBUILD_DONE			0x2000
+#define	SPA_ASYNC_DETACH_SPARE			0x4000
 
 /* device manipulation */
 extern int spa_vdev_add(spa_t *spa, nvlist_t *nvroot);
@@ -852,7 +838,7 @@ extern kmutex_t spa_namespace_lock;
 #define	SPA_CONFIG_UPDATE_POOL	0
 #define	SPA_CONFIG_UPDATE_VDEVS	1
 
-extern void spa_write_cachefile(spa_t *, boolean_t, boolean_t);
+extern void spa_write_cachefile(spa_t *, boolean_t, boolean_t, boolean_t);
 extern void spa_config_load(void);
 extern nvlist_t *spa_all_configs(uint64_t *);
 extern void spa_config_set(spa_t *spa, nvlist_t *config);
@@ -910,7 +896,6 @@ typedef struct spa_stats {
 	spa_history_list_t	read_history;
 	spa_history_list_t	txg_history;
 	spa_history_kstat_t	tx_assign_histogram;
-	spa_history_kstat_t	io_history;
 	spa_history_list_t	mmp_history;
 	spa_history_kstat_t	state;		/* pool state */
 	spa_history_kstat_t	iostats;
@@ -987,6 +972,8 @@ extern int spa_import_progress_set_state(uint64_t pool_guid,
 /* Pool configuration locks */
 extern int spa_config_tryenter(spa_t *spa, int locks, void *tag, krw_t rw);
 extern void spa_config_enter(spa_t *spa, int locks, const void *tag, krw_t rw);
+extern void spa_config_enter_mmp(spa_t *spa, int locks, const void *tag,
+    krw_t rw);
 extern void spa_config_exit(spa_t *spa, int locks, const void *tag);
 extern int spa_config_held(spa_t *spa, int locks, krw_t rw);
 
@@ -1081,7 +1068,6 @@ extern spa_t *spa_by_guid(uint64_t pool_guid, uint64_t device_guid);
 extern boolean_t spa_guid_exists(uint64_t pool_guid, uint64_t device_guid);
 extern char *spa_strdup(const char *);
 extern void spa_strfree(char *);
-extern uint64_t spa_get_random(uint64_t range);
 extern uint64_t spa_generate_guid(spa_t *spa);
 extern void snprintf_blkptr(char *buf, size_t buflen, const blkptr_t *bp);
 extern void spa_freeze(spa_t *spa);
@@ -1185,6 +1171,8 @@ extern void spa_configfile_set(spa_t *, nvlist_t *, boolean_t);
 /* asynchronous event notification */
 extern void spa_event_notify(spa_t *spa, vdev_t *vdev, nvlist_t *hist_nvl,
     const char *name);
+extern void zfs_ereport_zvol_post(const char *subclass, const char *name,
+    const char *device_name, const char *raw_name);
 
 /* waiting for pool activities to complete */
 extern int spa_wait(const char *pool, zpool_wait_activity_t activity,

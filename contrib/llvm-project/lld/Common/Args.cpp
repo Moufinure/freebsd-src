@@ -26,14 +26,17 @@ CodeGenOpt::Level lld::args::getCGOptLevel(int optLevelLTO) {
   return CodeGenOpt::Default;
 }
 
-int64_t lld::args::getInteger(opt::InputArgList &args, unsigned key,
-                              int64_t Default) {
+static int64_t getInteger(opt::InputArgList &args, unsigned key,
+                          int64_t Default, unsigned base) {
   auto *a = args.getLastArg(key);
   if (!a)
     return Default;
 
   int64_t v;
-  if (to_integer(a->getValue(), v, 10))
+  StringRef s = a->getValue();
+  if (base == 16 && (s.startswith("0x") || s.startswith("0X")))
+    s = s.drop_front(2);
+  if (to_integer(s, v, base))
     return v;
 
   StringRef spelling = args.getArgString(a->getIndex());
@@ -41,8 +44,19 @@ int64_t lld::args::getInteger(opt::InputArgList &args, unsigned key,
   return 0;
 }
 
-std::vector<StringRef> lld::args::getStrings(opt::InputArgList &args, int id) {
-  std::vector<StringRef> v;
+int64_t lld::args::getInteger(opt::InputArgList &args, unsigned key,
+                              int64_t Default) {
+  return ::getInteger(args, key, Default, 10);
+}
+
+int64_t lld::args::getHex(opt::InputArgList &args, unsigned key,
+                          int64_t Default) {
+  return ::getInteger(args, key, Default, 16);
+}
+
+SmallVector<StringRef, 0> lld::args::getStrings(opt::InputArgList &args,
+                                                int id) {
+  SmallVector<StringRef, 0> v;
   for (auto *arg : args.filtered(id))
     v.push_back(arg->getValue());
   return v;
@@ -76,7 +90,7 @@ std::vector<StringRef> lld::args::getLines(MemoryBufferRef mb) {
 }
 
 StringRef lld::args::getFilenameWithoutExe(StringRef path) {
-  if (path.endswith_lower(".exe"))
+  if (path.endswith_insensitive(".exe"))
     return sys::path::stem(path);
   return sys::path::filename(path);
 }

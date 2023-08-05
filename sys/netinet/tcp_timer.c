@@ -117,10 +117,10 @@ SYSCTL_PROC(_net_inet_tcp, TCPCTL_DELACKTIME, delacktime,
     &tcp_delacktime, 0, sysctl_msec_to_ticks, "I",
     "Time before a delayed ACK is sent");
 
-int	tcp_msl;
+VNET_DEFINE(int, tcp_msl);
 SYSCTL_PROC(_net_inet_tcp, OID_AUTO, msl,
-    CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_NEEDGIANT,
-    &tcp_msl, 0, sysctl_msec_to_ticks, "I",
+    CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_VNET,
+    &VNET_NAME(tcp_msl), 0, sysctl_msec_to_ticks, "I",
     "Maximum segment lifetime");
 
 int	tcp_rexmit_initial;
@@ -210,17 +210,14 @@ inp_to_cpuid(struct inpcb *inp)
 {
 	u_int cpuid;
 
-#ifdef	RSS
 	if (per_cpu_timers) {
+#ifdef	RSS
 		cpuid = rss_hash2cpuid(inp->inp_flowid, inp->inp_flowtype);
 		if (cpuid == NETISR_CPUID_NONE)
 			return (curcpu);	/* XXX */
 		else
 			return (cpuid);
-	}
-#else
-	/* Legacy, pre-RSS behaviour */
-	if (per_cpu_timers) {
+#endif
 		/*
 		 * We don't have a flowid -> cpuid mapping, so cheat and
 		 * just map unknown cpuids to curcpu.  Not the best, but
@@ -230,10 +227,7 @@ inp_to_cpuid(struct inpcb *inp)
 		if (! CPU_ABSENT(cpuid))
 			return (cpuid);
 		return (curcpu);
-	}
-#endif
-	/* Default for RSS and non-RSS - cpuid 0 */
-	else {
+	} else {
 		return (0);
 	}
 }
@@ -272,8 +266,12 @@ tcp_timer_delack(void *xtp)
 	struct epoch_tracker et;
 	struct tcpcb *tp = xtp;
 	struct inpcb *inp;
-	CURVNET_SET(tp->t_vnet);
+#ifdef TCPDEBUG
+	int ostate;
 
+	ostate = tp->t_state;
+#endif
+	CURVNET_SET(tp->t_vnet);
 	inp = tp->t_inpcb;
 	KASSERT(inp != NULL, ("%s: tp %p tp->t_inpcb == NULL", __func__, tp));
 	INP_WLOCK(inp);
@@ -293,6 +291,11 @@ tcp_timer_delack(void *xtp)
 	TCPSTAT_INC(tcps_delack);
 	NET_EPOCH_ENTER(et);
 	(void) tp->t_fb->tfb_tcp_output(tp);
+#ifdef TCPDEBUG
+	if (inp->inp_socket->so_options & SO_DEBUG)
+		tcp_trace(TA_USER, ostate, tp, (void *)0, (struct tcphdr *)0,
+			  (TCPT_DELACK << 8) | PRU_FASTTIMO);
+#endif
 	INP_WUNLOCK(inp);
 	NET_EPOCH_EXIT(et);
 	CURVNET_RESTORE();
@@ -386,7 +389,7 @@ tcp_timer_2msl(void *xtp)
 #ifdef TCPDEBUG
 	if (tp != NULL && (tp->t_inpcb->inp_socket->so_options & SO_DEBUG))
 		tcp_trace(TA_USER, ostate, tp, (void *)0, (struct tcphdr *)0,
-			  PRU_SLOWTIMO);
+			  (TCPT_2MSL << 8) | PRU_SLOWTIMO);
 #endif
 	TCP_PROBE2(debug__user, tp, PRU_SLOWTIMO);
 
@@ -508,7 +511,7 @@ dropit:
 #ifdef TCPDEBUG
 	if (tp != NULL && (tp->t_inpcb->inp_socket->so_options & SO_DEBUG))
 		tcp_trace(TA_USER, ostate, tp, (void *)0, (struct tcphdr *)0,
-			  PRU_SLOWTIMO);
+			  (TCPT_KEEP << 8) | PRU_SLOWTIMO);
 #endif
 	TCP_PROBE2(debug__user, tp, PRU_SLOWTIMO);
 	NET_EPOCH_EXIT(et);
@@ -598,7 +601,8 @@ tcp_timer_persist(void *xtp)
 
 #ifdef TCPDEBUG
 	if (tp != NULL && tp->t_inpcb->inp_socket->so_options & SO_DEBUG)
-		tcp_trace(TA_USER, ostate, tp, NULL, NULL, PRU_SLOWTIMO);
+		tcp_trace(TA_USER, ostate, tp, NULL, NULL,
+			  (TCPT_PERSIST << 8) | PRU_SLOWTIMO);
 #endif
 	TCP_PROBE2(debug__user, tp, PRU_SLOWTIMO);
 	INP_WUNLOCK(inp);
@@ -881,7 +885,7 @@ tcp_timer_rexmt(void * xtp)
 #ifdef TCPDEBUG
 	if (tp != NULL && (tp->t_inpcb->inp_socket->so_options & SO_DEBUG))
 		tcp_trace(TA_USER, ostate, tp, (void *)0, (struct tcphdr *)0,
-			  PRU_SLOWTIMO);
+			  (TCPT_REXMT << 8) | PRU_SLOWTIMO);
 #endif
 	TCP_PROBE2(debug__user, tp, PRU_SLOWTIMO);
 	INP_WUNLOCK(inp);

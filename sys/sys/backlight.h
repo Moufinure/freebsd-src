@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2020 Emmanuel Vadot <manu@FreeBSD.org>
  *
@@ -29,6 +29,8 @@
 
 #ifndef __BACKLIGHT_H__
 #define	__BACKLIGHT_H__
+
+#include <sys/types.h>
 
 #define	BACKLIGHTMAXLEVELS 100
 

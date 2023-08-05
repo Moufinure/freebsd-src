@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2011 NetApp, Inc.
  * All rights reserved.
@@ -31,8 +31,10 @@
 #ifndef _VMMAPI_H_
 #define	_VMMAPI_H_
 
+#include <sys/cdefs.h>
 #include <sys/param.h>
 #include <sys/cpuset.h>
+#include <machine/vmm.h>
 #include <machine/vmm_dev.h>
 
 #include <stdbool.h>
@@ -41,7 +43,7 @@
  * API version for out-of-tree consumers like grub-bhyve for making compile
  * time decisions.
  */
-#define	VMMAPI_VERSION	0103	/* 2 digit major followed by 2 digit minor */
+#define	VMMAPI_VERSION	0104	/* 2 digit major followed by 2 digit minor */
 
 struct iovec;
 struct vmctx;
@@ -73,8 +75,10 @@ enum {
 	VM_SYSMEM,
 	VM_BOOTROM,
 	VM_FRAMEBUFFER,
+	VM_PCIROM,
 };
 
+__BEGIN_DECLS
 /*
  * Get the length and name of the memory segment identified by 'segid'.
  * Note that system memory segments are identified with a nul name.
@@ -111,10 +115,13 @@ void	*vm_create_devmem(struct vmctx *ctx, int segid, const char *name,
 int	vm_mmap_memseg(struct vmctx *ctx, vm_paddr_t gpa, int segid,
 	    vm_ooffset_t segoff, size_t len, int prot);
 
+int	vm_munmap_memseg(struct vmctx *ctx, vm_paddr_t gpa, size_t len);
+
 int	vm_create(const char *name);
-int	vm_get_device_fd(struct vmctx *ctx);
 struct vmctx *vm_open(const char *name);
+void	vm_close(struct vmctx *ctx);
 void	vm_destroy(struct vmctx *ctx);
+int	vm_limit_rights(struct vmctx *ctx);
 int	vm_parse_memsize(const char *optarg, size_t *memsize);
 int	vm_setup_memory(struct vmctx *ctx, size_t len, enum vm_mmap_style s);
 void	*vm_map_gpa(struct vmctx *ctx, vm_paddr_t gaddr, size_t len);
@@ -130,7 +137,7 @@ uint32_t vm_get_lowmem_limit(struct vmctx *ctx);
 void	vm_set_lowmem_limit(struct vmctx *ctx, uint32_t limit);
 void	vm_set_memflags(struct vmctx *ctx, int flags);
 int	vm_get_memflags(struct vmctx *ctx);
-int	vm_get_name(struct vmctx *ctx, char *buffer, size_t max_len);
+const char *vm_get_name(struct vmctx *ctx);
 size_t	vm_get_lowmem_size(struct vmctx *ctx);
 size_t	vm_get_highmem_size(struct vmctx *ctx);
 int	vm_set_desc(struct vmctx *ctx, int vcpu, int reg,
@@ -176,6 +183,8 @@ int	vm_assign_pptdev(struct vmctx *ctx, int bus, int slot, int func);
 int	vm_unassign_pptdev(struct vmctx *ctx, int bus, int slot, int func);
 int	vm_map_pptdev_mmio(struct vmctx *ctx, int bus, int slot, int func,
 			   vm_paddr_t gpa, size_t len, vm_paddr_t hpa);
+int	vm_unmap_pptdev_mmio(struct vmctx *ctx, int bus, int slot, int func,
+			     vm_paddr_t gpa, size_t len);
 int	vm_setup_pptdev_msi(struct vmctx *ctx, int vcpu, int bus, int slot,
 	    int func, uint64_t addr, uint64_t msg, int numvec);
 int	vm_setup_pptdev_msix(struct vmctx *ctx, int vcpu, int bus, int slot,
@@ -185,8 +194,6 @@ int	vm_disable_pptdev_msix(struct vmctx *ctx, int bus, int slot, int func);
 
 int	vm_get_intinfo(struct vmctx *ctx, int vcpu, uint64_t *i1, uint64_t *i2);
 int	vm_set_intinfo(struct vmctx *ctx, int vcpu, uint64_t exit_intinfo);
-
-const cap_ioctl_t *vm_get_ioctls(size_t *len);
 
 /*
  * Return a pointer to the statistics buffer. Note that this is not MT-safe.
@@ -212,12 +219,9 @@ int	vm_get_hpet_capabilities(struct vmctx *ctx, uint32_t *capabilities);
 int	vm_copy_setup(struct vmctx *ctx, int vcpu, struct vm_guest_paging *pg,
 	    uint64_t gla, size_t len, int prot, struct iovec *iov, int iovcnt,
 	    int *fault);
-void	vm_copyin(struct vmctx *ctx, int vcpu, struct iovec *guest_iov,
-	    void *host_dst, size_t len);
-void	vm_copyout(struct vmctx *ctx, int vcpu, const void *host_src,
-	    struct iovec *guest_iov, size_t len);
-void	vm_copy_teardown(struct vmctx *ctx, int vcpu, struct iovec *iov,
-	    int iovcnt);
+void	vm_copyin(struct iovec *guest_iov, void *host_dst, size_t len);
+void	vm_copyout(const void *host_src, struct iovec *guest_iov, size_t len);
+void	vm_copy_teardown(struct iovec *iov, int iovcnt);
 
 /* RTC */
 int	vm_rtc_write(struct vmctx *ctx, int offset, uint8_t value);
@@ -234,6 +238,7 @@ int	vm_debug_cpus(struct vmctx *ctx, cpuset_t *cpus);
 int	vm_activate_cpu(struct vmctx *ctx, int vcpu);
 int	vm_suspend_cpu(struct vmctx *ctx, int vcpu);
 int	vm_resume_cpu(struct vmctx *ctx, int vcpu);
+int	vm_restart_instruction(struct vmctx *vmctx, int vcpu);
 
 /* CPU topology */
 int	vm_set_topology(struct vmctx *ctx, uint16_t sockets, uint16_t cores,
@@ -255,20 +260,15 @@ void	vm_setup_freebsd_gdt(uint64_t *gdtr);
 /*
  * Save and restore
  */
-
-#define MAX_SNAPSHOT_VMNAME 100
-
-enum checkpoint_opcodes {
-	START_CHECKPOINT = 0,
-	START_SUSPEND = 1,
-};
-
-struct checkpoint_op {
-	unsigned int op;
-	char snapshot_filename[MAX_SNAPSHOT_VMNAME];
-};
-
 int	vm_snapshot_req(struct vm_snapshot_meta *meta);
 int	vm_restore_time(struct vmctx *ctx);
+
+/*
+ * Deprecated interfaces, do not use them in new code.
+ */
+int	vm_get_device_fd(struct vmctx *ctx);
+const cap_ioctl_t *vm_get_ioctls(size_t *len);
+
+__END_DECLS
 
 #endif	/* _VMMAPI_H_ */

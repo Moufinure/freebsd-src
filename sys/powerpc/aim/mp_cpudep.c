@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2008 Marcel Moolenaar
  * All rights reserved.
@@ -35,6 +35,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/bus.h>
 #include <sys/pcpu.h>
 #include <sys/proc.h>
+#include <sys/sched.h>
 #include <sys/smp.h>
 
 #include <machine/bus.h>
@@ -134,6 +135,7 @@ cpudep_ap_bootstrap(void)
 #endif
 	pcpup->pc_curpcb = pcpup->pc_curthread->td_pcb;
 	sp = pcpup->pc_curpcb->pcb_sp;
+	schedinit_ap();
 
 	return (sp);
 }
@@ -310,9 +312,6 @@ cpudep_ap_setup()
 	uint16_t	vers;
 
 	vers = mfpvr() >> 16;
-
-	/* The following is needed for restoring from sleep. */
-	platform_smp_timebase_sync(0, 1);
 
 	switch(vers) {
 	case IBM970:

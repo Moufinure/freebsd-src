@@ -119,7 +119,7 @@ static int pin_pcpu_swi = 0;
 SYSCTL_INT(_kern, OID_AUTO, pin_default_swi, CTLFLAG_RDTUN | CTLFLAG_NOFETCH, &pin_default_swi,
     0, "Pin the default (non-per-cpu) swi (shared with PCPU 0 swi)");
 SYSCTL_INT(_kern, OID_AUTO, pin_pcpu_swi, CTLFLAG_RDTUN | CTLFLAG_NOFETCH, &pin_pcpu_swi,
-    0, "Pin the per-CPU swis (except PCPU 0, which is also default");
+    0, "Pin the per-CPU swis (except PCPU 0, which is also default)");
 
 /*
  * TODO:
@@ -190,14 +190,14 @@ struct callout_cpu {
 #define	cc_migration_time(cc, dir)	cc->cc_exec_entity[dir].ce_migration_time
 #define	cc_migration_prec(cc, dir)	cc->cc_exec_entity[dir].ce_migration_prec
 
-struct callout_cpu cc_cpu[MAXCPU];
+static struct callout_cpu cc_cpu[MAXCPU];
 #define	CPUBLOCK	MAXCPU
 #define	CC_CPU(cpu)	(&cc_cpu[(cpu)])
 #define	CC_SELF()	CC_CPU(PCPU_GET(cpuid))
 #else
-struct callout_cpu cc_cpu;
-#define	CC_CPU(cpu)	&cc_cpu
-#define	CC_SELF()	&cc_cpu
+static struct callout_cpu cc_cpu;
+#define	CC_CPU(cpu)	(&cc_cpu)
+#define	CC_SELF()	(&cc_cpu)
 #endif
 #define	CC_LOCK(cc)	mtx_lock_spin(&(cc)->cc_lock)
 #define	CC_UNLOCK(cc)	mtx_unlock_spin(&(cc)->cc_lock)
@@ -415,11 +415,10 @@ callout_get_bucket(sbintime_t sbt)
 void
 callout_process(sbintime_t now)
 {
-	struct callout *tmp, *tmpn;
+	struct callout *c, *next;
 	struct callout_cpu *cc;
 	struct callout_list *sc;
-	sbintime_t first, last, max, tmp_max;
-	uint32_t lookahead;
+	sbintime_t first, last, lookahead, max, tmp_max;
 	u_int firstb, lastb, nowb;
 #ifdef CALLOUT_PROFILING
 	int depth_dir = 0, mpcalls_dir = 0, lockcalls_dir = 0;
@@ -439,7 +438,7 @@ callout_process(sbintime_t now)
 	else if (nowb - firstb == 1)
 		lookahead = (SBT_1S / 8);
 	else
-		lookahead = (SBT_1S / 2);
+		lookahead = SBT_1S;
 	first = last = now;
 	first += (lookahead / 2);
 	last += lookahead;
@@ -460,58 +459,55 @@ callout_process(sbintime_t now)
 	/* Iterate callwheel from firstb to nowb and then up to lastb. */
 	do {
 		sc = &cc->cc_callwheel[firstb & callwheelmask];
-		tmp = LIST_FIRST(sc);
-		while (tmp != NULL) {
+		LIST_FOREACH_SAFE(c, sc, c_links.le, next) {
 			/* Run the callout if present time within allowed. */
-			if (tmp->c_time <= now) {
+			if (c->c_time <= now) {
 				/*
 				 * Consumer told us the callout may be run
 				 * directly from hardware interrupt context.
 				 */
-				if (tmp->c_iflags & CALLOUT_DIRECT) {
+				if (c->c_iflags & CALLOUT_DIRECT) {
 #ifdef CALLOUT_PROFILING
 					++depth_dir;
 #endif
-					cc_exec_next(cc) =
-					    LIST_NEXT(tmp, c_links.le);
+					cc_exec_next(cc) = next;
 					cc->cc_bucket = firstb & callwheelmask;
-					LIST_REMOVE(tmp, c_links.le);
-					softclock_call_cc(tmp, cc,
+					LIST_REMOVE(c, c_links.le);
+					softclock_call_cc(c, cc,
 #ifdef CALLOUT_PROFILING
 					    &mpcalls_dir, &lockcalls_dir, NULL,
 #endif
 					    1);
-					tmp = cc_exec_next(cc);
+					next = cc_exec_next(cc);
 					cc_exec_next(cc) = NULL;
 				} else {
-					tmpn = LIST_NEXT(tmp, c_links.le);
-					LIST_REMOVE(tmp, c_links.le);
+					LIST_REMOVE(c, c_links.le);
 					TAILQ_INSERT_TAIL(&cc->cc_expireq,
-					    tmp, c_links.tqe);
-					tmp->c_iflags |= CALLOUT_PROCESSED;
-					tmp = tmpn;
+					    c, c_links.tqe);
+					c->c_iflags |= CALLOUT_PROCESSED;
 				}
-				continue;
-			}
-			/* Skip events from distant future. */
-			if (tmp->c_time >= max)
-				goto next;
-			/*
-			 * Event minimal time is bigger than present maximal
-			 * time, so it cannot be aggregated.
-			 */
-			if (tmp->c_time > last) {
+			} else if (c->c_time >= max) {
+				/*
+				 * Skip events in the distant future.
+				 */
+				;
+			} else if (c->c_time > last) {
+				/*
+				 * Event minimal time is bigger than present
+				 * maximal time, so it cannot be aggregated.
+				 */
 				lastb = nowb;
-				goto next;
+			} else {
+				/*
+				 * Update first and last time, respecting this
+				 * event.
+				 */
+				if (c->c_time < first)
+					first = c->c_time;
+				tmp_max = c->c_time + c->c_precision;
+				if (tmp_max < last)
+					last = tmp_max;
 			}
-			/* Update first and last time, respecting this event. */
-			if (tmp->c_time < first)
-				first = tmp->c_time;
-			tmp_max = tmp->c_time + tmp->c_precision;
-			if (tmp_max < last)
-				last = tmp_max;
-next:
-			tmp = LIST_NEXT(tmp, c_links.le);
 		}
 		/* Proceed with the next bucket. */
 		firstb++;
@@ -565,7 +561,7 @@ callout_lock(struct callout *c)
 static void
 callout_cc_add(struct callout *c, struct callout_cpu *cc,
     sbintime_t sbt, sbintime_t precision, void (*func)(void *),
-    void *arg, int cpu, int flags)
+    void *arg, int flags)
 {
 	int bucket;
 
@@ -598,7 +594,7 @@ callout_cc_add(struct callout *c, struct callout_cpu *cc,
 	sbt = c->c_time + c->c_precision;
 	if (sbt < cc->cc_firstevent) {
 		cc->cc_firstevent = sbt;
-		cpu_new_callout(cpu, sbt, c->c_time);
+		cpu_new_callout(c->c_cpu, sbt, c->c_time);
 	}
 }
 
@@ -636,7 +632,7 @@ softclock_call_cc(struct callout *c, struct callout_cpu *cc,
 	    ("softclock_call_cc: act %p %x", c, c->c_flags));
 	class = (c->c_lock != NULL) ? LOCK_CLASS(c->c_lock) : NULL;
 	lock_status = 0;
-	if (c->c_flags & CALLOUT_SHAREDLOCK) {
+	if (c->c_iflags & CALLOUT_SHAREDLOCK) {
 		if (class == &lock_class_rm)
 			lock_status = (uintptr_t)&tracker;
 		else
@@ -775,7 +771,7 @@ skip:
 		new_cc = callout_cpu_switch(c, cc, new_cpu);
 		flags = (direct) ? C_DIRECT_EXEC : 0;
 		callout_cc_add(c, new_cc, new_time, new_prec, new_func,
-		    new_arg, new_cpu, flags);
+		    new_arg, flags);
 		CC_UNLOCK(new_cc);
 		CC_LOCK(cc);
 #else
@@ -919,8 +915,9 @@ callout_reset_sbt_on(struct callout *c, sbintime_t sbt, sbintime_t prec,
 	} else {
 		direct = 0;
 	}
-	KASSERT(!direct || c->c_lock == NULL,
-	    ("%s: direct callout %p has lock", __func__, c));
+	KASSERT(!direct || c->c_lock == NULL ||
+	    (LOCK_CLASS(c->c_lock)->lc_flags & LC_SPINLOCK),
+	    ("%s: direct callout %p has non-spin lock", __func__, c));
 	cc = callout_lock(c);
 	/*
 	 * Don't allow migration if the user does not care.
@@ -1023,7 +1020,7 @@ callout_reset_sbt_on(struct callout *c, sbintime_t sbt, sbintime_t prec,
 	}
 #endif
 
-	callout_cc_add(c, cc, to_sbt, precision, ftn, arg, cpu, flags);
+	callout_cc_add(c, cc, to_sbt, precision, ftn, arg, flags);
 	CTR6(KTR_CALLOUT, "%sscheduled %p func %p arg %p in %d.%08x",
 	    cancelled ? "re" : "", c, c->c_func, c->c_arg, (int)(to_sbt >> 32),
 	    (u_int)(to_sbt & 0xffffffff));
@@ -1259,7 +1256,7 @@ again:
 				cc_exec_drain(cc, direct) = drain;
 			}
 			CC_UNLOCK(cc);
-			return ((flags & CS_EXECUTING) != 0);
+			return (0);
 		} else {
 			CTR3(KTR_CALLOUT, "failed to stop %p func %p arg %p",
 			    c, c->c_func, c->c_arg);
@@ -1271,7 +1268,7 @@ again:
 			}
 		}
 		KASSERT(!sq_locked, ("sleepqueue chain still locked"));
-		cancelled = ((flags & CS_EXECUTING) != 0);
+		cancelled = 0;
 	} else
 		cancelled = 1;
 
@@ -1332,9 +1329,8 @@ _callout_init_lock(struct callout *c, struct lock_object *lock, int flags)
 	    ("callout_init_lock: bad flags %d", flags));
 	KASSERT(lock != NULL || (flags & CALLOUT_RETURNUNLOCKED) == 0,
 	    ("callout_init_lock: CALLOUT_RETURNUNLOCKED with no lock"));
-	KASSERT(lock == NULL || !(LOCK_CLASS(lock)->lc_flags &
-	    (LC_SPINLOCK | LC_SLEEPABLE)), ("%s: invalid lock class",
-	    __func__));
+	KASSERT(lock == NULL || !(LOCK_CLASS(lock)->lc_flags & LC_SLEEPABLE),
+	    ("%s: callout %p has sleepable lock", __func__, c));
 	c->c_iflags = flags & (CALLOUT_RETURNUNLOCKED | CALLOUT_SHAREDLOCK);
 	c->c_cpu = cc_default_cpu;
 }

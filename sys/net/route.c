@@ -188,11 +188,10 @@ int
 rib_add_redirect(u_int fibnum, struct sockaddr *dst, struct sockaddr *gateway,
     struct sockaddr *author, struct ifnet *ifp, int flags, int lifetime_sec)
 {
+	struct route_nhop_data rnd = { .rnd_weight = RT_DEFAULT_WEIGHT };
 	struct rib_cmd_info rc;
-	int error;
-	struct rt_addrinfo info;
-	struct rt_metrics rti_rmx;
 	struct ifaddr *ifa;
+	int error;
 
 	NET_EPOCH_ASSERT();
 
@@ -207,24 +206,23 @@ rib_add_redirect(u_int fibnum, struct sockaddr *dst, struct sockaddr *gateway,
 	/* Get the best ifa for the given interface and gateway. */
 	if ((ifa = ifaof_ifpforaddr(gateway, ifp)) == NULL)
 		return (ENETUNREACH);
-	ifa_ref(ifa);
 
-	bzero(&info, sizeof(info));
-	info.rti_info[RTAX_DST] = dst;
-	info.rti_info[RTAX_GATEWAY] = gateway;
-	info.rti_ifa = ifa;
-	info.rti_ifp = ifp;
-	info.rti_flags = flags;
+	struct nhop_object *nh = nhop_alloc(fibnum, dst->sa_family);
+	if (nh == NULL)
+		return (ENOMEM);
 
-	/* Setup route metrics to define expire time. */
-	bzero(&rti_rmx, sizeof(rti_rmx));
-	/* Set expire time as absolute. */
-	rti_rmx.rmx_expire = lifetime_sec + time_second;
-	info.rti_mflags |= RTV_EXPIRE;
-	info.rti_rmx = &rti_rmx;
-
-	error = rib_action(fibnum, RTM_ADD, &info, &rc);
-	ifa_free(ifa);
+	nhop_set_gw(nh, gateway, flags & RTF_GATEWAY);
+	nhop_set_transmit_ifp(nh, ifp);
+	nhop_set_src(nh, ifa);
+	nhop_set_pxtype_flag(nh, NHF_HOST);
+	nhop_set_expire(nh, lifetime_sec + time_uptime);
+	nhop_set_redirect(nh, true);
+	nhop_set_origin(nh, NH_ORIGIN_REDIRECT);
+	rnd.rnd_nhop = nhop_get_nhop(nh, &error);
+	if (error == 0) {
+		error = rib_add_route_px(fibnum, dst, -1,
+		    &rnd, RTM_F_CREATE, &rc);
+	}
 
 	if (error != 0) {
 		/* TODO: add per-fib redirect stats. */
@@ -234,10 +232,11 @@ rib_add_redirect(u_int fibnum, struct sockaddr *dst, struct sockaddr *gateway,
 	RTSTAT_INC(rts_dynamic);
 
 	/* Send notification of a route addition to userland. */
-	bzero(&info, sizeof(info));
-	info.rti_info[RTAX_DST] = dst;
-	info.rti_info[RTAX_GATEWAY] = gateway;
-	info.rti_info[RTAX_AUTHOR] = author;
+	struct rt_addrinfo info = {
+		.rti_info[RTAX_DST] = dst,
+		.rti_info[RTAX_GATEWAY] = gateway,
+		.rti_info[RTAX_AUTHOR] = author,
+	};
 	rt_missmsg_fib(RTM_REDIRECT, &info, flags | RTF_UP, error, fibnum);
 
 	return (0);
@@ -503,8 +502,74 @@ rt_flushifroutes(struct ifnet *ifp)
 }
 
 /*
- * Look up rt_addrinfo for a specific fib.  Note that if rti_ifa is defined,
- * it will be referenced so the caller must free it.
+ * Tries to extract interface from RTAX_IFP passed in rt_addrinfo.
+ * Interface can be specified ether as interface index (sdl_index) or
+ * the interface name (sdl_data).
+ *
+ * Returns found ifp or NULL
+ */
+static struct ifnet *
+info_get_ifp(struct rt_addrinfo *info)
+{
+	const struct sockaddr_dl *sdl;
+
+	sdl = (const struct sockaddr_dl *)info->rti_info[RTAX_IFP];
+	if (sdl->sdl_family != AF_LINK)
+		return (NULL);
+
+	if (sdl->sdl_index != 0)
+		return (ifnet_byindex(sdl->sdl_index));
+	if (sdl->sdl_nlen > 0) {
+		char if_name[IF_NAMESIZE];
+		if (sdl->sdl_nlen + offsetof(struct sockaddr_dl, sdl_data) > sdl->sdl_len)
+			return (NULL);
+		if (sdl->sdl_nlen >= IF_NAMESIZE)
+			return (NULL);
+		bzero(if_name, sizeof(if_name));
+		memcpy(if_name, sdl->sdl_data, sdl->sdl_nlen);
+		return (ifunit(if_name));
+	}
+
+	return (NULL);
+}
+
+/*
+ * Calculates proper ifa/ifp for the cases when gateway AF is different
+ * from dst AF.
+ *
+ * Returns 0 on success.
+ */
+__noinline static int
+rt_getifa_family(struct rt_addrinfo *info, uint32_t fibnum)
+{
+	if (info->rti_ifp == NULL) {
+		struct ifaddr *ifa = NULL;
+		/*
+		 * No transmit interface specified. Guess it by checking gw sa.
+		 */
+		const struct sockaddr *gw = info->rti_info[RTAX_GATEWAY];
+		ifa = ifa_ifwithroute(RTF_GATEWAY, gw, gw, fibnum);
+		if (ifa == NULL)
+			return (ENETUNREACH);
+		info->rti_ifp = ifa->ifa_ifp;
+	}
+
+	/* Prefer address from outgoing interface */
+	info->rti_ifa = ifaof_ifpforaddr(info->rti_info[RTAX_DST], info->rti_ifp);
+#ifdef INET
+	if (info->rti_ifa == NULL) {
+		/* Use first found IPv4 address */
+		bool loopback_ok = info->rti_ifp->if_flags & IFF_LOOPBACK;
+		info->rti_ifa = (struct ifaddr *)in_findlocal(fibnum, loopback_ok);
+	}
+#endif
+	if (info->rti_ifa == NULL)
+		return (ENETUNREACH);
+	return (0);
+}
+
+/*
+ * Fills in rti_ifp and rti_ifa for the provided fib.
  *
  * Assume basic consistency checks are executed by callers:
  * RTAX_DST exists, if RTF_GATEWAY is set, RTAX_GATEWAY exists as well.
@@ -512,13 +577,11 @@ rt_flushifroutes(struct ifnet *ifp)
 int
 rt_getifa_fib(struct rt_addrinfo *info, u_int fibnum)
 {
-	const struct sockaddr *dst, *gateway, *ifpaddr, *ifaaddr;
-	struct epoch_tracker et;
-	int needref, error, flags;
+	const struct sockaddr *dst, *gateway, *ifaaddr;
+	int error, flags;
 
 	dst = info->rti_info[RTAX_DST];
 	gateway = info->rti_info[RTAX_GATEWAY];
-	ifpaddr = info->rti_info[RTAX_IFP];
 	ifaaddr = info->rti_info[RTAX_IFA];
 	flags = info->rti_flags;
 
@@ -527,22 +590,19 @@ rt_getifa_fib(struct rt_addrinfo *info, u_int fibnum)
 	 * when protocol address is ambiguous.
 	 */
 	error = 0;
-	needref = (info->rti_ifa == NULL);
-	NET_EPOCH_ENTER(et);
 
-	/* If we have interface specified by the ifindex in the address, use it */
-	if (info->rti_ifp == NULL && ifpaddr != NULL &&
-	    ifpaddr->sa_family == AF_LINK) {
-	    const struct sockaddr_dl *sdl = (const struct sockaddr_dl *)ifpaddr;
-	    if (sdl->sdl_index != 0)
-		    info->rti_ifp = ifnet_byindex(sdl->sdl_index);
-	}
+	/* If we have interface specified by RTAX_IFP address, try to use it */
+	if ((info->rti_ifp == NULL) && (info->rti_info[RTAX_IFP] != NULL))
+		info->rti_ifp = info_get_ifp(info);
 	/*
 	 * If we have source address specified, try to find it
 	 * TODO: avoid enumerating all ifas on all interfaces.
 	 */
 	if (info->rti_ifa == NULL && ifaaddr != NULL)
 		info->rti_ifa = ifa_ifwithaddr(ifaaddr);
+	if ((info->rti_ifa == NULL) && ((info->rti_flags & RTF_GATEWAY) != 0) &&
+	    (gateway->sa_family != dst->sa_family))
+		return (rt_getifa_family(info, fibnum));
 	if (info->rti_ifa == NULL) {
 		const struct sockaddr *sa;
 
@@ -583,13 +643,11 @@ rt_getifa_fib(struct rt_addrinfo *info, u_int fibnum)
 			info->rti_ifa = ifa_ifwithroute(flags, sa, sa,
 							fibnum);
 	}
-	if (needref && info->rti_ifa != NULL) {
+	if (info->rti_ifa != NULL) {
 		if (info->rti_ifp == NULL)
 			info->rti_ifp = info->rti_ifa->ifa_ifp;
-		ifa_ref(info->rti_ifa);
 	} else
 		error = ENETUNREACH;
-	NET_EPOCH_EXIT(et);
 	return (error);
 }
 
@@ -668,11 +726,12 @@ rt_print(char *buf, int buflen, struct rtentry *rt)
 #endif
 
 void
-rt_maskedcopy(struct sockaddr *src, struct sockaddr *dst, struct sockaddr *netmask)
+rt_maskedcopy(const struct sockaddr *src, struct sockaddr *dst,
+    const struct sockaddr *netmask)
 {
-	u_char *cp1 = (u_char *)src;
+	const u_char *cp1 = (const u_char *)src;
 	u_char *cp2 = (u_char *)dst;
-	u_char *cp3 = (u_char *)netmask;
+	const u_char *cp3 = (const u_char *)netmask;
 	u_char *cplim = cp2 + *cp3;
 	u_char *cplim2 = cp2 + *cp1;
 
@@ -720,7 +779,7 @@ rt_routemsg(int cmd, struct rtentry *rt, struct nhop_object *nh,
     int fibnum)
 {
 
-	KASSERT(cmd == RTM_ADD || cmd == RTM_DELETE,
+	KASSERT(cmd == RTM_ADD || cmd == RTM_DELETE || cmd == RTM_CHANGE,
 	    ("unexpected cmd %d", cmd));
 
 	KASSERT(fibnum == RT_ALL_FIBS || (fibnum >= 0 && fibnum < rt_numfibs),
@@ -753,3 +812,36 @@ rt_routemsg_info(int cmd, struct rt_addrinfo *info, int fibnum)
 
 	return (rtsock_routemsg_info(cmd, info, fibnum));
 }
+
+void
+rt_ifmsg(struct ifnet *ifp)
+{
+	rt_ifmsg_14(ifp, 0);
+}
+
+void
+rt_ifmsg_14(struct ifnet *ifp, int if_flags_mask)
+{
+	rtsock_callback_p->ifmsg_f(ifp, if_flags_mask);
+	netlink_callback_p->ifmsg_f(ifp, if_flags_mask);
+}
+
+/* Netlink-related callbacks needed to glue rtsock, netlink and linuxolator */
+static void
+ignore_route_event(uint32_t fibnum, const struct rib_cmd_info *rc)
+{
+}
+
+static void
+ignore_ifmsg_event(struct ifnet *ifp, int if_flags_mask)
+{
+}
+
+static struct rtbridge ignore_cb = {
+	.route_f = ignore_route_event,
+	.ifmsg_f = ignore_ifmsg_event,
+};
+
+void *linux_netlink_p = NULL; /* Callback pointer for Linux translator functions */
+struct rtbridge *rtsock_callback_p = &ignore_cb;
+struct rtbridge *netlink_callback_p = &ignore_cb;

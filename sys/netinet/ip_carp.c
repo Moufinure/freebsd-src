@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2002 Michael Shalayeff.
  * Copyright (c) 2003 Ryan McBride.
@@ -221,8 +221,8 @@ static int carp_demote_adj_sysctl(SYSCTL_HANDLER_ARGS);
 SYSCTL_NODE(_net_inet, IPPROTO_CARP, carp, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
     "CARP");
 SYSCTL_PROC(_net_inet_carp, OID_AUTO, allow,
-    CTLFLAG_VNET | CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_MPSAFE,
-    0, 0, carp_allow_sysctl, "I",
+    CTLFLAG_VNET | CTLTYPE_INT | CTLFLAG_RWTUN | CTLFLAG_MPSAFE,
+    &VNET_NAME(carp_allow), 0, carp_allow_sysctl, "I",
     "Accept incoming CARP packets");
 SYSCTL_PROC(_net_inet_carp, OID_AUTO, dscp,
     CTLFLAG_VNET | CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_MPSAFE,
@@ -304,7 +304,9 @@ SYSCTL_VNET_PCPUSTAT(_net_inet_carp, OID_AUTO, stats, struct carpstats,
 
 #define	DEMOTE_ADVSKEW(sc)					\
     (((sc)->sc_advskew + V_carp_demotion > CARP_MAXSKEW) ?	\
-    CARP_MAXSKEW : ((sc)->sc_advskew + V_carp_demotion))
+    CARP_MAXSKEW :						\
+        (((sc)->sc_advskew + V_carp_demotion < 0) ?		\
+        0 : ((sc)->sc_advskew + V_carp_demotion)))
 
 static void	carp_input_c(struct mbuf *, struct carp_header *, sa_family_t);
 static struct carp_softc
@@ -852,6 +854,13 @@ static void
 carp_send_ad_error(struct carp_softc *sc, int error)
 {
 
+	/*
+	 * We track errors and successfull sends with this logic:
+	 * - Any error resets success counter to 0.
+	 * - MAX_ERRORS triggers demotion.
+	 * - MIN_SUCCESS successes resets error counter to 0.
+	 * - MIN_SUCCESS reverts demotion, if it was triggered before.
+	 */
 	if (error) {
 		if (sc->sc_sendad_errors < INT_MAX)
 			sc->sc_sendad_errors++;
@@ -863,17 +872,17 @@ carp_send_ad_error(struct carp_softc *sc, int error)
 			carp_demote_adj(V_carp_senderr_adj, msg);
 		}
 		sc->sc_sendad_success = 0;
-	} else {
-		if (sc->sc_sendad_errors >= CARP_SENDAD_MAX_ERRORS &&
-		    ++sc->sc_sendad_success >= CARP_SENDAD_MIN_SUCCESS) {
-			static const char fmt[] = "send ok on %s";
-			char msg[sizeof(fmt) + IFNAMSIZ];
+	} else if (sc->sc_sendad_errors > 0) {
+		if (++sc->sc_sendad_success >= CARP_SENDAD_MIN_SUCCESS) {
+			if (sc->sc_sendad_errors >= CARP_SENDAD_MAX_ERRORS) {
+				static const char fmt[] = "send ok on %s";
+				char msg[sizeof(fmt) + IFNAMSIZ];
 
-			sprintf(msg, fmt, sc->sc_carpdev->if_xname);
-			carp_demote_adj(-V_carp_senderr_adj, msg);
+				sprintf(msg, fmt, sc->sc_carpdev->if_xname);
+				carp_demote_adj(-V_carp_senderr_adj, msg);
+			}
 			sc->sc_sendad_errors = 0;
-		} else
-			sc->sc_sendad_errors = 0;
+		}
 	}
 }
 
@@ -1723,6 +1732,7 @@ carp_carprcp(struct carpreq *carpr, struct carp_softc *sc, int priv)
 int
 carp_ioctl(struct ifreq *ifr, u_long cmd, struct thread *td)
 {
+	struct epoch_tracker et;
 	struct carpreq carpr;
 	struct ifnet *ifp;
 	struct carp_softc *sc = NULL;
@@ -1807,8 +1817,10 @@ carp_ioctl(struct ifreq *ifr, u_long cmd, struct thread *td)
 				carp_delroute(sc);
 				break;
 			case MASTER:
+				NET_EPOCH_ENTER(et);
 				carp_master_down_locked(sc,
 				    "user requested via ifconfig");
+				NET_EPOCH_EXIT(et);
 				break;
 			default:
 				break;
@@ -2228,6 +2240,15 @@ carp_mod_cleanup(void)
 	mtx_destroy(&carp_mtx);
 	sx_destroy(&carp_sx);
 }
+
+static void
+ipcarp_sysinit(void)
+{
+
+	/* Load allow as tunable so to postpone carp start after module load */
+	TUNABLE_INT_FETCH("net.inet.carp.allow", &V_carp_allow);
+}
+VNET_SYSINIT(ip_carp, SI_SUB_PROTO_DOMAIN, SI_ORDER_ANY, ipcarp_sysinit, NULL);
 
 static int
 carp_mod_load(void)

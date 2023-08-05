@@ -197,7 +197,7 @@ udp6_append(struct inpcb *inp, struct mbuf *n, int off,
 	SOCKBUF_LOCK(&so->so_rcv);
 	if (sbappendaddr_locked(&so->so_rcv, (struct sockaddr *)&fromsa[0], n,
 	    opts) == 0) {
-		SOCKBUF_UNLOCK(&so->so_rcv);
+		soroverflow_locked(so);
 		m_freem(n);
 		if (opts)
 			m_freem(opts);
@@ -717,7 +717,7 @@ udp6_output(struct socket *so, int flags_arg, struct mbuf *m,
 	sin6 = (struct sockaddr_in6 *)addr6;
 
 	/*
-	 * In contrast to to IPv4 we do not validate the max. packet length
+	 * In contrast to IPv4 we do not validate the max. packet length
 	 * here due to IPv6 Jumbograms (RFC2675).
 	 */
 
@@ -803,28 +803,23 @@ udp6_output(struct socket *so, int flags_arg, struct mbuf *m,
 		 * Given this is either an IPv6-only socket or no INET is
 		 * supported we will fail the send if the given destination
 		 * address is a v4mapped address.
-		 *
-		 * XXXGL: do we leak m and control?
 		 */
 		INP_UNLOCK(inp);
+		m_freem(m);
+		m_freem(control);
 		return (EINVAL);
 	}
 
+	NET_EPOCH_ENTER(et);
 	if (control) {
 		if ((error = ip6_setpktopts(control, &opt,
 		    inp->in6p_outputopts, td->td_ucred, nxt)) != 0) {
-			INP_UNLOCK(inp);
-			ip6_clearpktopts(&opt, -1);
-			if (control)
-				m_freem(control);
-			m_freem(m);
-			return (error);
+			goto release;
 		}
 		optp = &opt;
 	} else
 		optp = inp->in6p_outputopts;
 
-	NET_EPOCH_ENTER(et);
 	if (sin6) {
 		/*
 		 * Since we saw no essential reason for calling in_pcbconnect,
@@ -1024,7 +1019,6 @@ udp6_abort(struct socket *so)
 	if (!IN6_IS_ADDR_UNSPECIFIED(&inp->in6p_faddr)) {
 		INP_HASH_WLOCK(pcbinfo);
 		in6_pcbdisconnect(inp);
-		inp->in6p_laddr = in6addr_any;
 		INP_HASH_WUNLOCK(pcbinfo);
 		soisdisconnected(so);
 	}
@@ -1091,6 +1085,11 @@ udp6_bind(struct socket *so, struct sockaddr *nam, struct thread *td)
 	inp = sotoinpcb(so);
 	KASSERT(inp != NULL, ("udp6_bind: inp == NULL"));
 
+	if (nam->sa_family != AF_INET6)
+		return (EAFNOSUPPORT);
+	if (nam->sa_len != sizeof(struct sockaddr_in6))
+		return (EINVAL);
+
 	INP_WLOCK(inp);
 	INP_HASH_WLOCK(pcbinfo);
 	vflagsav = inp->inp_vflag;
@@ -1155,7 +1154,6 @@ udp6_close(struct socket *so)
 	if (!IN6_IS_ADDR_UNSPECIFIED(&inp->in6p_faddr)) {
 		INP_HASH_WLOCK(pcbinfo);
 		in6_pcbdisconnect(inp);
-		inp->in6p_laddr = in6addr_any;
 		INP_HASH_WUNLOCK(pcbinfo);
 		soisdisconnected(so);
 	}
@@ -1176,8 +1174,13 @@ udp6_connect(struct socket *so, struct sockaddr *nam, struct thread *td)
 
 	pcbinfo = udp_get_inpcbinfo(so->so_proto->pr_protocol);
 	inp = sotoinpcb(so);
-	sin6 = (struct sockaddr_in6 *)nam;
 	KASSERT(inp != NULL, ("udp6_connect: inp == NULL"));
+
+	sin6 = (struct sockaddr_in6 *)nam;
+	if (sin6->sin6_family != AF_INET6)
+		return (EAFNOSUPPORT);
+	if (sin6->sin6_len != sizeof(*sin6))
+		return (EINVAL);
 
 	/*
 	 * XXXRW: Need to clarify locking of v4/v6 flags.
@@ -1311,7 +1314,6 @@ udp6_disconnect(struct socket *so)
 
 	INP_HASH_WLOCK(pcbinfo);
 	in6_pcbdisconnect(inp);
-	inp->in6p_laddr = in6addr_any;
 	INP_HASH_WUNLOCK(pcbinfo);
 	SOCK_LOCK(so);
 	so->so_state &= ~SS_ISCONNECTED;		/* XXX */

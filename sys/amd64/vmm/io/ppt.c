@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2011 NetApp, Inc.
  * All rights reserved.
@@ -224,7 +224,7 @@ ppt_find(struct vm *vm, int bus, int slot, int func, struct pptdev **pptp)
 }
 
 static void
-ppt_unmap_mmio(struct vm *vm, struct pptdev *ppt)
+ppt_unmap_all_mmio(struct vm *vm, struct pptdev *ppt)
 {
 	int i;
 	struct pptseg *seg;
@@ -412,7 +412,7 @@ ppt_unassign_device(struct vm *vm, int bus, int slot, int func)
 	pci_save_state(ppt->dev);
 	ppt_pci_reset(ppt->dev);
 	pci_restore_state(ppt->dev);
-	ppt_unmap_mmio(vm, ppt);
+	ppt_unmap_all_mmio(vm, ppt);
 	ppt_teardown_msi(ppt);
 	ppt_teardown_msix(ppt);
 	iommu_remove_device(vm_iommu_domain(vm), pci_get_rid(ppt->dev));
@@ -440,6 +440,23 @@ ppt_unassign_all(struct vm *vm)
 	return (0);
 }
 
+static bool
+ppt_valid_bar_mapping(struct pptdev *ppt, vm_paddr_t hpa, size_t len)
+{
+	struct pci_map *pm;
+	pci_addr_t base, size;
+
+	for (pm = pci_first_bar(ppt->dev); pm != NULL; pm = pci_next_bar(pm)) {
+		if (!PCI_BAR_MEM(pm->pm_value))
+			continue;
+		base = pm->pm_value & PCIM_BAR_MEM_BASE;
+		size = (pci_addr_t)1 << pm->pm_size;
+		if (hpa >= base && hpa + len <= base + size)
+			return (true);
+	}
+	return (false);
+}
+
 int
 ppt_map_mmio(struct vm *vm, int bus, int slot, int func,
 	     vm_paddr_t gpa, size_t len, vm_paddr_t hpa)
@@ -448,9 +465,16 @@ ppt_map_mmio(struct vm *vm, int bus, int slot, int func,
 	struct pptseg *seg;
 	struct pptdev *ppt;
 
+	if (len % PAGE_SIZE != 0 || len == 0 || gpa % PAGE_SIZE != 0 ||
+	    hpa % PAGE_SIZE != 0 || gpa + len < gpa || hpa + len < hpa)
+		return (EINVAL);
+
 	error = ppt_find(vm, bus, slot, func, &ppt);
 	if (error)
 		return (error);
+
+	if (!ppt_valid_bar_mapping(ppt, hpa, len))
+		return (EINVAL);
 
 	for (i = 0; i < MAX_MMIOSEGS; i++) {
 		seg = &ppt->mmio[i];
@@ -464,6 +488,32 @@ ppt_map_mmio(struct vm *vm, int bus, int slot, int func,
 		}
 	}
 	return (ENOSPC);
+}
+
+int
+ppt_unmap_mmio(struct vm *vm, int bus, int slot, int func,
+	       vm_paddr_t gpa, size_t len)
+{
+	int i, error;
+	struct pptseg *seg;
+	struct pptdev *ppt;
+
+	error = ppt_find(vm, bus, slot, func, &ppt);
+	if (error)
+		return (error);
+
+	for (i = 0; i < MAX_MMIOSEGS; i++) {
+		seg = &ppt->mmio[i];
+		if (seg->gpa == gpa && seg->len == len) {
+			error = vm_unmap_mmio(vm, seg->gpa, seg->len);
+			if (error == 0) {
+				seg->gpa = 0;
+				seg->len = 0;
+			}
+			return (error);
+		}
+	}
+	return (ENOENT);
 }
 
 static int
@@ -495,7 +545,7 @@ pptintr(void *arg)
 }
 
 int
-ppt_setup_msi(struct vm *vm, int vcpu, int bus, int slot, int func,
+ppt_setup_msi(struct vm *vm, int bus, int slot, int func,
 	      uint64_t addr, uint64_t msg, int numvec)
 {
 	int i, rid, flags;
@@ -588,7 +638,7 @@ ppt_setup_msi(struct vm *vm, int vcpu, int bus, int slot, int func,
 }
 
 int
-ppt_setup_msix(struct vm *vm, int vcpu, int bus, int slot, int func,
+ppt_setup_msix(struct vm *vm, int bus, int slot, int func,
 	       int idx, uint64_t addr, uint64_t msg, uint32_t vector_control)
 {
 	struct pptdev *ppt;

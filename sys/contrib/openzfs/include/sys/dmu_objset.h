@@ -72,6 +72,10 @@ struct dmu_tx;
  */
 #define	OBJSET_CRYPT_PORTABLE_FLAGS_MASK	(0)
 
+#if defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wgnu-variable-sized-type-not-at-end"
+#endif
 typedef struct objset_phys {
 	dnode_phys_t os_meta_dnode;
 	zil_header_t os_zil_header;
@@ -88,6 +92,9 @@ typedef struct objset_phys {
 	char os_pad1[OBJSET_PHYS_SIZE_V3 - OBJSET_PHYS_SIZE_V2 -
 	    sizeof (dnode_phys_t)];
 } objset_phys_t;
+#if defined(__clang__)
+#pragma clang diagnostic pop
+#endif
 
 typedef int (*dmu_objset_upgrade_cb_t)(objset_t *);
 
@@ -153,7 +160,7 @@ struct objset {
 	/* no lock needed: */
 	struct dmu_tx *os_synctx; /* XXX sketchy */
 	zil_header_t os_zil_header;
-	multilist_t *os_synced_dnodes;
+	multilist_t os_synced_dnodes;
 	uint64_t os_flags;
 	uint64_t os_freed_dnodes;
 	boolean_t os_rescan_dnodes;
@@ -172,7 +179,7 @@ struct objset {
 
 	/* Protected by os_lock */
 	kmutex_t os_lock;
-	multilist_t *os_dirty_dnodes[TXG_SIZE];
+	multilist_t os_dirty_dnodes[TXG_SIZE];
 	list_t os_dnodes;
 	list_t os_downgraded_dbufs;
 
@@ -199,10 +206,6 @@ struct objset {
 #define	DMU_USERUSED_DNODE(os)	((os)->os_userused_dnode.dnh_dnode)
 #define	DMU_GROUPUSED_DNODE(os)	((os)->os_groupused_dnode.dnh_dnode)
 #define	DMU_PROJECTUSED_DNODE(os) ((os)->os_projectused_dnode.dnh_dnode)
-
-#define	DMU_OS_IS_L2CACHEABLE(os)				\
-	((os)->os_secondary_cache == ZFS_CACHE_ALL ||		\
-	(os)->os_secondary_cache == ZFS_CACHE_METADATA)
 
 /* called from zpl */
 int dmu_objset_hold(const char *name, void *tag, objset_t **osp);

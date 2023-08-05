@@ -1003,6 +1003,7 @@ vdev_trim_stop_wait_impl(vdev_t *vd)
 void
 vdev_trim_stop_wait(spa_t *spa, list_t *vd_list)
 {
+	(void) spa;
 	vdev_t *vd;
 
 	ASSERT(MUTEX_HELD(&spa_namespace_lock));
@@ -1187,12 +1188,11 @@ vdev_autotrim_thread(void *arg)
 	mutex_exit(&vd->vdev_autotrim_lock);
 	spa_config_enter(spa, SCL_CONFIG, FTAG, RW_READER);
 
-	uint64_t extent_bytes_max = zfs_trim_extent_bytes_max;
-	uint64_t extent_bytes_min = zfs_trim_extent_bytes_min;
-
 	while (!vdev_autotrim_should_stop(vd)) {
 		int txgs_per_trim = MAX(zfs_trim_txg_batch, 1);
 		boolean_t issued_trim = B_FALSE;
+		uint64_t extent_bytes_max = zfs_trim_extent_bytes_max;
+		uint64_t extent_bytes_min = zfs_trim_extent_bytes_min;
 
 		/*
 		 * All of the metaslabs are divided in to groups of size

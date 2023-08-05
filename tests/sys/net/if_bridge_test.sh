@@ -1,6 +1,6 @@
 # $FreeBSD$
 #
-# SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+# SPDX-License-Identifier: BSD-2-Clause
 #
 # Copyright (c) 2020 The FreeBSD Foundation
 #
@@ -268,11 +268,11 @@ span_head()
 {
 	atf_set descr 'Bridge span test'
 	atf_set require.user root
+	atf_set require.progs scapy
 }
 
 span_body()
 {
-	set -x
 	vnet_init
 
 	epair=$(vnet_mkepair)
@@ -408,6 +408,115 @@ inherit_mac_cleanup()
 	vnet_cleanup
 }
 
+atf_test_case "stp_validation" "cleanup"
+stp_validation_head()
+{
+	atf_set descr 'Check STP validation'
+	atf_set require.user root
+	atf_set require.progs scapy
+}
+
+stp_validation_body()
+{
+	vnet_init
+
+	epair_one=$(vnet_mkepair)
+	epair_two=$(vnet_mkepair)
+	bridge=$(vnet_mkbridge)
+
+	ifconfig ${bridge} up
+	ifconfig ${bridge} addm ${epair_one}a addm ${epair_two}a
+	ifconfig ${bridge} stp ${epair_one}a stp ${epair_two}a
+
+	ifconfig ${epair_one}a up
+	ifconfig ${epair_one}b up
+	ifconfig ${epair_two}a up
+	ifconfig ${epair_two}b up
+
+	# Wait until the interfaces are no longer discarding
+	while ifconfig ${bridge} | grep 'state discarding' >/dev/null
+	do
+		sleep 1
+	done
+
+	# Now inject invalid STP BPDUs on epair_one and see if they're repeated
+	# on epair_two
+	atf_check -s exit:0 \
+	    $(atf_get_srcdir)/stp.py \
+	    --sendif ${epair_one}b \
+	    --recvif ${epair_two}b
+}
+
+stp_validation_cleanup()
+{
+	vnet_cleanup
+}
+
+atf_test_case "gif" "cleanup"
+gif_head()
+{
+	atf_set descr 'gif as a bridge member'
+	atf_set require.user root
+}
+
+gif_body()
+{
+	vnet_init
+
+	epair=$(vnet_mkepair)
+
+	vnet_mkjail one ${epair}a
+	vnet_mkjail two ${epair}b
+
+	jexec one sysctl net.link.gif.max_nesting=2
+	jexec two sysctl net.link.gif.max_nesting=2
+
+	jexec one ifconfig ${epair}a 192.0.2.1/24 up
+	jexec two ifconfig ${epair}b 192.0.2.2/24 up
+
+	# Tunnel
+	gif_one=$(jexec one ifconfig gif create)
+	gif_two=$(jexec two ifconfig gif create)
+
+	jexec one ifconfig ${gif_one} tunnel 192.0.2.1 192.0.2.2
+	jexec one ifconfig ${gif_one} up
+	jexec two ifconfig ${gif_two} tunnel 192.0.2.2 192.0.2.1
+	jexec two ifconfig ${gif_two} up
+
+	bridge_one=$(jexec one ifconfig bridge create)
+	bridge_two=$(jexec two ifconfig bridge create)
+	jexec one ifconfig ${bridge_one} 198.51.100.1/24 up
+	jexec one ifconfig ${bridge_one} addm ${gif_one}
+	jexec two ifconfig ${bridge_two} 198.51.100.2/24 up
+	jexec two ifconfig ${bridge_two} addm ${gif_two}
+
+	# Sanity check
+	atf_check -s exit:0 -o ignore \
+		jexec one ping -c 1 192.0.2.2
+
+	# Test tunnel
+	atf_check -s exit:0 -o ignore \
+		jexec one ping -c 1 198.51.100.2
+	atf_check -s exit:0 -o ignore \
+		jexec one ping -c 1 -s 1200 198.51.100.2
+	atf_check -s exit:0 -o ignore \
+		jexec one ping -c 1 -s 2000 198.51.100.2
+
+	# Higher MTU on the tunnel than on the underlying interface
+	jexec one ifconfig ${epair}a mtu 1000
+	jexec two ifconfig ${epair}b mtu 1000
+
+	atf_check -s exit:0 -o ignore \
+		jexec one ping -c 1 -s 1200 198.51.100.2
+	atf_check -s exit:0 -o ignore \
+		jexec one ping -c 1 -s 2000 198.51.100.2
+}
+
+gif_cleanup()
+{
+	vnet_cleanup
+}
+
 atf_init_test_cases()
 {
 	atf_add_test_case "bridge_transmit_ipv4_unicast"
@@ -418,4 +527,6 @@ atf_init_test_cases()
 	atf_add_test_case "inherit_mac"
 	atf_add_test_case "delete_with_members"
 	atf_add_test_case "mac_conflict"
+	atf_add_test_case "stp_validation"
+	atf_add_test_case "gif"
 }

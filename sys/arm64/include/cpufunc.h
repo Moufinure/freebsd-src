@@ -106,7 +106,7 @@ dbg_disable(void)
 
 	__asm __volatile(
 	    "mrs %x0, daif   \n"
-	    "msr daifset, #8 \n"
+	    "msr daifset, #(" __XSTRING(DAIF_D) ") \n"
 	    : "=&r" (ret));
 
 	return (ret);
@@ -116,7 +116,7 @@ static __inline void
 dbg_enable(void)
 {
 
-	__asm __volatile("msr daifclr, #8");
+	__asm __volatile("msr daifclr, #(" __XSTRING(DAIF_D) ")");
 }
 
 static __inline register_t
@@ -127,7 +127,7 @@ intr_disable(void)
 
 	__asm __volatile(
 	    "mrs %x0, daif   \n"
-	    "msr daifset, #2 \n"
+	    "msr daifset, #(" __XSTRING(DAIF_INTR) ") \n"
 	    : "=&r" (ret));
 
 	return (ret);
@@ -144,7 +144,14 @@ static __inline void
 intr_enable(void)
 {
 
-	__asm __volatile("msr daifclr, #2");
+	__asm __volatile("msr daifclr, #(" __XSTRING(DAIF_INTR) ")");
+}
+
+static __inline void
+serror_enable(void)
+{
+
+	__asm __volatile("msr daifclr, #(" __XSTRING(DAIF_A) ")");
 }
 
 static __inline register_t
@@ -234,11 +241,13 @@ extern void (*arm64_icache_sync_range)(vm_offset_t, vm_size_t);
 void arm64_nullop(void);
 void arm64_tlb_flushID(void);
 void arm64_dic_idc_icache_sync_range(vm_offset_t, vm_size_t);
+void arm64_idc_aliasing_icache_sync_range(vm_offset_t, vm_size_t);
 void arm64_aliasing_icache_sync_range(vm_offset_t, vm_size_t);
 int arm64_icache_sync_range_checked(vm_offset_t, vm_size_t);
 void arm64_dcache_wbinv_range(vm_offset_t, vm_size_t);
 void arm64_dcache_inv_range(vm_offset_t, vm_size_t);
 void arm64_dcache_wb_range(vm_offset_t, vm_size_t);
+bool arm64_get_writable_addr(vm_offset_t, vm_offset_t *);
 
 #endif	/* _KERNEL */
 #endif	/* _MACHINE_CPUFUNC_H_ */

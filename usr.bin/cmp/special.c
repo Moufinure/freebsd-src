@@ -49,7 +49,7 @@ __FBSDID("$FreeBSD$");
 
 void
 c_special(int fd1, const char *file1, off_t skip1,
-    int fd2, const char *file2, off_t skip2)
+    int fd2, const char *file2, off_t skip2, off_t limit)
 {
 	int ch1, ch2;
 	off_t byte, line;
@@ -65,8 +65,10 @@ c_special(int fd1, const char *file1, off_t skip1,
 
 	if ((fp1 = fdopen(fd1, "r")) == NULL)
 		err(ERR_EXIT, "%s", file1);
+	(void)setvbuf(fp1, NULL, _IOFBF, 65536);
 	if ((fp2 = fdopen(fd2, "r")) == NULL)
 		err(ERR_EXIT, "%s", file2);
+	(void)setvbuf(fp2, NULL, _IOFBF, 65536);
 
 	dfound = 0;
 	while (skip1--)
@@ -76,7 +78,14 @@ c_special(int fd1, const char *file1, off_t skip1,
 		if (getc(fp2) == EOF)
 			goto eof;
 
-	for (byte = line = 1;; ++byte) {
+	for (byte = line = 1; limit == 0 || byte <= limit; ++byte) {
+#ifdef SIGINFO
+		if (info) {
+			(void)fprintf(stderr, "%s %s char %zu line %zu\n",
+			    file1, file2, (size_t)byte, (size_t)line);
+			info = 0;
+		}
+#endif
 		ch1 = getc(fp1);
 		ch2 = getc(fp2);
 		if (ch1 == EOF || ch2 == EOF)
@@ -88,10 +97,15 @@ c_special(int fd1, const char *file1, off_t skip1,
 				    (long long)byte - 1, ch1, ch2);
 			} else if (lflag) {
 				dfound = 1;
-				(void)printf("%6lld %3o %3o\n",
-				    (long long)byte, ch1, ch2);
+				if (bflag)
+					(void)printf("%6lld %3o %c %3o %c\n",
+					    (long long)byte, ch1, ch1, ch2,
+					    ch2);
+				else
+					(void)printf("%6lld %3o %3o\n",
+					    (long long)byte, ch1, ch2);
 			} else {
-				diffmsg(file1, file2, byte, line);
+				diffmsg(file1, file2, byte, line, ch1, ch2);
 				/* NOTREACHED */
 			}
 		}

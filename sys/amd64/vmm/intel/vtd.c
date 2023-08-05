@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2011 NetApp, Inc.
  * All rights reserved.
@@ -117,7 +117,7 @@ struct domain {
 
 static SLIST_HEAD(, domain) domhead;
 
-#define	DRHD_MAX_UNITS	8
+#define	DRHD_MAX_UNITS	16
 static ACPI_DMAR_HARDWARE_UNIT	*drhds[DRHD_MAX_UNITS];
 static int			drhd_num;
 static struct vtdmap		*vtdmaps[DRHD_MAX_UNITS];
@@ -761,16 +761,16 @@ vtd_destroy_domain(void *arg)
 	free(dom, M_VTD);
 }
 
-struct iommu_ops iommu_ops_intel = {
-	vtd_init,
-	vtd_cleanup,
-	vtd_enable,
-	vtd_disable,
-	vtd_create_domain,
-	vtd_destroy_domain,
-	vtd_create_mapping,
-	vtd_remove_mapping,
-	vtd_add_device,
-	vtd_remove_device,
-	vtd_invalidate_tlb,
+const struct iommu_ops iommu_ops_intel = {
+	.init = vtd_init,
+	.cleanup = vtd_cleanup,
+	.enable = vtd_enable,
+	.disable = vtd_disable,
+	.create_domain = vtd_create_domain,
+	.destroy_domain = vtd_destroy_domain,
+	.create_mapping = vtd_create_mapping,
+	.remove_mapping = vtd_remove_mapping,
+	.add_device = vtd_add_device,
+	.remove_device = vtd_remove_device,
+	.invalidate_tlb = vtd_invalidate_tlb,
 };

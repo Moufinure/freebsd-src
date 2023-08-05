@@ -5,8 +5,11 @@
 LIB=		ssl
 SHLIB_MAJOR=	111
 VERSION_MAP=	${.CURDIR}/Version.map
+PACKAGE=	openssl
 
 NO_LINT=
+
+PCFILES=	libssl.pc openssl.pc
 
 .include "../libcrypto/Makefile.inc"
 
