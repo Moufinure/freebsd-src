@@ -24,7 +24,6 @@
  * SUCH DAMAGE.
  *
  *	from: FreeBSD: src/sys/i386/include/globaldata.h,v 1.27 2001/04/27
- * $FreeBSD$
  */
 
 #ifndef	_MACHINE_PCPU_H_
@@ -32,8 +31,6 @@
 
 #include <machine/cpu.h>
 #include <machine/cpufunc.h>
-
-#define	ALT_STACK_SIZE	128
 
 typedef int (*pcpu_bp_harden)(void);
 typedef int (*pcpu_ssbd)(int);

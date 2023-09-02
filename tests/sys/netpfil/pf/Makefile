@@ -1,4 +1,3 @@
-# $FreeBSD$
 
 PACKAGE=	tests
 
@@ -24,6 +23,7 @@ ATF_TESTS_SH+=	altq \
 		ridentifier \
 		route_to \
 		rules_counter \
+		sctp \
 		set_skip \
 		set_tos \
 		src_track \

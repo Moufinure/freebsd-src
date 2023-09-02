@@ -27,8 +27,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
  * ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
  * POSSIBILITY OF SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #include <sys/cdefs.h>
@@ -226,6 +224,7 @@ pfctl_get_status(int dev)
 	status->hostid = ntohl(nvlist_get_number(nvl, "hostid"));
 	status->states = nvlist_get_number(nvl, "states");
 	status->src_nodes = nvlist_get_number(nvl, "src_nodes");
+	status->syncookies_active = nvlist_get_bool(nvl, "syncookies_active");
 
 	strlcpy(status->ifname, nvlist_get_string(nvl, "ifname"),
 	    IFNAMSIZ);

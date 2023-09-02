@@ -1,4 +1,3 @@
-# $FreeBSD$
 #
 # The long compile-with and dependency lines are required because of
 # limitations in config: backslash-newline doesn't work in strings, and
@@ -1809,6 +1808,13 @@ dev/fxp/if_fxp.c		optional fxp
 dev/fxp/inphy.c			optional fxp
 dev/gem/if_gem.c		optional gem
 dev/gem/if_gem_pci.c		optional gem pci
+dev/gve/gve_adminq.c		optional gve
+dev/gve/gve_main.c		optional gve
+dev/gve/gve_qpl.c		optional gve
+dev/gve/gve_rx.c		optional gve
+dev/gve/gve_sysctl.c		optional gve
+dev/gve/gve_tx.c		optional gve
+dev/gve/gve_utils.c		optional gve
 dev/goldfish/goldfish_rtc.c	optional goldfish_rtc fdt
 dev/gpio/dwgpio/dwgpio.c	optional gpio dwgpio fdt
 dev/gpio/dwgpio/dwgpio_bus.c	optional gpio dwgpio fdt
@@ -3740,7 +3746,6 @@ geom/part/g_part_ebr.c		optional geom_part_ebr
 geom/part/g_part_gpt.c		optional geom_part_gpt
 geom/part/g_part_ldm.c		optional geom_part_ldm
 geom/part/g_part_mbr.c		optional geom_part_mbr
-geom/part/g_part_vtoc8.c	optional geom_part_vtoc8
 geom/raid/g_raid.c		optional geom_raid
 geom/raid/g_raid_ctl.c		optional geom_raid
 geom/raid/g_raid_md_if.m	optional geom_raid

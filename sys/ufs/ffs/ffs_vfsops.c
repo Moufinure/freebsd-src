@@ -32,8 +32,6 @@
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include "opt_quota.h"
 #include "opt_ufs.h"
 #include "opt_ffs.h"
@@ -820,7 +818,7 @@ ffs_reload(struct mount *mp, int flags)
 	    newfs->fs_bsize > MAXBSIZE ||
 	    newfs->fs_bsize < sizeof(struct fs)) {
 			brelse(bp);
-			return (EIO);		/* XXX needs translation */
+			return (EINTEGRITY);
 	}
 	/*
 	 * Preserve the summary information, read-only status, and
@@ -1452,9 +1450,7 @@ ffs_unmount(struct mount *mp, int mntflags)
 	if (susp)
 		vfs_write_resume(mp, VR_START_WRITE);
 	if (ump->um_trim_tq != NULL) {
-		while (ump->um_trim_inflight != 0)
-			pause("ufsutr", hz);
-		taskqueue_drain_all(ump->um_trim_tq);
+		MPASS(ump->um_trim_inflight == 0);
 		taskqueue_free(ump->um_trim_tq);
 		free (ump->um_trimhash, M_TRIM);
 	}
@@ -1563,6 +1559,20 @@ ffs_flushfiles(struct mount *mp, int flags, struct thread *td)
 	 */
 	if (qerror == 0 && (error = vflush(mp, 0, flags, td)) != 0)
 		return (error);
+
+	/*
+	 * If this is a forcible unmount and there were any files that
+	 * were unlinked but still open, then vflush() will have
+	 * truncated and freed those files, which might have started
+	 * some trim work.  Wait here for any trims to complete
+	 * and process the blkfrees which follow the trims.
+	 * This may create more dirty devvp buffers and softdep deps.
+	 */
+	if (ump->um_trim_tq != NULL) {
+		while (ump->um_trim_inflight != 0)
+			pause("ufsutr", hz);
+		taskqueue_drain_all(ump->um_trim_tq);
+	}
 
 	/*
 	 * Flush filesystem metadata.
@@ -2067,6 +2077,11 @@ ffs_fhtovp(struct mount *mp, struct fid *fhp, int flags, struct vnode **vpp)
 	    vpp, 0));
 }
 
+/*
+ * Return a vnode from a mounted filesystem for inode with specified
+ * generation number. Return ESTALE if the inode with given generation
+ * number no longer exists on that filesystem.
+ */
 int
 ffs_inotovp(struct mount *mp,
 	ino_t ino,
@@ -2082,7 +2097,6 @@ ffs_inotovp(struct mount *mp,
 	struct cg *cgp;
 	struct buf *bp;
 	uint64_t cg;
-	int error;
 
 	ump = VFSTOUFS(mp);
 	fs = ump->um_fs;
@@ -2097,9 +2111,8 @@ ffs_inotovp(struct mount *mp,
 	 */
 	if (fs->fs_magic == FS_UFS2_MAGIC) {
 		cg = ino_to_cg(fs, ino);
-		error = ffs_getcg(fs, ump->um_devvp, cg, 0, &bp, &cgp);
-		if (error != 0)
-			return (error);
+		if (ffs_getcg(fs, ump->um_devvp, cg, 0, &bp, &cgp) != 0)
+			return (ESTALE);
 		if (ino >= cg * fs->fs_ipg + cgp->cg_initediblk) {
 			brelse(bp);
 			return (ESTALE);
@@ -2107,9 +2120,8 @@ ffs_inotovp(struct mount *mp,
 		brelse(bp);
 	}
 
-	error = ffs_vgetf(mp, ino, lflags, &nvp, ffs_flags);
-	if (error != 0)
-		return (error);
+	if (ffs_vgetf(mp, ino, lflags, &nvp, ffs_flags) != 0)
+		return (ESTALE);
 
 	ip = VTOI(nvp);
 	if (ip->i_mode == 0 || ip->i_gen != gen || ip->i_effnlink <= 0) {
