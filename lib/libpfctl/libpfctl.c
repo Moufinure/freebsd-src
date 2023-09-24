@@ -251,10 +251,44 @@ pfctl_get_status(int dev)
 	return (status);
 }
 
+static uint64_t
+_pfctl_status_counter(struct pfctl_status_counters *counters, uint64_t id)
+{
+	struct pfctl_status_counter *c;
+
+	TAILQ_FOREACH(c, counters, entry) {
+		if (c->id == id)
+			return (c->counter);
+	}
+
+	return (0);
+}
+
+uint64_t
+pfctl_status_counter(struct pfctl_status *status, int id)
+{
+	return (_pfctl_status_counter(&status->counters, id));
+}
+
+uint64_t
+pfctl_status_fcounter(struct pfctl_status *status, int id)
+{
+	return (_pfctl_status_counter(&status->fcounters, id));
+}
+
+uint64_t
+pfctl_status_scounter(struct pfctl_status *status, int id)
+{
+	return (_pfctl_status_counter(&status->scounters, id));
+}
+
 void
 pfctl_free_status(struct pfctl_status *status)
 {
 	struct pfctl_status_counter *c, *tmp;
+
+	if (status == NULL)
+		return;
 
 	TAILQ_FOREACH_SAFE(c, &status->counters, entry, tmp) {
 		free(c->name);
@@ -922,7 +956,6 @@ static int
 _pfctl_clear_states(int dev, const struct pfctl_kill *kill,
     unsigned int *killed, uint64_t ioctlval)
 {
-	struct pfioc_nv	 nv;
 	nvlist_t	*nvl;
 	int		 ret;
 
@@ -945,7 +978,6 @@ _pfctl_clear_states(int dev, const struct pfctl_kill *kill,
 		*killed = nvlist_get_number(nvl, "killed");
 
 	nvlist_destroy(nvl);
-	free(nv.data);
 
 	return (ret);
 }
