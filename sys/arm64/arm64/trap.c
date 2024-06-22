@@ -149,7 +149,7 @@ cpu_fetch_syscall_args(struct thread *td)
 	}
 
 	if (__predict_false(sa->code >= p->p_sysent->sv_size))
-		sa->callp = &p->p_sysent->sv_table[0];
+		sa->callp = &nosys_sysent;
 	else
 		sa->callp = &p->p_sysent->sv_table[sa->code];
 
@@ -223,19 +223,25 @@ static void
 external_abort(struct thread *td, struct trapframe *frame, uint64_t esr,
     uint64_t far, int lower)
 {
+	if (lower) {
+		call_trapsignal(td, SIGBUS, BUS_OBJERR, (void *)far,
+		    ESR_ELx_EXCEPTION(frame->tf_esr));
+		userret(td, frame);
+		return;
+	}
 
 	/*
 	 * Try to handle synchronous external aborts caused by
 	 * bus_space_peek() and/or bus_space_poke() functions.
 	 */
-	if (!lower && test_bs_fault((void *)frame->tf_elr)) {
+	if (test_bs_fault((void *)frame->tf_elr)) {
 		frame->tf_elr = (uint64_t)generic_bs_fault;
 		return;
 	}
 
 	print_registers(frame);
 	print_gp_register("far", far);
-	panic("Unhandled EL%d external data abort", lower ? 0: 1);
+	panic("Unhandled external data abort");
 }
 
 static void
@@ -299,8 +305,15 @@ data_abort(struct thread *td, struct trapframe *frame, uint64_t esr,
 	    pmap_fault(map->pmap, esr, far) == KERN_SUCCESS)
 		return;
 
-	KASSERT(td->td_md.md_spinlock_count == 0,
-	    ("data abort with spinlock held"));
+#ifdef INVARIANTS
+	if (td->td_md.md_spinlock_count != 0) {
+		print_registers(frame);
+		print_gp_register("far", far);
+		printf(" esr: %.16lx\n", esr);
+		panic("data abort with spinlock held (spinlock count %d != 0)",
+		    td->td_md.md_spinlock_count);
+	}
+#endif
 	if (td->td_critnest != 0 || WITNESS_CHECK(WARN_SLEEPOK |
 	    WARN_GIANTOK, NULL, "Kernel page fault") != 0) {
 		print_registers(frame);
@@ -513,9 +526,18 @@ do_el1h_sync(struct thread *td, struct trapframe *frame)
 	case EXCP_UNKNOWN:
 		if (undef_insn(1, frame))
 			break;
-		printf("Undefined instruction: %08x\n",
+		far = READ_SPECIALREG(far_el1);
+		print_registers(frame);
+		print_gp_register("far", far);
+		panic("Undefined instruction: %08x",
 		    *(uint32_t *)frame->tf_elr);
-		/* FALLTHROUGH */
+		break;
+	case EXCP_BTI:
+		far = READ_SPECIALREG(far_el1);
+		print_registers(frame);
+		print_gp_register("far", far);
+		panic("Branch Target exception");
+		break;
 	default:
 		print_registers(frame);
 		print_gp_register("far", READ_SPECIALREG(far_el1));
@@ -648,6 +670,11 @@ do_el0_sync(struct thread *td, struct trapframe *frame, uint64_t far)
 		PROC_UNLOCK(td->td_proc);
 		call_trapsignal(td, SIGTRAP, TRAP_TRACE,
 		    (void *)frame->tf_elr, exception);
+		userret(td, frame);
+		break;
+	case EXCP_BTI:
+		call_trapsignal(td, SIGILL, ILL_ILLOPC, (void *)frame->tf_elr,
+		    exception);
 		userret(td, frame);
 		break;
 	default:

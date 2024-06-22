@@ -468,6 +468,9 @@ vdev_config_generate(spa_t *spa, vdev_t *vd, boolean_t getstats,
 	if (vd->vdev_isspare)
 		fnvlist_add_uint64(nv, ZPOOL_CONFIG_IS_SPARE, 1);
 
+	if (flags & VDEV_CONFIG_L2CACHE)
+		fnvlist_add_uint64(nv, ZPOOL_CONFIG_ASHIFT, vd->vdev_ashift);
+
 	if (!(flags & (VDEV_CONFIG_SPARE | VDEV_CONFIG_L2CACHE)) &&
 	    vd == vd->vdev_top) {
 		fnvlist_add_uint64(nv, ZPOOL_CONFIG_METASLAB_ARRAY,
@@ -1100,6 +1103,16 @@ vdev_label_init(vdev_t *vd, uint64_t crtxg, vdev_labeltype_t reason)
 		    POOL_STATE_L2CACHE) == 0);
 		VERIFY(nvlist_add_uint64(label, ZPOOL_CONFIG_GUID,
 		    vd->vdev_guid) == 0);
+
+		/*
+		 * This is merely to facilitate reporting the ashift of the
+		 * cache device through zdb. The actual retrieval of the
+		 * ashift (in vdev_alloc()) uses the nvlist
+		 * spa->spa_l2cache->sav_config (populated in
+		 * spa_ld_open_aux_vdevs()).
+		 */
+		VERIFY(nvlist_add_uint64(label, ZPOOL_CONFIG_ASHIFT,
+		    vd->vdev_ashift) == 0);
 	} else {
 		uint64_t txg = 0ULL;
 

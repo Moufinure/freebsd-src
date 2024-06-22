@@ -1040,6 +1040,22 @@ tryagain:
 			NFSINCRGLOBAL(nfsstatsv1.rpcinvalid);
 			error = ENXIO;
 		}
+	} else if (stat == RPC_AUTHERROR) {
+		/* Check for a session slot that needs to be free'd. */
+		if ((nd->nd_flag & (ND_NFSV41 | ND_HASSLOTID)) ==
+		    (ND_NFSV41 | ND_HASSLOTID) && nmp != NULL &&
+		    nd->nd_procnum != NFSPROC_NULL) {
+			/*
+			 * This can occur when a Kerberos/RPCSEC_GSS session
+			 * expires, due to TGT expiration.
+			 * Free the slot, resetting the slot's sequence#.
+			 */
+			if (sep == NULL)
+				sep = nfsmnt_mdssession(nmp);
+			nfsv4_freeslot(sep, nd->nd_slotid, true);
+		}
+		NFSINCRGLOBAL(nfsstatsv1.rpcinvalid);
+		error = EACCES;
 	} else {
 		NFSINCRGLOBAL(nfsstatsv1.rpcinvalid);
 		error = EACCES;
@@ -1208,6 +1224,14 @@ tryagain:
 				NFSCL_DEBUG(1, "Got badsession\n");
 				NFSLOCKCLSTATE();
 				NFSLOCKMNT(nmp);
+				if (TAILQ_EMPTY(&nmp->nm_sess)) {
+					NFSUNLOCKMNT(nmp);
+					NFSUNLOCKCLSTATE();
+					printf("If server has not rebooted, "
+					    "check NFS clients for unique "
+					    "/etc/hostid's\n");
+					goto out;
+				}
 				sep = NFSMNT_MDSSESSION(nmp);
 				if (bcmp(sep->nfsess_sessionid, nd->nd_sequence,
 				    NFSX_V4SESSIONID) == 0) {
@@ -1292,7 +1316,8 @@ tryagain:
 			     nd->nd_procnum != NFSPROC_LOCKU))) ||
 			    (nd->nd_repstat == NFSERR_DELAY &&
 			     (nd->nd_flag & ND_NFSV4) == 0) ||
-			    nd->nd_repstat == NFSERR_RESOURCE) {
+			    nd->nd_repstat == NFSERR_RESOURCE ||
+			    nd->nd_repstat == NFSERR_RETRYUNCACHEDREP) {
 				/* Clip at NFS_TRYLATERDEL. */
 				if (timespeccmp(&trylater_delay,
 				    &nfs_trylater_max, >))
@@ -1388,6 +1413,7 @@ tryagain:
 				nd->nd_repstat = NFSERR_STALEDONTRECOVER;
 		}
 	}
+out:
 
 #ifdef KDTRACE_HOOKS
 	if (nmp != NULL && dtrace_nfscl_nfs234_done_probe != NULL) {

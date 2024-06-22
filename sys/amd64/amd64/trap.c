@@ -625,7 +625,7 @@ trap(struct trapframe *frame)
 	ksi.ksi_addr = (void *)addr;
 	if (uprintf_signal) {
 		uprintf("pid %d comm %s: signal %d err %#lx code %d type %d "
-		    "addr %#lx rsp %#lx rip %#lx rax %#lx"
+		    "addr %#lx rsp %#lx rip %#lx rax %#lx "
 		    "<%02x %02x %02x %02x %02x %02x %02x %02x>\n",
 		    p->p_pid, p->p_comm, signo, frame->tf_err, ucode, type,
 		    addr, frame->tf_rsp, frame->tf_rip, frame->tf_rax,
@@ -1019,10 +1019,10 @@ cpu_fetch_syscall_args_fallback(struct thread *td, struct syscall_args *sa)
 		regcnt--;
 	}
 
- 	if (sa->code >= p->p_sysent->sv_size)
- 		sa->callp = &p->p_sysent->sv_table[0];
-  	else
- 		sa->callp = &p->p_sysent->sv_table[sa->code];
+	if (sa->code >= p->p_sysent->sv_size)
+		sa->callp = &nosys_sysent;
+	else
+		sa->callp = &p->p_sysent->sv_table[sa->code];
 
 	KASSERT(sa->callp->sy_narg <= nitems(sa->args),
 	    ("Too many syscall arguments!"));
@@ -1032,7 +1032,7 @@ cpu_fetch_syscall_args_fallback(struct thread *td, struct syscall_args *sa)
 	if (sa->callp->sy_narg > regcnt) {
 		params = (caddr_t)frame->tf_rsp + sizeof(register_t);
 		error = copyin(params, &sa->args[regcnt],
-	    	    (sa->callp->sy_narg - regcnt) * sizeof(sa->args[0]));
+		    (sa->callp->sy_narg - regcnt) * sizeof(sa->args[0]));
 		if (__predict_false(error != 0))
 			return (error);
 	}

@@ -203,7 +203,7 @@ cpu_copy_thread(struct thread *td, struct thread *td0)
  * Set that machine state for performing an upcall that starts
  * the entry function with the given argument.
  */
-void
+int
 cpu_set_upcall(struct thread *td, void (*entry)(void *), void *arg,
 	stack_t *stack)
 {
@@ -216,6 +216,7 @@ cpu_set_upcall(struct thread *td, void (*entry)(void *), void *arg,
 		tf->tf_sp = STACKALIGN((uintptr_t)stack->ss_sp + stack->ss_size);
 	tf->tf_elr = (register_t)entry;
 	tf->tf_x[0] = (register_t)arg;
+	return (0);
 }
 
 int
@@ -301,4 +302,15 @@ cpu_procctl(struct thread *td __unused, int idtype __unused, id_t id __unused,
 {
 
 	return (EINVAL);
+}
+
+void
+cpu_sync_core(void)
+{
+	/*
+	 * Do nothing. According to ARM ARMv8 D1.11 Exception return
+	 * If FEAT_ExS is not implemented, or if FEAT_ExS is
+	 * implemented and the SCTLR_ELx.EOS field is set, exception
+	 * return from ELx is a context synchronization event.
+	 */
 }

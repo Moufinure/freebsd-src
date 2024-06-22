@@ -70,7 +70,11 @@ typedef enum {
 	CCD6,
 	CCD7,
 	CCD8,
-	CCD_MAX = CCD8,
+	CCD9,
+	CCD10,
+	CCD11,
+	CCD12,
+	CCD_MAX = CCD12,
 	NUM_CCDS = CCD_MAX - CCD_BASE + 1,
 } amdsensor_t;
 
@@ -82,6 +86,7 @@ struct amdtemp_softc {
 #define	AMDTEMP_FLAG_CT_10BIT	0x02	/* CurTmp is 10-bit wide. */
 #define	AMDTEMP_FLAG_ALT_OFFSET	0x04	/* CurTmp starts at -28C. */
 	int32_t		sc_offset;
+	int32_t		sc_temp_base;
 	int32_t		(*sc_gettemp)(device_t, amdsensor_t);
 	struct sysctl_oid *sc_sysctl_cpu[MAXCPU];
 	struct intr_config_hook sc_ich;
@@ -109,6 +114,8 @@ struct amdtemp_softc {
 #define	DEVICEID_AMD_HOSTB17H_M10H_ROOT	0x15d0
 #define	DEVICEID_AMD_HOSTB17H_M30H_ROOT	0x1480	/* Also M70H, F19H M00H/M20H */
 #define	DEVICEID_AMD_HOSTB17H_M60H_ROOT	0x1630
+#define	DEVICEID_AMD_HOSTB19H_M10H_ROOT	0x14a4
+#define	DEVICEID_AMD_HOSTB19H_M60H_ROOT	0x14d8
 
 static const struct amdtemp_product {
 	uint16_t	amdtemp_vendorid;
@@ -133,6 +140,8 @@ static const struct amdtemp_product {
 	{ VENDORID_AMD,	DEVICEID_AMD_HOSTB17H_M10H_ROOT, false },
 	{ VENDORID_AMD,	DEVICEID_AMD_HOSTB17H_M30H_ROOT, false },
 	{ VENDORID_AMD,	DEVICEID_AMD_HOSTB17H_M60H_ROOT, false },
+	{ VENDORID_AMD,	DEVICEID_AMD_HOSTB19H_M10H_ROOT, false },
+	{ VENDORID_AMD,	DEVICEID_AMD_HOSTB19H_M60H_ROOT, false },
 };
 
 /*
@@ -177,6 +186,9 @@ static const struct amdtemp_product {
  */
 #define	AMDTEMP_17H_CCD_TMP_BASE	0x59954
 #define	AMDTEMP_17H_CCD_TMP_VALID	(1u << 11)
+
+#define	AMDTEMP_ZEN4_10H_CCD_TMP_BASE	0x59b00
+#define	AMDTEMP_ZEN4_CCD_TMP_BASE	0x59b08
 
 /*
  * AMD temperature range adjustment, in deciKelvins (i.e., 49.0 Celsius).
@@ -431,8 +443,9 @@ amdtemp_attach(device_t dev)
 			erratum319 = 1;
 			break;
 		case 1:	/* Socket AM2+ or AM3 */
-			if ((pci_cfgregread(pci_get_bus(dev),
-			    pci_get_slot(dev), 2, AMDTEMP_DRAM_CONF_HIGH, 2) &
+			if ((pci_cfgregread(pci_get_domain(dev),
+			    pci_get_bus(dev), pci_get_slot(dev), 2,
+			    AMDTEMP_DRAM_CONF_HIGH, 2) &
 			    AMDTEMP_DRAM_MODE_DDR3) != 0 || model > 0x04 ||
 			    (model == 0x04 && (cpuid & CPUID_STEPPING) >= 3))
 				break;
@@ -517,6 +530,8 @@ amdtemp_attach(device_t dev)
 	    CTLTYPE_INT | CTLFLAG_RD | CTLFLAG_MPSAFE,
 	    dev, CORE0_SENSOR0, amdtemp_sysctl, "IK",
 	    "Core 0 / Sensor 0 temperature");
+
+	sc->sc_temp_base = AMDTEMP_17H_CCD_TMP_BASE;
 
 	if (family == 0x17)
 		amdtemp_probe_ccd_sensors17h(dev, model);
@@ -779,7 +794,7 @@ amdtemp_gettemp17h(device_t dev, amdsensor_t sensor)
 		return (amdtemp_decode_fam17h_tctl(sc->sc_offset, val));
 	case CCD_BASE ... CCD_MAX:
 		/* Tccd<N> */
-		error = amdsmn_read(sc->sc_smn, AMDTEMP_17H_CCD_TMP_BASE +
+		error = amdsmn_read(sc->sc_smn, sc->sc_temp_base +
 		    (((int)sensor - CCD_BASE) * sizeof(val)), &val);
 		KASSERT(error == 0, ("amdsmn_read2"));
 		KASSERT((val & AMDTEMP_17H_CCD_TMP_VALID) != 0,
@@ -800,7 +815,7 @@ amdtemp_probe_ccd_sensors(device_t dev, uint32_t maxreg)
 
 	sc = device_get_softc(dev);
 	for (i = 0; i < maxreg; i++) {
-		error = amdsmn_read(sc->sc_smn, AMDTEMP_17H_CCD_TMP_BASE +
+		error = amdsmn_read(sc->sc_smn, sc->sc_temp_base +
 		    (i * sizeof(val)), &val);
 		if (error != 0)
 			continue;
@@ -845,11 +860,22 @@ amdtemp_probe_ccd_sensors17h(device_t dev, uint32_t model)
 static void
 amdtemp_probe_ccd_sensors19h(device_t dev, uint32_t model)
 {
+	struct amdtemp_softc *sc = device_get_softc(dev);
 	uint32_t maxreg;
 
 	switch (model) {
 	case 0x00 ... 0x0f: /* Zen3 EPYC "Milan" */
 	case 0x20 ... 0x2f: /* Zen3 Ryzen "Vermeer" */
+		maxreg = 8;
+		_Static_assert((int)NUM_CCDS >= 8, "");
+		break;
+	case 0x10 ... 0x1f:
+		sc->sc_temp_base = AMDTEMP_ZEN4_10H_CCD_TMP_BASE;
+		maxreg = 12;
+		_Static_assert((int)NUM_CCDS >= 12, "");
+		break;
+	case 0x60 ... 0x6f: /* Zen4 Ryzen "Raphael" */
+		sc->sc_temp_base = AMDTEMP_ZEN4_CCD_TMP_BASE;
 		maxreg = 8;
 		_Static_assert((int)NUM_CCDS >= 8, "");
 		break;

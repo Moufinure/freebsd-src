@@ -882,7 +882,7 @@ bail:
 			    fsoptions->uio_iov[2 * errmsg_pos + 1].iov_base,
 			    fsoptions->uio_iov[2 * errmsg_pos + 1].iov_len);
 		} else {
-			copyout(errmsg,
+			(void)copyout(errmsg,
 			    fsoptions->uio_iov[2 * errmsg_pos + 1].iov_base,
 			    fsoptions->uio_iov[2 * errmsg_pos + 1].iov_len);
 		}
@@ -1154,9 +1154,10 @@ vfs_domount_update(
 	struct vnode *rootvp;
 	void *bufp;
 	struct mount *mp;
-	int error, export_error, i, len;
-	uint64_t flag;
+	int error, export_error, i, len, fsid_up_len;
+	uint64_t flag, mnt_union;
 	gid_t *grps;
+	fsid_t *fsid_up;
 	bool vfs_suser_failed;
 
 	ASSERT_VOP_ELOCKED(vp, __func__);
@@ -1219,10 +1220,24 @@ vfs_domount_update(
 	VI_UNLOCK(vp);
 	VOP_UNLOCK(vp);
 
+	rootvp = NULL;
 	vfs_op_enter(mp);
 	vn_seqc_write_begin(vp);
 
-	rootvp = NULL;
+	if (vfs_getopt(*optlist, "fsid", (void **)&fsid_up,
+	    &fsid_up_len) == 0) {
+		if (fsid_up_len != sizeof(*fsid_up)) {
+			error = EINVAL;
+			goto end;
+		}
+		if (fsidcmp(fsid_up, &mp->mnt_stat.f_fsid) != 0) {
+			error = ENOENT;
+			goto end;
+		}
+		vfs_deleteopt(*optlist, "fsid");
+	}
+
+	mnt_union = 0;
 	MNT_ILOCK(mp);
 	if ((mp->mnt_kern_flag & MNTK_UNMOUNT) != 0) {
 		MNT_IUNLOCK(mp);
@@ -1244,6 +1259,11 @@ vfs_domount_update(
 		mp->mnt_flag |= MNT_UPDATE;
 	} else {
 		mp->mnt_flag &= ~MNT_UPDATEMASK;
+		if ((mp->mnt_flag & MNT_UNION) == 0 &&
+		    (fsflags & MNT_UNION) != 0) {
+			fsflags &= ~MNT_UNION;
+			mnt_union = MNT_UNION;
+		}
 		mp->mnt_flag |= fsflags & (MNT_RELOAD | MNT_FORCE | MNT_UPDATE |
 		    MNT_SNAPSHOT | MNT_ROOTFS | MNT_UPDATEMASK | MNT_RDONLY);
 		if ((mp->mnt_flag & MNT_ASYNC) == 0)
@@ -1345,8 +1365,9 @@ vfs_domount_update(
 
 	MNT_ILOCK(mp);
 	if (error == 0) {
-		mp->mnt_flag &=	~(MNT_UPDATE | MNT_RELOAD | MNT_FORCE |
+		mp->mnt_flag &= ~(MNT_UPDATE | MNT_RELOAD | MNT_FORCE |
 		    MNT_SNAPSHOT);
+		mp->mnt_flag |= mnt_union;
 	} else {
 		/*
 		 * If we fail, restore old mount flags. MNT_QUOTA is special,
@@ -2692,6 +2713,7 @@ vfs_remount_ro(struct mount *mp)
 	struct vnode *vp_covered, *rootvp;
 	int error;
 
+	vfs_op_enter(mp);
 	KASSERT(mp->mnt_lockref > 0,
 	    ("vfs_remount_ro: mp %p is not busied", mp));
 	KASSERT((mp->mnt_kern_flag & MNTK_UNMOUNT) == 0,
@@ -2700,17 +2722,19 @@ vfs_remount_ro(struct mount *mp)
 	rootvp = NULL;
 	vp_covered = mp->mnt_vnodecovered;
 	error = vget(vp_covered, LK_EXCLUSIVE | LK_NOWAIT);
-	if (error != 0)
+	if (error != 0) {
+		vfs_op_exit(mp);
 		return (error);
+	}
 	VI_LOCK(vp_covered);
 	if ((vp_covered->v_iflag & VI_MOUNT) != 0) {
 		VI_UNLOCK(vp_covered);
 		vput(vp_covered);
+		vfs_op_exit(mp);
 		return (EBUSY);
 	}
 	vp_covered->v_iflag |= VI_MOUNT;
 	VI_UNLOCK(vp_covered);
-	vfs_op_enter(mp);
 	vn_seqc_write_begin(vp_covered);
 
 	MNT_ILOCK(mp);
@@ -2805,6 +2829,41 @@ suspend_all_fs(void)
 		}
 	}
 	mtx_unlock(&mountlist_mtx);
+}
+
+/*
+ * Clone the mnt_exjail field to a new mount point.
+ */
+void
+vfs_exjail_clone(struct mount *inmp, struct mount *outmp)
+{
+	struct ucred *cr;
+	struct prison *pr;
+
+	MNT_ILOCK(inmp);
+	cr = inmp->mnt_exjail;
+	if (cr != NULL) {
+		crhold(cr);
+		MNT_IUNLOCK(inmp);
+		pr = cr->cr_prison;
+		sx_slock(&allprison_lock);
+		if (!prison_isalive(pr)) {
+			sx_sunlock(&allprison_lock);
+			crfree(cr);
+			return;
+		}
+		MNT_ILOCK(outmp);
+		if (outmp->mnt_exjail == NULL) {
+			outmp->mnt_exjail = cr;
+			atomic_add_int(&pr->pr_exportcnt, 1);
+			cr = NULL;
+		}
+		MNT_IUNLOCK(outmp);
+		sx_sunlock(&allprison_lock);
+		if (cr != NULL)
+			crfree(cr);
+	} else
+		MNT_IUNLOCK(inmp);
 }
 
 void

@@ -21,6 +21,8 @@
         ..
         expr
         ..
+        hostname
+        ..
         ln
         ..
         ls
@@ -429,7 +431,11 @@
             atf-sh
             ..
         ..
+        rc
+        ..
         rtld-elf
+            rtld_deepbind
+            ..
         ..
         tftpd
         ..
@@ -1053,6 +1059,10 @@
         ..
         locale
         ..
+        lockf
+        ..
+        lorder
+        ..
         m4
         ..
         mkimg
@@ -1095,6 +1105,8 @@
         ..
         tar
         ..
+        touch
+        ..
         tr
         ..
         truncate
@@ -1110,6 +1122,8 @@
         unifdef
         ..
         uniq
+        ..
+        unzip
         ..
         vmstat
         ..

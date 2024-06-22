@@ -619,7 +619,6 @@ do_fork(struct thread *td, struct fork_req *fr, struct proc *p2, struct thread *
 	LIST_INIT(&p2->p_orphans);
 
 	callout_init_mtx(&p2->p_itcallout, &p2->p_mtx, 0);
-	TAILQ_INIT(&p2->p_kqtim_stop);
 
 	/*
 	 * This begins the section where we must prevent the parent
@@ -1162,9 +1161,15 @@ fork_exit(void (*callout)(void *, struct trapframe *), void *arg,
 	}
 	mtx_assert(&Giant, MA_NOTOWNED);
 
+	/*
+	 * Now going to return to userland.
+	 */
+
 	if (p->p_sysent->sv_schedtail != NULL)
 		(p->p_sysent->sv_schedtail)(td);
 	td->td_pflags &= ~TDP_FORKING;
+
+	userret(td, frame);
 }
 
 /*
@@ -1214,8 +1219,6 @@ fork_return(struct thread *td, struct trapframe *frame)
 	 */
 	if (!prison_isalive(td->td_ucred->cr_prison))
 		exit1(td, 0, SIGKILL);
-
-	userret(td, frame);
 
 #ifdef KTRACE
 	if (KTRPOINT(td, KTR_SYSRET))

@@ -1,8 +1,5 @@
 .\" This file is in the public domain, so clarified as of
 .\" 2009-05-17 by Arthur David Olson.
-.\"
-.\" $FreeBSD$
-.\"
 .Dd January 21, 2023
 .Dt ZIC 8
 .Os
@@ -112,19 +109,23 @@ will act as if the input contained a link line of the form
 Link	\fItimezone\fP		posixrules
 .Ed
 .Pp
-This feature is obsolete and poorly supported.
+If
+.Ar timezone
+is
+.Dq "\*-"
+(the default), any already-existing link is removed.
+.Pp
+Unless
+.Ar timezone
+is
+.Dq "\*-" ,
+this option is obsolete and poorly supported.
 Among other things it should not be used for timestamps after the year 2037,
 and it should not be combined with
 .Fl b Cm slim
 if
 .Ar timezone 's
 transitions are at standard time or Universal Time (UT) instead of local time.
-.Pp
-If
-.Ar timezone
-is
-.Ql - ,
-any already-existing link is removed.
 .It Fl r Oo @ Ns Ar lo Oc Ns Oo /@ Ns Ar hi Oc
 Limit the applicability of output files
 to timestamps in the range from
@@ -135,7 +136,7 @@ to timestamps in the range from
 .Ar lo
 and
 .Ar hi
-are possibly-signed decimal counts of seconds since the Epoch
+are possibly signed decimal counts of seconds since the Epoch
 (1970-01-01 00:00:00 UTC).
 Omitted counts default to extreme values.
 The output files use UT offset 0 and abbreviation
@@ -155,7 +156,7 @@ causes a TZif file to contain explicit entries for
 .Em pre-
 .Ar hi
 transitions rather than concisely representing them
-with an extended POSIX TZ string.
+with an extended POSIX.1-2017 TZ string.
 Also see the
 .Fl b Cm slim
 option for another way to shrink output size.
@@ -164,10 +165,10 @@ Generate redundant trailing explicit transitions for timestamps
 that occur less than
 .Ar hi
 seconds since the Epoch, even though the transitions could be
-more concisely represented via the extended POSIX TZ string.
+more concisely represented via the extended POSIX.1-2017 TZ string.
 This option does not affect the represented timestamps.
 Although it accommodates nonstandard TZif readers
-that ignore the extended POSIX TZ string,
+that ignore the extended POSIX.1-2017 TZ string,
 it increases the size of the altered output files.
 .It Fl t Ar file
 When creating local time information, put the configuration link in
@@ -226,11 +227,11 @@ for
 .It
 The output file does not contain all the information about the
 long-term future of a timezone, because the future cannot be summarized as
-an extended POSIX TZ string.
-For example, as of 2019 this problem
-occurs for Iran's daylight-saving rules for the predicted future, as
-these rules are based on the Iranian calendar, which cannot be
-represented.
+an extended POSIX.1-2017 TZ string.
+For example, as of 2023 this problem
+occurs for Morocco's daylight-saving rules, as these rules are based
+on predictions for when Ramadan will be observed, something that
+an extended POSIX.1-2017 TZ string cannot represent.
 .It
 The output contains data that may not be handled properly by client
 code designed for older
@@ -340,23 +341,14 @@ an unquoted name should not contain characters from the set
 Gives the first year in which the rule applies.
 Any signed integer year can be supplied; the proleptic Gregorian calendar
 is assumed, with year 0 preceding year 1.
-The word
-.Cm minimum
-(or an abbreviation) means the indefinite past.
-The word
-.Cm maximum
-(or an abbreviation) means the indefinite future.
 Rules can describe times that are not representable as time values,
 with the unrepresentable times ignored; this allows rules to be portable
 among hosts with differing time value types.
 .It TO
 Gives the final year in which the rule applies.
-In addition to
-.Cm minimum
-and
+The word
 .Cm maximum
-(as above),
-the word
+(or an abbreviation) means the indefinite future, and the word
 .Cm only
 (or an abbreviation)
 may be used to repeat the value of the

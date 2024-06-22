@@ -97,7 +97,6 @@ struct acpi_interface {
 };
 
 static char *sysres_ids[] = { "PNP0C01", "PNP0C02", NULL };
-static char *pcilink_ids[] = { "PNP0C0F", NULL };
 
 /* Global mutex for locking access to the ACPI subsystem. */
 struct mtx	acpi_mutex;
@@ -673,7 +672,7 @@ acpi_attach(device_t dev)
 
     /* Register our shutdown handler. */
     EVENTHANDLER_REGISTER(shutdown_final, acpi_shutdown_final, sc,
-	SHUTDOWN_PRI_LAST);
+	SHUTDOWN_PRI_LAST + 150);
 
     /*
      * Register our acpi event handlers.
@@ -1268,8 +1267,17 @@ acpi_sysres_alloc(device_t dev)
 }
 
 /*
- * Reserve declared resources for devices found during attach once system
- * resources have been allocated.
+ * Reserve declared resources for active devices found during the
+ * namespace scan once the boot-time attach of devices has completed.
+ *
+ * Ideally reserving firmware-assigned resources would work in a
+ * depth-first traversal of the device namespace, but this is
+ * complicated.  In particular, not all resources are enumerated by
+ * ACPI (e.g. PCI bridges and devices enumerate their resources via
+ * other means).  Some systems also enumerate devices via ACPI behind
+ * PCI bridges but without a matching a PCI device_t enumerated via
+ * PCI bus scanning, the device_t's end up as direct children of
+ * acpi0.  Doing this scan late is not ideal, but works for now.
  */
 static void
 acpi_reserve_resources(device_t dev)
@@ -1277,11 +1285,9 @@ acpi_reserve_resources(device_t dev)
     struct resource_list_entry *rle;
     struct resource_list *rl;
     struct acpi_device *ad;
-    struct acpi_softc *sc;
     device_t *children;
     int child_count, i;
 
-    sc = device_get_softc(dev);
     if (device_get_children(dev, &children, &child_count) != 0)
 	return;
     for (i = 0; i < child_count; i++) {
@@ -1323,50 +1329,15 @@ acpi_reserve_resources(device_t dev)
 	}
     }
     free(children, M_TEMP);
-    sc->acpi_resources_reserved = 1;
 }
 
 static int
 acpi_set_resource(device_t dev, device_t child, int type, int rid,
     rman_res_t start, rman_res_t count)
 {
-    struct acpi_softc *sc = device_get_softc(dev);
     struct acpi_device *ad = device_get_ivars(child);
     struct resource_list *rl = &ad->ad_rl;
-    ACPI_DEVICE_INFO *devinfo;
     rman_res_t end;
-    int allow;
-
-    /* Ignore IRQ resources for PCI link devices. */
-    if (type == SYS_RES_IRQ &&
-	ACPI_ID_PROBE(dev, child, pcilink_ids, NULL) <= 0)
-	return (0);
-
-    /*
-     * Ignore most resources for PCI root bridges.  Some BIOSes
-     * incorrectly enumerate the memory ranges they decode as plain
-     * memory resources instead of as ResourceProducer ranges.  Other
-     * BIOSes incorrectly list system resource entries for I/O ranges
-     * under the PCI bridge.  Do allow the one known-correct case on
-     * x86 of a PCI bridge claiming the I/O ports used for PCI config
-     * access.
-     */
-    if (type == SYS_RES_MEMORY || type == SYS_RES_IOPORT) {
-	if (ACPI_SUCCESS(AcpiGetObjectInfo(ad->ad_handle, &devinfo))) {
-	    if ((devinfo->Flags & ACPI_PCI_ROOT_BRIDGE) != 0) {
-#if defined(__i386__) || defined(__amd64__)
-		allow = (type == SYS_RES_IOPORT && start == CONF1_ADDR_PORT);
-#else
-		allow = 0;
-#endif
-		if (!allow) {
-		    AcpiOsFree(devinfo);
-		    return (0);
-		}
-	    }
-	    AcpiOsFree(devinfo);
-	}
-    }
 
 #ifdef INTRNG
     /* map with default for now */
@@ -1386,38 +1357,6 @@ acpi_set_resource(device_t dev, device_t child, int type, int rid,
     /* Add the resource. */
     end = (start + count - 1);
     resource_list_add(rl, type, rid, start, end, count);
-
-    /* Don't reserve resources until the system resources are allocated. */
-    if (!sc->acpi_resources_reserved)
-	return (0);
-
-    /* Don't reserve system resources. */
-    if (ACPI_ID_PROBE(dev, child, sysres_ids, NULL) <= 0)
-	return (0);
-
-    /*
-     * Don't reserve IRQ resources.  There are many sticky things to
-     * get right otherwise (e.g. IRQs for psm, atkbd, and HPET when
-     * using legacy routing).
-     */
-    if (type == SYS_RES_IRQ)
-	return (0);
-
-    /*
-     * Don't reserve resources for CPU devices.  Some of these
-     * resources need to be allocated as shareable, but reservations
-     * are always non-shareable.
-     */
-    if (device_get_devclass(child) == devclass_find("cpu"))
-	return (0);
-
-    /*
-     * Reserve the resource.
-     *
-     * XXX: Ignores failure for now.  Failure here is probably a
-     * BIOS/firmware bug?
-     */
-    resource_list_reserve(rl, dev, child, type, &rid, start, end, count, 0);
     return (0);
 }
 
@@ -1484,7 +1423,7 @@ acpi_alloc_resource(device_t bus, device_t child, int type, int *rid,
 	    }
 	}
     } else
-	res = BUS_ALLOC_RESOURCE(device_get_parent(bus), child, type, rid,
+	res = bus_generic_alloc_resource(bus, child, type, rid,
 	    start, end, count, flags);
 
     /*
@@ -1595,7 +1534,8 @@ acpi_delete_resource(device_t bus, device_t child, int type, int rid)
 	    " (type=%d, rid=%d)\n", type, rid);
 	return;
     }
-    resource_list_unreserve(rl, bus, child, type, rid);
+    if (resource_list_reserved(rl, type, rid))
+	resource_list_unreserve(rl, bus, child, type, rid);
     resource_list_delete(rl, type, rid);
 }
 
@@ -2127,11 +2067,8 @@ acpi_enable_pcie(void)
 	end = (ACPI_MCFG_ALLOCATION *)((char *)hdr + hdr->Length);
 	alloc = (ACPI_MCFG_ALLOCATION *)((ACPI_TABLE_MCFG *)hdr + 1);
 	while (alloc < end) {
-		if (alloc->PciSegment == 0) {
-			pcie_cfgregopen(alloc->Address, alloc->StartBusNumber,
-			    alloc->EndBusNumber);
-			return;
-		}
+		pcie_cfgregopen(alloc->Address, alloc->PciSegment,
+		    alloc->StartBusNumber, alloc->EndBusNumber);
 		alloc++;
 	}
 #endif
@@ -2196,9 +2133,6 @@ acpi_probe_children(device_t bus)
     /* Pre-allocate resources for our rman from any sysresource devices. */
     acpi_sysres_alloc(bus);
 
-    /* Reserve resources already allocated to children. */
-    acpi_reserve_resources(bus);
-
     /* Create any static children by calling device identify methods. */
     ACPI_DEBUG_PRINT((ACPI_DB_OBJECTS, "device identify routines\n"));
     bus_generic_probe(bus);
@@ -2206,6 +2140,12 @@ acpi_probe_children(device_t bus)
     /* Probe/attach all children, created statically and from the namespace. */
     ACPI_DEBUG_PRINT((ACPI_DB_OBJECTS, "acpi bus_generic_attach\n"));
     bus_generic_attach(bus);
+
+    /*
+     * Reserve resources allocated to children but not yet allocated
+     * by a driver.
+     */
+    acpi_reserve_resources(bus);
 
     /* Attach wake sysctls. */
     acpi_wake_sysctl_walk(bus);

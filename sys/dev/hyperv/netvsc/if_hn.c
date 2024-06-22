@@ -1111,7 +1111,8 @@ static int
 hn_ifmedia_upd(struct ifnet *ifp __unused)
 {
 
-	return EOPNOTSUPP;
+	/* Ignore since autoselect is the only defined and valid media */
+	return (0);
 }
 
 static void
@@ -2535,7 +2536,7 @@ hn_detach(device_t dev)
 				hn_stop(sc, true);
 			/*
 			 * NOTE:
-			 * hn_stop() only suspends data, so managment
+			 * hn_stop() only suspends data, so management
 			 * stuffs have to be suspended manually here.
 			 */
 			hn_suspend_mgmt(sc);

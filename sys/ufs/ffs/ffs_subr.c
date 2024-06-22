@@ -392,16 +392,13 @@ validate_sblock(struct fs *fs, int isaltsblk)
 		CHK(fs->fs_old_rotdelay, !=, 0, %jd);
 		CHK(fs->fs_old_rps, !=, 60, %jd);
 		CHK(fs->fs_old_nspf, !=, fs->fs_fsize / sectorsize, %jd);
-		CHK(fs->fs_old_cpg, !=, 1, %jd);
 		CHK(fs->fs_old_interleave, !=, 1, %jd);
 		CHK(fs->fs_old_trackskew, !=, 0, %jd);
 		CHK(fs->fs_old_cpc, !=, 0, %jd);
 		CHK(fs->fs_old_postblformat, !=, 1, %jd);
 		CHK(fs->fs_old_nrpos, !=, 1, %jd);
-		CHK(fs->fs_old_spc, !=, fs->fs_fpg * fs->fs_old_nspf, %jd);
 		CHK(fs->fs_old_nsect, !=, fs->fs_old_spc, %jd);
 		CHK(fs->fs_old_npsect, !=, fs->fs_old_spc, %jd);
-		CHK(fs->fs_old_ncyl, !=, fs->fs_ncg, %jd);
 	} else {
 		/* Bad magic number, so assume not a superblock */
 		return (ENOENT);

@@ -17,17 +17,38 @@
 ** Thank you!
 */
 
+/* PORT_TO_C89 means the code should work even if the underlying
+   compiler and library support only C89 plus C99's 'long long'
+   and perhaps a few other extensions to C89.  SUPPORT_C89 means the
+   tzcode library should support C89 callers in addition to the usual
+   support for C99-and-later callers; however, C89 support can trigger
+   latent bugs in C99-and-later callers.  These macros are obsolescent,
+   and the plan is to remove them along with any code needed only when
+   they are nonzero.  A good time to do that might be in the year 2029
+   because RHEL 7 (whose GCC defaults to C89) extended life cycle
+   support (ELS) is scheduled to end on 2028-06-30.  */
+#ifndef PORT_TO_C89
+# define PORT_TO_C89 0
+#endif
+#ifndef SUPPORT_C89
+# define SUPPORT_C89 0
+#endif
+
 #ifndef __STDC_VERSION__
 # define __STDC_VERSION__ 0
 #endif
 
 /* Define true, false and bool if they don't work out of the box.  */
-#if __STDC_VERSION__ < 199901
+#if PORT_TO_C89 && __STDC_VERSION__ < 199901
 # define true 1
 # define false 0
 # define bool int
 #elif __STDC_VERSION__ < 202311
 # include <stdbool.h>
+#endif
+
+#if __STDC_VERSION__ < 202311
+# define static_assert(cond) extern int static_assert_check[(cond) ? 1 : -1]
 #endif
 
 /*
@@ -52,19 +73,17 @@
 # define HAVE_DECL_ASCTIME_R 1
 #endif
 
-#if !defined HAVE_GENERIC && defined __has_extension
-# if __has_extension(c_generic_selections)
-#  define HAVE_GENERIC 1
-# else
-#  define HAVE_GENERIC 0
+#if !defined HAVE__GENERIC && defined __has_extension
+# if !__has_extension(c_generic_selections)
+#  define HAVE__GENERIC 0
 # endif
 #endif
 /* _Generic is buggy in pre-4.9 GCC.  */
-#if !defined HAVE_GENERIC && defined __GNUC__ && !defined __STRICT_ANSI__
-# define HAVE_GENERIC (4 < __GNUC__ + (9 <= __GNUC_MINOR__))
+#if !defined HAVE__GENERIC && defined __GNUC__ && !defined __STRICT_ANSI__
+# define HAVE__GENERIC (4 < __GNUC__ + (9 <= __GNUC_MINOR__))
 #endif
-#ifndef HAVE_GENERIC
-# define HAVE_GENERIC (201112 <= __STDC_VERSION__)
+#ifndef HAVE__GENERIC
+# define HAVE__GENERIC (201112 <= __STDC_VERSION__)
 #endif
 
 #if !defined HAVE_GETTEXT && defined __has_include
@@ -98,10 +117,6 @@
 
 #ifndef HAVE_STRDUP
 # define HAVE_STRDUP 1
-#endif
-
-#ifndef HAVE_STRTOLL
-# define HAVE_STRTOLL 1
 #endif
 
 #ifndef HAVE_SYMLINK
@@ -185,6 +200,9 @@
 
 #include <stddef.h>
 #include <string.h>
+#if !PORT_TO_C89
+# include <inttypes.h>
+#endif
 #include <limits.h>	/* for CHAR_BIT et al. */
 #include <stdlib.h>
 
@@ -254,10 +272,12 @@
 # define R_OK 4
 #endif /* !defined R_OK */
 
+#if PORT_TO_C89
+
 /*
 ** Define HAVE_STDINT_H's default value here, rather than at the
 ** start, since __GLIBC__ and INTMAX_MAX's values depend on
-** previously-included files.  glibc 2.1 and Solaris 10 and later have
+** previously included files.  glibc 2.1 and Solaris 10 and later have
 ** stdint.h, even with pre-C99 compilers.
 */
 #if !defined HAVE_STDINT_H && defined __has_include
@@ -334,6 +354,9 @@ typedef int int_fast32_t;
 #ifndef INTMAX_MAX
 # ifdef LLONG_MAX
 typedef long long intmax_t;
+#  ifndef HAVE_STRTOLL
+#   define HAVE_STRTOLL true
+#  endif
 #  if HAVE_STRTOLL
 #   define strtoimax strtoll
 #  endif
@@ -379,8 +402,10 @@ typedef unsigned long long uint_fast64_t;
 #ifndef UINTMAX_MAX
 # ifdef ULLONG_MAX
 typedef unsigned long long uintmax_t;
+#  define UINTMAX_MAX ULLONG_MAX
 # else
 typedef unsigned long uintmax_t;
+#  define UINTMAX_MAX ULONG_MAX
 # endif
 #endif
 
@@ -395,6 +420,16 @@ typedef unsigned long uintmax_t;
 #ifndef SIZE_MAX
 # define SIZE_MAX ((size_t) -1)
 #endif
+
+#endif /* PORT_TO_C89 */
+
+/* The maximum size of any created object, as a signed integer.
+   Although the C standard does not outright prohibit larger objects,
+   behavior is undefined if the result of pointer subtraction does not
+   fit into ptrdiff_t, and the code assumes in several places that
+   pointer subtraction works.  As a practical matter it's OK to not
+   support objects larger than this.  */
+#define INDEX_MAX ((ptrdiff_t) min(PTRDIFF_MAX, SIZE_MAX))
 
 /* Support ckd_add, ckd_sub, ckd_mul on C23 or recent-enough GCC-like
    hosts, unless compiled with -DHAVE_STDCKDINT_H=0 or with pre-C23 EDG.  */
@@ -435,12 +470,25 @@ typedef unsigned long uintmax_t;
 
 #if (defined __has_c_attribute \
      && (202311 <= __STDC_VERSION__ || !defined __STRICT_ANSI__))
-# define HAVE_HAS_C_ATTRIBUTE true
+# define HAVE___HAS_C_ATTRIBUTE true
 #else
-# define HAVE_HAS_C_ATTRIBUTE false
+# define HAVE___HAS_C_ATTRIBUTE false
 #endif
 
-#if HAVE_HAS_C_ATTRIBUTE
+#if HAVE___HAS_C_ATTRIBUTE
+# if __has_c_attribute(deprecated)
+#  define ATTRIBUTE_DEPRECATED [[deprecated]]
+# endif
+#endif
+#ifndef ATTRIBUTE_DEPRECATED
+# if 3 < __GNUC__ + (2 <= __GNUC_MINOR__)
+#  define ATTRIBUTE_DEPRECATED __attribute__((deprecated))
+# else
+#  define ATTRIBUTE_DEPRECATED /* empty */
+# endif
+#endif
+
+#if HAVE___HAS_C_ATTRIBUTE
 # if __has_c_attribute(fallthrough)
 #  define ATTRIBUTE_FALLTHROUGH [[fallthrough]]
 # endif
@@ -453,7 +501,7 @@ typedef unsigned long uintmax_t;
 # endif
 #endif
 
-#if HAVE_HAS_C_ATTRIBUTE
+#if HAVE___HAS_C_ATTRIBUTE
 # if __has_c_attribute(maybe_unused)
 #  define ATTRIBUTE_MAYBE_UNUSED [[maybe_unused]]
 # endif
@@ -466,7 +514,7 @@ typedef unsigned long uintmax_t;
 # endif
 #endif
 
-#if HAVE_HAS_C_ATTRIBUTE
+#if HAVE___HAS_C_ATTRIBUTE
 # if __has_c_attribute(noreturn)
 #  define ATTRIBUTE_NORETURN [[noreturn]]
 # endif
@@ -481,7 +529,7 @@ typedef unsigned long uintmax_t;
 # endif
 #endif
 
-#if HAVE_HAS_C_ATTRIBUTE
+#if HAVE___HAS_C_ATTRIBUTE
 # if __has_c_attribute(reproducible)
 #  define ATTRIBUTE_REPRODUCIBLE [[reproducible]]
 # endif
@@ -494,7 +542,7 @@ typedef unsigned long uintmax_t;
 # endif
 #endif
 
-#if HAVE_HAS_C_ATTRIBUTE
+#if HAVE___HAS_C_ATTRIBUTE
 # if __has_c_attribute(unsequenced)
 #  define ATTRIBUTE_UNSEQUENCED [[unsequenced]]
 # endif
@@ -507,7 +555,8 @@ typedef unsigned long uintmax_t;
 # endif
 #endif
 
-#if __STDC_VERSION__ < 199901 && !defined restrict
+#if (__STDC_VERSION__ < 199901 && !defined restrict \
+     && (PORT_TO_C89 || defined _MSC_VER))
 # define restrict /* empty */
 #endif
 
@@ -579,6 +628,8 @@ typedef time_tz tz_time_t;
 # define mktime_z tz_mktime_z
 # undef  offtime
 # define offtime tz_offtime
+# undef  offtime_r
+# define offtime_r tz_offtime_r
 # undef  posix2time
 # define posix2time tz_posix2time
 # undef  posix2time_z
@@ -624,11 +675,16 @@ typedef time_tz tz_time_t;
 #  define altzone tz_altzone
 # endif
 
-char *asctime(struct tm const *);
+# if __STDC_VERSION__ < 202311
+#  define DEPRECATED_IN_C23 /* empty */
+# else
+#  define DEPRECATED_IN_C23 ATTRIBUTE_DEPRECATED
+# endif
+DEPRECATED_IN_C23 char *asctime(struct tm const *);
 char *asctime_r(struct tm const *restrict, char *restrict);
-char *ctime(time_t const *);
+DEPRECATED_IN_C23 char *ctime(time_t const *);
 char *ctime_r(time_t const *, char *);
-double difftime(time_t, time_t) ATTRIBUTE_UNSEQUENCED;
+ATTRIBUTE_UNSEQUENCED double difftime(time_t, time_t);
 size_t strftime(char *restrict, size_t, char const *restrict,
 		struct tm const *restrict);
 # if HAVE_STRFTIME_L
@@ -691,15 +747,21 @@ extern long altzone;
 ** declarations if time_tz is defined.
 */
 
-#ifdef STD_INSPIRED
+#ifndef STD_INSPIRED
+# define STD_INSPIRED 0
+#endif
+#if STD_INSPIRED
 # if TZ_TIME_T || !defined offtime
 struct tm *offtime(time_t const *, long);
+# endif
+# if TZ_TIME_T || !defined offtime_r
+struct tm *offtime_r(time_t const *, long, struct tm *);
 # endif
 # if TZ_TIME_T || !defined timelocal
 time_t timelocal(struct tm *);
 # endif
 # if TZ_TIME_T || !defined timeoff
-time_t timeoff(struct tm *, long);
+#  define EXTERN_TIMEOFF
 # endif
 # if TZ_TIME_T || !defined time2posix
 time_t time2posix(time_t);
@@ -711,7 +773,8 @@ time_t posix2time(time_t);
 
 /* Infer TM_ZONE on systems where this information is known, but suppress
    guessing if NO_TM_ZONE is defined.  Similarly for TM_GMTOFF.  */
-#if (defined __GLIBC__ \
+#if (200809 < _POSIX_VERSION \
+     || defined __GLIBC__ \
      || defined __tm_zone /* musl */ \
      || defined __FreeBSD__ || defined __NetBSD__ || defined __OpenBSD__ \
      || (defined __APPLE__ && defined __MACH__))
@@ -738,12 +801,12 @@ struct tm *localtime_rz(timezone_t restrict, time_t const *restrict,
 time_t mktime_z(timezone_t restrict, struct tm *restrict);
 timezone_t tzalloc(char const *);
 void tzfree(timezone_t);
-# ifdef STD_INSPIRED
+# if STD_INSPIRED
 #  if TZ_TIME_T || !defined posix2time_z
-time_t posix2time_z(timezone_t, time_t) ATTRIBUTE_REPRODUCIBLE;
+ATTRIBUTE_REPRODUCIBLE time_t posix2time_z(timezone_t, time_t);
 #  endif
 #  if TZ_TIME_T || !defined time2posix_z
-time_t time2posix_z(timezone_t, time_t) ATTRIBUTE_REPRODUCIBLE;
+ATTRIBUTE_REPRODUCIBLE time_t time2posix_z(timezone_t, time_t);
 #  endif
 # endif
 #endif
@@ -752,7 +815,7 @@ time_t time2posix_z(timezone_t, time_t) ATTRIBUTE_REPRODUCIBLE;
 ** Finally, some convenience items.
 */
 
-#define TYPE_BIT(type)	(sizeof(type) * CHAR_BIT)
+#define TYPE_BIT(type) (CHAR_BIT * (ptrdiff_t) sizeof(type))
 #define TYPE_SIGNED(type) (((type) -1) < 0)
 #define TWOS_COMPLEMENT(t) ((t) ~ (t) 0 < 0)
 
@@ -780,7 +843,7 @@ time_t time2posix_z(timezone_t, time_t) ATTRIBUTE_REPRODUCIBLE;
    This implementation assumes no padding if time_t is signed and
    either the compiler lacks support for _Generic or time_t is not one
    of the standard signed integer types.  */
-#if HAVE_GENERIC
+#if HAVE__GENERIC
 # define TIME_T_MIN \
     _Generic((time_t) 0, \
 	     signed char: SCHAR_MIN, short: SHRT_MIN, \
@@ -793,10 +856,23 @@ time_t time2posix_z(timezone_t, time_t) ATTRIBUTE_REPRODUCIBLE;
 		int: INT_MAX, long: LONG_MAX, long long: LLONG_MAX, \
 		default: TIME_T_MAX_NO_PADDING)			    \
      : (time_t) -1)
+enum { SIGNED_PADDING_CHECK_NEEDED
+         = _Generic((time_t) 0,
+		    signed char: false, short: false,
+		    int: false, long: false, long long: false,
+		    default: true) };
 #else
 # define TIME_T_MIN TIME_T_MIN_NO_PADDING
 # define TIME_T_MAX TIME_T_MAX_NO_PADDING
+enum { SIGNED_PADDING_CHECK_NEEDED = true };
 #endif
+/* Try to check the padding assumptions.  Although TIME_T_MAX and the
+   following check can both have undefined behavior on oddball
+   platforms due to shifts exceeding widths of signed integers, these
+   platforms' compilers are likely to diagnose these issues in integer
+   constant expressions, so it shouldn't hurt to check statically.  */
+static_assert(! TYPE_SIGNED(time_t) || ! SIGNED_PADDING_CHECK_NEEDED
+	      || TIME_T_MAX >> (TYPE_BIT(time_t) - 2) == 1);
 
 /*
 ** 302 / 1000 is log10(2.0) rounded up.
@@ -826,6 +902,19 @@ time_t time2posix_z(timezone_t, time_t) ATTRIBUTE_REPRODUCIBLE;
    mktime likely infer a better value.  */
 #ifndef UNINIT_TRAP
 # define UNINIT_TRAP 0
+#endif
+
+/* localtime.c sometimes needs access to timeoff if it is not already public.
+   tz_private_timeoff should be used only by localtime.c.  */
+#if (!defined EXTERN_TIMEOFF \
+     && defined TM_GMTOFF && (200809 < _POSIX_VERSION || ! UNINIT_TRAP))
+# ifndef timeoff
+#  define timeoff tz_private_timeoff
+# endif
+# define EXTERN_TIMEOFF
+#endif
+#ifdef EXTERN_TIMEOFF
+time_t timeoff(struct tm *, long);
 #endif
 
 #ifdef DEBUG
@@ -863,7 +952,7 @@ time_t time2posix_z(timezone_t, time_t) ATTRIBUTE_REPRODUCIBLE;
 #if HAVE_INCOMPATIBLE_CTIME_R
 #undef asctime_r
 #undef ctime_r
-char *asctime_r(struct tm const *, char *);
+char *asctime_r(struct tm const *restrict, char *restrict);
 char *ctime_r(time_t const *, char *);
 #endif /* HAVE_INCOMPATIBLE_CTIME_R */
 
@@ -886,6 +975,18 @@ enum {
 #define DAYSPERREPEAT		((int_fast32_t) 400 * 365 + 100 - 4 + 1)
 #define SECSPERREPEAT		((int_fast64_t) DAYSPERREPEAT * SECSPERDAY)
 #define AVGSECSPERYEAR		(SECSPERREPEAT / YEARSPERREPEAT)
+
+/* How many years to generate (in zic.c) or search through (in localtime.c).
+   This is two years larger than the obvious 400, to avoid edge cases.
+   E.g., suppose a non-POSIX.1-2017 rule applies from 2012 on with transitions
+   in March and September, plus one-off transitions in November 2013.
+   If zic looked only at the last 400 years, it would set max_year=2413,
+   with the intent that the 400 years 2014 through 2413 will be repeated.
+   The last transition listed in the tzfile would be in 2413-09,
+   less than 400 years after the last one-off transition in 2013-11.
+   Two years is not overkill for localtime.c, as a one-year bump
+   would mishandle 2023d's America/Ciudad_Juarez for November 2422.  */
+enum { years_of_observations = YEARSPERREPEAT + 2 };
 
 enum {
   TM_SUNDAY,

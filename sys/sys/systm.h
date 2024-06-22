@@ -101,6 +101,18 @@ struct ucred;
 #include <sys/pcpu.h>		/* curthread */
 #include <sys/kpilite.h>
 
+/*
+ * If we have already panic'd and this is the thread that called
+ * panic(), then don't block on any mutexes but silently succeed.
+ * Otherwise, the kernel will deadlock since the scheduler isn't
+ * going to run the thread that holds any lock we need.
+ */
+#define	SCHEDULER_STOPPED_TD(td)  ({					\
+	MPASS((td) == curthread);					\
+	__predict_false((td)->td_stopsched);				\
+})
+#define	SCHEDULER_STOPPED() SCHEDULER_STOPPED_TD(curthread)
+
 extern int osreldate;
 
 extern const void *zero_region;	/* address space maps to a zeroed page	*/
@@ -454,6 +466,8 @@ int poll_no_poll(int events);
 
 /* XXX: Should be void nanodelay(u_int nsec); */
 void	DELAY(int usec);
+
+int kcmp_cmp(uintptr_t a, uintptr_t b);
 
 /* Root mount holdback API */
 struct root_hold_token {

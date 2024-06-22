@@ -138,7 +138,7 @@ init_casper_net(cap_channel_t *casper)
 	familylimit = AF_LOCAL;
 	cap_net_limit_name2addr_family(limit, &familylimit, 1);
 
-	if (cap_net_limit(limit) < 0)
+	if (cap_net_limit(limit) != 0)
 		err(EXIT_FAILURE, "unable to apply limits");
 }
 #endif
@@ -154,7 +154,7 @@ init_casper(int argc, char *argv[])
 		err(EXIT_FAILURE, "unable to create Casper");
 
 	fa = fileargs_cinit(casper, argc, argv, O_RDONLY, 0,
-	    cap_rights_init(&rights, CAP_READ | CAP_FSTAT | CAP_FCNTL),
+	    cap_rights_init(&rights, CAP_READ, CAP_FSTAT, CAP_FCNTL, CAP_SEEK),
 	    FA_OPEN | FA_REALPATH);
 	if (fa == NULL)
 		err(EXIT_FAILURE, "unable to create fileargs");
@@ -211,7 +211,7 @@ main(int argc, char *argv[])
 		stdout_lock.l_start = 0;
 		stdout_lock.l_type = F_WRLCK;
 		stdout_lock.l_whence = SEEK_SET;
-		if (fcntl(STDOUT_FILENO, F_SETLKW, &stdout_lock) == -1)
+		if (fcntl(STDOUT_FILENO, F_SETLKW, &stdout_lock) != 0)
 			err(EXIT_FAILURE, "stdout");
 	}
 
@@ -219,7 +219,7 @@ main(int argc, char *argv[])
 
 	caph_cache_catpages();
 
-	if (caph_enter_casper() < 0)
+	if (caph_enter_casper() != 0)
 		err(EXIT_FAILURE, "capsicum");
 
 	if (bflag || eflag || nflag || sflag || tflag || vflag)
@@ -456,7 +456,7 @@ udom_open(const char *path, int flags)
 			errno = serrno;
 			return (-1);
 		}
-		if (caph_rights_limit(fd, &rights) < 0) {
+		if (caph_rights_limit(fd, &rights) != 0) {
 			serrno = errno;
 			close(fd);
 			freeaddrinfo(res0);
@@ -494,7 +494,7 @@ udom_open(const char *path, int flags)
 		}
 
 		cap_rights_clear(&rights, CAP_CONNECT, CAP_SHUTDOWN);
-		if (caph_rights_limit(fd, &rights) < 0) {
+		if (caph_rights_limit(fd, &rights) != 0) {
 			serrno = errno;
 			close(fd);
 			errno = serrno;

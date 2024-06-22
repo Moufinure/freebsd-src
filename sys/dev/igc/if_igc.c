@@ -46,7 +46,7 @@
  *  { Vendor ID, Device ID, String }
  *********************************************************************/
 
-static pci_vendor_info_t igc_vendor_info_array[] =
+static const pci_vendor_info_t igc_vendor_info_array[] =
 {
 	/* Intel(R) PRO/1000 Network Connection - igc */
 	PVID(0x8086, IGC_DEV_ID_I225_LM, "Intel(R) Ethernet Controller I225-LM"),
@@ -255,13 +255,6 @@ static int igc_debug_sbp = true;
 SYSCTL_INT(_hw_igc, OID_AUTO, sbp, CTLFLAG_RDTUN, &igc_debug_sbp, 0,
     "Show bad packets in promiscuous mode");
 
-/* How many packets rxeof tries to clean at a time */
-static int igc_rx_process_limit = 100;
-SYSCTL_INT(_hw_igc, OID_AUTO, rx_process_limit, CTLFLAG_RDTUN,
-    &igc_rx_process_limit, 0,
-    "Maximum number of received packets to process "
-    "at a time, -1 means unlimited");
-
 /* Energy efficient ethernet - default to OFF */
 static int igc_eee_setting = 1;
 SYSCTL_INT(_hw_igc, OID_AUTO, eee_setting, CTLFLAG_RDTUN, &igc_eee_setting, 0,
@@ -466,8 +459,6 @@ igc_if_attach_pre(if_ctx_t ctx)
 	scctx = adapter->shared = iflib_get_softc_ctx(ctx);
 	adapter->media = iflib_get_media(ctx);
 	hw = &adapter->hw;
-
-	adapter->tx_process_limit = scctx->isc_ntxd[0];
 
 	/* SYSCTL stuff */
 	SYSCTL_ADD_PROC(device_get_sysctl_ctx(dev),

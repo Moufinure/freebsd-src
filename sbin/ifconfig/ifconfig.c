@@ -36,8 +36,6 @@ static const char copyright[] =
 #if 0
 static char sccsid[] = "@(#)ifconfig.c	8.2 (Berkeley) 2/16/94";
 #endif
-static const char rcsid[] =
-  "$FreeBSD$";
 #endif /* not lint */
 
 #include <sys/param.h>
@@ -305,14 +303,10 @@ cmpifaddrs(struct ifaddrs *a, struct ifaddrs *b, struct ifa_queue *q)
 static void freeformat(void)
 {
 
-	if (f_inet != NULL)
-		free(f_inet);
-	if (f_inet6 != NULL)
-		free(f_inet6);
-	if (f_ether != NULL)
-		free(f_ether);
-	if (f_addr != NULL)
-		free(f_addr);
+	free(f_inet);
+	free(f_inet6);
+	free(f_ether);
+	free(f_addr);
 }
 
 static void setformat(char *input)
@@ -322,9 +316,18 @@ static void setformat(char *input)
 	formatstr = strdup(input);
 	while ((category = strsep(&formatstr, ",")) != NULL) {
 		modifier = strchr(category, ':');
-		if (modifier == NULL || modifier[1] == '\0') {
-			warnx("Skipping invalid format specification: %s\n",
-			    category);
+		if (modifier == NULL) {
+			if (strcmp(category, "default") == 0) {
+				freeformat();
+			} else if (strcmp(category, "cidr") == 0) {
+				free(f_inet);
+				f_inet = strdup(category);
+				free(f_inet6);
+				f_inet6 = strdup(category);
+			} else {
+				warnx("Skipping invalid format: %s\n",
+				    category);
+			}
 			continue;
 		}
 
@@ -332,14 +335,19 @@ static void setformat(char *input)
 		modifier[0] = '\0';
 		modifier++;
 
-		if (strcmp(category, "addr") == 0)
+		if (strcmp(category, "addr") == 0) {
+			free(f_addr);
 			f_addr = strdup(modifier);
-		else if (strcmp(category, "ether") == 0)
+		} else if (strcmp(category, "ether") == 0) {
+			free(f_ether);
 			f_ether = strdup(modifier);
-		else if (strcmp(category, "inet") == 0)
+		} else if (strcmp(category, "inet") == 0) {
+			free(f_inet);
 			f_inet = strdup(modifier);
-		else if (strcmp(category, "inet6") == 0)
+		} else if (strcmp(category, "inet6") == 0) {
+			free(f_inet6);
 			f_inet6 = strdup(modifier);
+		}
 	}
 	free(formatstr);
 }
@@ -429,7 +437,6 @@ main(int argc, char *argv[])
 #endif
 
 	all = downonly = uponly = namesonly = noload = verbose = 0;
-	f_inet = f_inet6 = f_ether = f_addr = NULL;
 	matchgroup = nogroup = NULL;
 
 	lifh = ifconfig_open();

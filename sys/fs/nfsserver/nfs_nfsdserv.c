@@ -97,6 +97,9 @@ static bool	nfsrv_doallocate = false;
 SYSCTL_BOOL(_vfs_nfsd, OID_AUTO, enable_v42allocate, CTLFLAG_RW,
     &nfsrv_doallocate, 0,
     "Enable NFSv4.2 Allocate operation");
+static uint64_t nfsrv_maxcopyrange = SSIZE_MAX;
+SYSCTL_U64(_vfs_nfsd, OID_AUTO, maxcopyrange, CTLFLAG_RW,
+    &nfsrv_maxcopyrange, 0, "Max size of a Copy so RPC times reasonable");
 
 /*
  * This list defines the GSS mechanisms supported.
@@ -1796,6 +1799,7 @@ nfsrvd_link(struct nfsrv_descript *nd, int isdgram,
 	char *bufp;
 	u_long *hashp;
 	struct thread *p = curthread;
+	nfsquad_t clientid;
 
 	if (nd->nd_repstat) {
 		nfsrv_postopattr(nd, getret, &at);
@@ -1858,8 +1862,14 @@ nfsrvd_link(struct nfsrv_descript *nd, int isdgram,
 			    NULL);
 		}
 	}
-	if (!nd->nd_repstat)
-		nd->nd_repstat = nfsvno_link(&named, vp, nd->nd_cred, p, exp);
+	if (!nd->nd_repstat) {
+		clientid.qval = 0;
+		if ((nd->nd_flag & (ND_IMPLIEDCLID | ND_NFSV41)) ==
+		    (ND_IMPLIEDCLID | ND_NFSV41))
+			clientid.qval = nd->nd_clientid.qval;
+		nd->nd_repstat = nfsvno_link(&named, vp, clientid, nd->nd_cred,
+		    p, exp);
+	}
 	if (nd->nd_flag & ND_NFSV3)
 		getret = nfsvno_getattr(vp, &at, nd, p, 0, NULL);
 	if (dirp) {
@@ -5469,10 +5479,11 @@ nfsrvd_copy_file_range(struct nfsrv_descript *nd, __unused int isdgram,
 	void *rl_rcookie, *rl_wcookie;
 
 	rl_rcookie = rl_wcookie = NULL;
-	if (nfsrv_devidcnt > 0) {
+	if (nfsrv_maxcopyrange == 0 || nfsrv_devidcnt > 0) {
 		/*
 		 * For a pNFS server, reply NFSERR_NOTSUPP so that the client
 		 * will do the copy via I/O on the DS(s).
+		 * If vfs.nfsd.maxcopyrange set to 0, disable Copy.
 		 */
 		nd->nd_repstat = NFSERR_NOTSUPP;
 		goto nfsmout;
@@ -5635,7 +5646,15 @@ nfsrvd_copy_file_range(struct nfsrv_descript *nd, __unused int isdgram,
 			nd->nd_repstat = error;
 	}
 
-	xfer = len;
+	/*
+	 * Do the actual copy to an upper limit of vfs.nfsd.maxcopyrange.
+	 * This size limit can be set to limit the time a copy RPC will
+	 * take.
+	 */
+	if (len > nfsrv_maxcopyrange)
+		xfer = nfsrv_maxcopyrange;
+	else
+		xfer = len;
 	if (nd->nd_repstat == 0) {
 		nd->nd_repstat = vn_copy_file_range(vp, &inoff, tovp, &outoff,
 		    &xfer, COPY_FILE_RANGE_TIMEO1SEC, nd->nd_cred, nd->nd_cred,

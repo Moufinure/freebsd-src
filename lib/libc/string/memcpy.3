@@ -31,7 +31,7 @@
 .\"
 .\"     @(#)memcpy.3	8.1 (Berkeley) 6/4/93
 .\"
-.Dd July 14, 2021
+.Dd November 18, 2023
 .Dt MEMCPY 3
 .Os
 .Sh NAME
@@ -77,7 +77,7 @@ function returns a pointer to the byte after the last written byte.
 .Xr memccpy 3 ,
 .Xr memmove 3 ,
 .Xr strcpy 3 ,
-.Xr wmemcpy 3
+.Xr wmemcpy 3 ,
 .Xr wmempcpy 3
 .Sh STANDARDS
 The
@@ -85,19 +85,14 @@ The
 function
 conforms to
 .St -isoC .
-.Sh BUGS
-In this implementation
+.Sh HISTORY
+The
 .Fn memcpy
-and
+function first appeared in
+.At V
+and was reimplemented for
+.Bx 4.3 Tahoe .
+The
 .Fn mempcpy
-are implemented using
-.Xr bcopy 3 ,
-and therefore the strings may overlap.
-On other systems, copying overlapping strings may produce surprises.
-Programs intended to be portable should use
-.Xr memmove 3
-when
-.Fa src
-and
-.Fa dst
-may overlap.
+function first appeared in
+.Fx 13.1 .

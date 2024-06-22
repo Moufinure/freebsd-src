@@ -1,6 +1,6 @@
 .\" This file is in the public domain, so clarified as of
 .\" 2009-05-17 by Arthur David Olson.
-.TH date 1
+.TH date 1 "" "Time Zone Database"
 .SH NAME
 date \- show and set date and time
 .SH SYNOPSIS
@@ -154,14 +154,11 @@ hexadecimal (leading 0x), preceded by an optional sign.
 .br
 /usr/lib/locale/\f2L\fP/LC_TIME	description of time locale \f2L\fP
 .br
-/usr/share/zoneinfo	timezone information directory
+/usr/share/zoneinfo	timezone directory
 .br
-/usr/share/zoneinfo/posixrules	used with POSIX-style TZ's
+/usr/share/zoneinfo/posixrules	default DST rules (obsolete)
 .br
 /usr/share/zoneinfo/GMT	for UTC leap seconds
-.sp
-If
-.B /usr/share/zoneinfo/GMT
-is absent,
-UTC leap seconds are loaded from
-.BR /usr/share/zoneinfo/posixrules .
+.PP
+If /usr/share/zoneinfo/GMT is absent,
+UTC leap seconds are loaded from /usr/share/zoneinfo/GMT0 if present.

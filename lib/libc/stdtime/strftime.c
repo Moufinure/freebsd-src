@@ -3,7 +3,7 @@
  * All rights reserved.
  *
  * Copyright (c) 2011 The FreeBSD Foundation
- * All rights reserved.
+ *
  * Portions of this software were developed by David Chisnall
  * under sponsorship from the FreeBSD Foundation.
  *
@@ -316,7 +316,7 @@ label:
 					time_t		mkt;
 
 					tm = *t;
-					mkt = mktime(&tm);
+					mkt = timeoff(&tm, t->tm_gmtoff);
 					if (TYPE_SIGNED(time_t))
 						(void) sprintf_l(buf, loc, "%ld",
 							(long) mkt);

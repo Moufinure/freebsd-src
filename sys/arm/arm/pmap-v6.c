@@ -1707,8 +1707,9 @@ pmap_pt2pg_init(pmap_t pmap, vm_offset_t va, vm_page_t m)
 
 /*
  *  Initialize the pmap module.
- *  Called by vm_init, to initialize any structures that the pmap
- *  system needs to map virtual memory.
+ *
+ *  Called by vm_mem_init(), to initialize any structures that the pmap system
+ *  needs to map virtual memory.
  */
 void
 pmap_init(void)
@@ -1750,7 +1751,7 @@ pmap_init(void)
 	 */
 	TUNABLE_INT_FETCH("vm.pmap.shpgperproc", &shpgperproc);
 	pv_entry_max = shpgperproc * maxproc + vm_cnt.v_page_count;
-	TUNABLE_INT_FETCH("vm.pmap.pv_entries", &pv_entry_max);
+	TUNABLE_INT_FETCH("vm.pmap.pv_entry_max", &pv_entry_max);
 	pv_entry_max = roundup(pv_entry_max, _NPCPV);
 	pv_entry_high_water = 9 * (pv_entry_max / 10);
 
@@ -3030,7 +3031,7 @@ get_pv_entry(pmap_t pmap, boolean_t try)
 		if (ratecheck(&lastprint, &printinterval))
 			printf("Approaching the limit on PV entries, consider "
 			    "increasing either the vm.pmap.shpgperproc or the "
-			    "vm.pmap.pv_entries tunable.\n");
+			    "vm.pmap.pv_entry_max tunable.\n");
 retry:
 	pc = TAILQ_FIRST(&pmap->pm_pvchunk);
 	if (pc != NULL) {
@@ -6210,6 +6211,12 @@ pmap_activate(struct thread *td)
 	cp15_ttbr_set(ttb);
 	PCPU_SET(curpmap, pmap);
 	critical_exit();
+}
+
+void
+pmap_active_cpus(pmap_t pmap, cpuset_t *res)
+{
+	*res = pmap->pm_active;
 }
 
 /*

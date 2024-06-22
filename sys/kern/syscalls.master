@@ -975,7 +975,7 @@
 		    int fd,
 		    _Out_writes_bytes_(count) char *buf,
 		    u_int count,
-		    _Out_ long *basep
+		    _Out_opt_ long *basep
 		);
 	}
 157	AUE_STATFS	COMPAT4 {
@@ -1167,7 +1167,7 @@
 		    int fd,
 		    _Out_writes_bytes_(count) char *buf,
 		    u_int count,
-		    _Out_ long *basep
+		    _Out_opt_ long *basep
 		);
 	}
 197	AUE_MMAP	COMPAT6 {
@@ -3081,7 +3081,7 @@
 		    int fd,
 		    _Out_writes_bytes_(count) char *buf,
 		    size_t count,
-		    _Out_ off_t *basep
+		    _Out_opt_ off_t *basep
 		);
 	}
 555	AUE_STATFS	STD {
@@ -3285,6 +3285,25 @@
 583	AUE_KQUEUE	STD|CAPENABLED {
 		int kqueuex(
 		    u_int flags
+		);
+	}
+584	AUE_NULL	STD|CAPENABLED {
+		int membarrier(
+		    int cmd,
+		    unsigned flags,
+		    int cpu_id
+		);
+	}
+585	AUE_NULL	UNIMPL timerfd_create
+586	AUE_NULL	UNIMPL timerfd_gettime
+587	AUE_NULL	UNIMPL timerfd_settime
+588	AUE_NULL	STD {
+		int kcmp(
+		    pid_t pid1,
+		    pid_t pid2,
+		    int type,
+		    uintptr_t idx1,
+		    uintptr_t idx2
 		);
 	}
 

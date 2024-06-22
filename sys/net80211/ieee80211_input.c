@@ -273,6 +273,7 @@ void
 ieee80211_deliver_data(struct ieee80211vap *vap,
 	struct ieee80211_node *ni, struct mbuf *m)
 {
+	struct epoch_tracker et;
 	struct ether_header *eh = mtod(m, struct ether_header *);
 	struct ifnet *ifp = vap->iv_ifp;
 
@@ -303,7 +304,9 @@ ieee80211_deliver_data(struct ieee80211vap *vap,
 		m->m_pkthdr.ether_vtag = ni->ni_vlan;
 		m->m_flags |= M_VLANTAG;
 	}
+	NET_EPOCH_ENTER(et);
 	ifp->if_input(ifp, m);
+	NET_EPOCH_EXIT(et);
 }
 
 struct mbuf *
@@ -743,7 +746,7 @@ ieee80211_parse_beacon(struct ieee80211_node *ni, struct mbuf *m,
 #ifdef IEEE80211_SUPPORT_MESH
 	if (scan->meshid != NULL) {
 		IEEE80211_VERIFY_ELEMENT(scan->meshid, IEEE80211_MESHID_LEN,
-		    scan->status |= IEEE80211_BPARSE_RATES_INVALID);
+		    scan->status |= IEEE80211_BPARSE_MESHID_INVALID);
 	}
 #endif
 	/*
@@ -769,12 +772,12 @@ ieee80211_parse_beacon(struct ieee80211_node *ni, struct mbuf *m,
 	/* Process VHT IEs */
 	if (scan->vhtcap != NULL) {
 		IEEE80211_VERIFY_LENGTH(scan->vhtcap[1],
-		    sizeof(struct ieee80211_ie_vhtcap) - 2,
+		    sizeof(struct ieee80211_vht_cap),
 		    scan->vhtcap = NULL);
 	}
 	if (scan->vhtopmode != NULL) {
 		IEEE80211_VERIFY_LENGTH(scan->vhtopmode[1],
-		    sizeof(struct ieee80211_ie_vht_operation) - 2,
+		    sizeof(struct ieee80211_vht_operation),
 		    scan->vhtopmode = NULL);
 	}
 

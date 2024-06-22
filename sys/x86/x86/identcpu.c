@@ -102,6 +102,7 @@ u_int	cpu_exthigh;		/* Highest arg to extended CPUID */
 u_int	cpu_id;			/* Stepping ID */
 u_int	cpu_procinfo;		/* HyperThreading Info / Brand Index / CLFUSH */
 u_int	cpu_procinfo2;		/* Multicore info */
+u_int	cpu_procinfo3;
 char	cpu_vendor[20];		/* CPU Origin code */
 u_int	cpu_vendor_id;		/* CPU vendor ID */
 u_int	cpu_mxcsr_mask;		/* Valid bits in mxcsr */
@@ -157,8 +158,8 @@ SYSCTL_STRING(_hw, HW_MACHINE, machine, CTLFLAG_RD,
     machine, 0, "Machine class");
 #endif
 
-static char cpu_model[128];
-SYSCTL_STRING(_hw, HW_MODEL, model, CTLFLAG_RD | CTLFLAG_MPSAFE,
+char cpu_model[128];
+SYSCTL_STRING(_hw, HW_MODEL, model, CTLFLAG_RD | CTLFLAG_CAPRD,
     cpu_model, 0, "Machine model");
 
 static int hw_clockrate;
@@ -168,7 +169,7 @@ SYSCTL_INT(_hw, OID_AUTO, clockrate, CTLFLAG_RD,
 u_int hv_base;
 u_int hv_high;
 char hv_vendor[16];
-SYSCTL_STRING(_hw, OID_AUTO, hv_vendor, CTLFLAG_RD | CTLFLAG_MPSAFE, hv_vendor,
+SYSCTL_STRING(_hw, OID_AUTO, hv_vendor, CTLFLAG_RD, hv_vendor,
     0, "Hypervisor vendor");
 
 static eventhandler_tag tsc_post_tag;
@@ -1085,19 +1086,29 @@ printcpuinfo(void)
 				    "\001CLZERO"
 				    "\002IRPerf"
 				    "\003XSaveErPtr"
+				    "\004INVLPGB"
 				    "\005RDPRU"
+				    "\007BE"
 				    "\011MCOMMIT"
 				    "\012WBNOINVD"
 				    "\015IBPB"
+				    "\016INT_WBINVD"
 				    "\017IBRS"
 				    "\020STIBP"
 				    "\021IBRS_ALWAYSON"
 				    "\022STIBP_ALWAYSON"
 				    "\023PREFER_IBRS"
+				    "\024SAMEMODE_IBRS"
+				    "\025NOLMSLE"
+				    "\026INVLPGBNEST"
 				    "\030PPIN"
 				    "\031SSBD"
 				    "\032VIRT_SSBD"
 				    "\033SSB_NO"
+				    "\034CPPC"
+				    "\035PSFD"
+				    "\036BTC_NO"
+				    "\037IBPB_RET"
 				    );
 			}
 
@@ -1692,6 +1703,7 @@ finishidentcpu(void)
 		cpu_maxphyaddr = regs[0] & 0xff;
 		amd_extended_feature_extensions = regs[1];
 		cpu_procinfo2 = regs[2];
+		cpu_procinfo3 = regs[3];
 	} else {
 		cpu_maxphyaddr = (cpu_feature & CPUID_PAE) != 0 ? 36 : 32;
 	}
